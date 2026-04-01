@@ -33,6 +33,8 @@ local.properties
 .cxx/
 *.keystore
 !debug.keystore
+android/app/spendsense-release.keystore
+android/app/spendsense-release-new.keystore
 .kotlin/
 
 # node.js
@@ -73,3 +75,6 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# API Keys and Secrets
+src/lib/config.ts

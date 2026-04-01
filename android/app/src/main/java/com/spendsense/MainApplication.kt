@@ -1,4 +1,4 @@
-package com.vaultapp
+package com.spendsense
 
 import android.app.Application
 import com.facebook.react.PackageList
