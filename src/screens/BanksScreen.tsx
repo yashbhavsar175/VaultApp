@@ -1,0 +1,627 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  FlatList,
+  Modal,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import Toast from 'react-native-toast-message';
+import { getBankAccounts, addBankAccount, updateBankAccount, deleteBankAccount } from '../lib/bankDb';
+import { getTransactions } from '../lib/db';
+import { BankAccount, Transaction } from '../types';
+import { useTheme } from '../context/ThemeContext';
+import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../components';
+import { getBankColor, getBankSuggestions } from '../constants/bankLogos';
+
+export default function BanksScreen() {
+  const { colors, typography, spacing, borderRadius } = useTheme();
+  const [banks, setBanks] = useState<BankAccount[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [editingBank, setEditingBank] = useState<BankAccount | null>(null);
+
+  // Form state
+  const [bankName, setBankName] = useState('');
+  const [accountLast4, setAccountLast4] = useState('');
+  const [accountType, setAccountType] = useState<'savings' | 'current' | 'credit_card' | 'loan'>('savings');
+  const [startingBalance, setStartingBalance] = useState('');
+  const [creditLimit, setCreditLimit] = useState('');
+  const [loanTotal, setLoanTotal] = useState('');
+  const [saving, setSaving] = useState(false);
+  
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      loadData();
+    }, [])
+  );
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [banksData, transactionsData] = await Promise.all([
+        getBankAccounts(),
+        getTransactions(),
+      ]);
+      setBanks(banksData);
+      setTransactions(transactionsData);
+    } catch (error) {
+      console.error('Error loading data:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to load bank accounts',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const calculateCurrentBalance = (bank: BankAccount): number => {
+    // Get all transactions for this bank
+    const bankTxns = transactions.filter(t => {
+      return t.note.includes(`••${bank.account_last4}`);
+    });
+
+    const totalSpent = bankTxns
+      .filter(t => t.type === 'expense' ||
+        (t.type === 'transfer' && t.note.includes(`••${bank.account_last4} →`)))
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    const totalReceived = bankTxns
+      .filter(t => t.type === 'income' ||
+        (t.type === 'transfer' && t.note.includes(`→ ${bank.bank_name} ••${bank.account_last4}`)))
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    const totalEMI = bankTxns
+      .filter(t => t.type === 'emi')
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    if (bank.account_type === 'savings' || bank.account_type === 'current') {
+      return bank.starting_balance + totalReceived - totalSpent;
+    }
+
+    if (bank.account_type === 'credit_card') {
+      // Available credit = limit - spent + payments received
+      const used = totalSpent - totalReceived;
+      return bank.credit_limit - used;
+    }
+
+    if (bank.account_type === 'loan') {
+      // Remaining loan = total loan - EMI paid
+      return bank.loan_total - totalEMI;
+    }
+
+    return bank.starting_balance;
+  };
+
+
+
+  const getTotalBalance = (): number => {
+    return banks.reduce((sum, bank) => sum + calculateCurrentBalance(bank), 0);
+  };
+
+  const formatAmount = (amount: number) => {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      maximumFractionDigits: 0,
+    }).format(amount);
+  };
+
+  const handleAddBank = () => {
+    resetForm();
+    setShowAddModal(true);
+  };
+
+  const handleEditBank = (bank: BankAccount) => {
+    setEditingBank(bank);
+    setBankName(bank.bank_name);
+    setAccountLast4(bank.account_last4);
+    setAccountType(bank.account_type || 'savings');
+    setStartingBalance(bank.starting_balance.toString());
+    setCreditLimit(bank.credit_limit?.toString() || '0');
+    setLoanTotal(bank.loan_total?.toString() || '0');
+    setShowAddModal(true);
+  };
+
+  const handleDeleteBank = (bank: BankAccount) => {
+    Alert.alert(
+      'Delete Bank Account',
+      `Delete ${bank.bank_name} ••${bank.account_last4}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteBankAccount(bank.id);
+              Toast.show({
+                type: 'success',
+                text1: 'Deleted',
+                text2: 'Bank account deleted successfully',
+              });
+              loadData();
+            } catch (error) {
+              Toast.show({
+                type: 'error',
+                text1: 'Error',
+                text2: 'Failed to delete bank account',
+              });
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const resetForm = () => {
+    setEditingBank(null);
+    setBankName('');
+    setAccountLast4('');
+    setAccountType('savings');
+    setStartingBalance('');
+    setCreditLimit('');
+    setLoanTotal('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+  };
+
+  const handleBankNameChange = (text: string) => {
+    setBankName(text);
+    if (text.length >= 1) {
+      const newSuggestions = getBankSuggestions(text);
+      setSuggestions(newSuggestions);
+      setShowSuggestions(newSuggestions.length > 0);
+    } else {
+      setSuggestions([]);
+      setShowSuggestions(false);
+    }
+  };
+
+  const handleSelectSuggestion = (suggestion: string) => {
+    setBankName(suggestion);
+    setShowSuggestions(false);
+    setSuggestions([]);
+  };
+
+  const handleSave = async () => {
+    if (!bankName.trim()) {
+      Toast.show({
+        type: 'error',
+        text1: 'Required',
+        text2: 'Please enter bank name',
+      });
+      return;
+    }
+
+    if (!accountLast4.trim() || accountLast4.length !== 4) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Account last 4 digits must be exactly 4 numbers',
+      });
+      return;
+    }
+
+    const balance = parseFloat(startingBalance || '0');
+    if (isNaN(balance)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Please enter a valid starting balance',
+      });
+      return;
+    }
+
+    const limit = parseFloat(creditLimit || '0');
+    if (accountType === 'credit_card' && (isNaN(limit) || limit <= 0)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Please enter a valid credit limit',
+      });
+      return;
+    }
+
+    const loan = parseFloat(loanTotal || '0');
+    if (accountType === 'loan' && (isNaN(loan) || loan <= 0)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Please enter a valid loan amount',
+      });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (editingBank) {
+        await updateBankAccount(editingBank.id, {
+          bank_name: bankName.trim(),
+          account_last4: accountLast4.trim(),
+          account_type: accountType,
+          starting_balance: balance,
+          credit_limit: limit,
+          loan_total: loan,
+          upi_ids: [],
+        });
+        Toast.show({
+          type: 'success',
+          text1: 'Updated',
+          text2: 'Bank account updated successfully',
+        });
+      } else {
+        await addBankAccount({
+          bank_name: bankName.trim(),
+          account_last4: accountLast4.trim(),
+          account_type: accountType,
+          starting_balance: balance,
+          credit_limit: limit,
+          loan_total: loan,
+          upi_ids: [],
+        });
+        Toast.show({
+          type: 'success',
+          text1: 'Added',
+          text2: 'Bank account added successfully',
+        });
+      }
+
+      setShowAddModal(false);
+      resetForm();
+      loadData();
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to save bank account',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderBankCard = ({ item }: { item: BankAccount }) => {
+    const currentBalance = calculateCurrentBalance(item);
+    const accountType = item.account_type || 'savings';
+    const bankColor = getBankColor(item.bank_name);
+    
+    let balanceColor = currentBalance >= 0 ? '#10b981' : '#ef4444';
+    
+    if (accountType === 'credit_card') {
+      balanceColor = '#10b981';
+    } else if (accountType === 'loan') {
+      balanceColor = '#ef4444';
+    }
+
+    return (
+      <Card style={{ marginBottom: spacing.md, padding: spacing.md }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          {/* Left: Icon + Bank Info */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <View style={{ 
+              width: 40, 
+              height: 40, 
+              borderRadius: 20, 
+              backgroundColor: bankColor,
+              justifyContent: 'center',
+              alignItems: 'center',
+              marginRight: spacing.md,
+            }}>
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>
+                {item.bank_name.charAt(0).toUpperCase()}
+              </Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[typography.body, { color: colors.text, fontWeight: '600' }]}>
+                {item.bank_name}
+              </Text>
+              <Text style={[typography.caption, { color: colors.subtext, fontSize: 12 }]}>
+                ••{item.account_last4}
+              </Text>
+            </View>
+          </View>
+
+          {/* Right: Balance + Actions */}
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={[typography.h3, { color: balanceColor, fontSize: 18, fontWeight: '700' }]}>
+              {formatAmount(currentBalance)}
+            </Text>
+            <View style={{ flexDirection: 'row', marginTop: spacing.xs }}>
+              <TouchableOpacity onPress={() => handleEditBank(item)} style={{ padding: 4 }}>
+                <MaterialCommunityIcons name="pencil" size={18} color={colors.accent} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => handleDeleteBank(item)} style={{ padding: 4, marginLeft: spacing.xs }}>
+                <MaterialCommunityIcons name="delete" size={18} color={colors.error} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Card>
+    );
+  };
+
+  if (loading) {
+    return (
+      <ScreenWrapper>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.accent} />
+        </View>
+      </ScreenWrapper>
+    );
+  }
+
+  const totalBalance = getTotalBalance();
+
+  return (
+    <ScreenWrapper>
+      <AppHeader 
+        title="Banks"
+        showBack={true}
+        rightAction={{
+          icon: "plus",
+          onPress: handleAddBank
+        }}
+      />
+      
+      <Card style={{ margin: spacing.lg, padding: spacing.lg, alignItems: 'center' }}>
+        <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.sm }]}>Total Balance</Text>
+        <Text style={[
+          typography.h1,
+          { color: totalBalance >= 0 ? colors.success : colors.error }
+        ]}>
+          {formatAmount(totalBalance)}
+        </Text>
+      </Card>
+
+      <FlatList
+        data={banks}
+        renderItem={renderBankCard}
+        keyExtractor={item => item.id}
+        contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons name="bank-off" size={64} color={colors.border} />
+            <Text style={[typography.h3, { color: colors.subtext, marginTop: spacing.md }]}>No bank accounts yet</Text>
+            <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm, textAlign: 'center' }]}>Add your first bank account to track balances</Text>
+          </View>
+        }
+      />
+
+      {/* Add/Edit Bank Modal */}
+      <Modal
+        visible={showAddModal}
+        animationType="slide"
+        onRequestClose={() => {
+          setShowAddModal(false);
+          resetForm();
+        }}>
+        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.border, padding: spacing.md }]}>
+            <TouchableOpacity onPress={() => {
+              setShowAddModal(false);
+              resetForm();
+            }}>
+              <MaterialCommunityIcons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+            <Text style={[typography.h2, { color: colors.text }]}>
+              {editingBank ? 'Edit Bank Account' : 'Add Bank Account'}
+            </Text>
+            <View style={{ width: 24 }} />
+          </View>
+
+          <ScreenWrapper scrollable>
+            <View style={{ padding: spacing.lg }}>
+              <View style={{ position: 'relative', zIndex: 10 }}>
+                <AppInput
+                  label="Bank Name *"
+                  placeholder="e.g. Slice, Kotak, HDFC"
+                  value={bankName}
+                  onChangeText={handleBankNameChange}
+                />
+                
+                {/* Autocomplete Suggestions */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <Card style={{ 
+                    position: 'absolute', 
+                    top: '100%', 
+                    left: 0, 
+                    right: 0, 
+                    marginTop: 4,
+                    maxHeight: 200,
+                    padding: 0,
+                  }}>
+                    {suggestions.map((suggestion, index) => {
+                      const suggestionColor = getBankColor(suggestion);
+                      return (
+                        <TouchableOpacity
+                          key={index}
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            padding: spacing.md,
+                            borderBottomWidth: index < suggestions.length - 1 ? 1 : 0,
+                            borderBottomColor: colors.border,
+                          }}
+                          onPress={() => handleSelectSuggestion(suggestion)}>
+                          <View style={{
+                            width: 20,
+                            height: 20,
+                            borderRadius: 10,
+                            backgroundColor: suggestionColor,
+                            marginRight: spacing.sm,
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                          }}>
+                            <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>
+                              {suggestion.charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <Text style={[typography.body, { color: colors.text }]}>
+                            {suggestion}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </Card>
+                )}
+              </View>
+
+              <Text style={[typography.caption, { color: colors.text, marginBottom: spacing.sm, marginTop: spacing.md }]}>Account Type *</Text>
+              <View style={styles.accountTypeSelector}>
+                <TouchableOpacity
+                  style={[styles.typeButton, { backgroundColor: colors.card, borderColor: colors.border, borderRadius: borderRadius.sm }, accountType === 'savings' && { backgroundColor: colors.accent + '20', borderColor: colors.accent }]}
+                  onPress={() => setAccountType('savings')}>
+                  <Text style={[typography.caption, { color: colors.subtext }, accountType === 'savings' && { color: colors.accent }]}>
+                    Savings
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.typeButton, { backgroundColor: colors.card, borderColor: colors.border, borderRadius: borderRadius.sm }, accountType === 'current' && { backgroundColor: colors.accent + '20', borderColor: colors.accent }]}
+                  onPress={() => setAccountType('current')}>
+                  <Text style={[typography.caption, { color: colors.subtext }, accountType === 'current' && { color: colors.accent }]}>
+                    Current
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.typeButton, { backgroundColor: colors.card, borderColor: colors.border, borderRadius: borderRadius.sm }, accountType === 'credit_card' && { backgroundColor: colors.accent + '20', borderColor: colors.accent }]}
+                  onPress={() => setAccountType('credit_card')}>
+                  <Text style={[typography.caption, { color: colors.subtext }, accountType === 'credit_card' && { color: colors.accent }]}>
+                    Credit Card
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.typeButton, { backgroundColor: colors.card, borderColor: colors.border, borderRadius: borderRadius.sm }, accountType === 'loan' && { backgroundColor: colors.accent + '20', borderColor: colors.accent }]}
+                  onPress={() => setAccountType('loan')}>
+                  <Text style={[typography.caption, { color: colors.subtext }, accountType === 'loan' && { color: colors.accent }]}>
+                    Loan/EMI
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <AppInput
+                label="Account Last 4 Digits *"
+                placeholder="e.g. 5235"
+                value={accountLast4}
+                onChangeText={setAccountLast4}
+                keyboardType="numeric"
+                maxLength={4}
+              />
+
+              {(accountType === 'savings' || accountType === 'current') && (
+                <AppInput
+                  label="Starting Balance *"
+                  placeholder="e.g. 10000"
+                  value={startingBalance}
+                  onChangeText={setStartingBalance}
+                  keyboardType="numeric"
+                />
+              )}
+
+              {accountType === 'credit_card' && (
+                <AppInput
+                  label="Credit Limit *"
+                  placeholder="e.g. 50000"
+                  value={creditLimit}
+                  onChangeText={setCreditLimit}
+                  keyboardType="numeric"
+                />
+              )}
+
+              {accountType === 'loan' && (
+                <AppInput
+                  label="Total Loan Amount *"
+                  placeholder="e.g. 500000"
+                  value={loanTotal}
+                  onChangeText={setLoanTotal}
+                  keyboardType="numeric"
+                />
+              )}
+
+              <AppButton
+                title={editingBank ? 'Update Bank' : 'Add Bank'}
+                onPress={handleSave}
+                loading={saving}
+                fullWidth
+                style={{ marginTop: spacing.xl }}
+              />
+            </View>
+          </ScreenWrapper>
+        </View>
+      </Modal>
+    </ScreenWrapper>
+  );
+}
+
+const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bankHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  bankInfo: {
+    flex: 1,
+  },
+  bankNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  bankActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  balanceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 60,
+  },
+  modalContainer: {
+    flex: 1,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+  },
+  accountTypeSelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  typeButton: {
+    flex: 1,
+    minWidth: '45%',
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+});

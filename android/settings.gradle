@@ -1,6 +1,26 @@
-pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
-plugins { id("com.facebook.react.settings") }
-extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
-rootProject.name = 'VaultApp'
+pluginManagement { 
+    includeBuild("../node_modules/@react-native/gradle-plugin") 
+}
+
+plugins { 
+    id("com.facebook.react.settings") 
+}
+
+extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> 
+    ex.autolinkLibrariesFromCommand() 
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            url "$rootDir/../node_modules/@notifee/react-native/android/libs"
+        }
+    }
+}
+
+rootProject.name = 'SpendSense'
 include ':app'
 includeBuild('../node_modules/@react-native/gradle-plugin')

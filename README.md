@@ -1,97 +1,144 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# VaultApp - Personal Finance Tracker
 
-# Getting Started
+A React Native CLI app for tracking income, expenses, investments, and EMI payments with AI-powered transaction parsing.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## Tech Stack
 
-## Step 1: Start Metro
+- React Native CLI (TypeScript)
+- Supabase (Authentication & Database)
+- React Navigation v6 (Bottom Tab Navigator)
+- AsyncStorage (Auth token persistence)
+- react-native-vector-icons (MaterialCommunityIcons)
+- react-native-toast-message (Notifications)
+- OpenAI GPT-4o-mini / Gemini 1.5 Flash (AI parsing)
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+## Project Structure
 
-To start the Metro dev server, run the following command from the root of your React Native project:
-
-```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+```
+VaultApp/
+├── src/
+│   ├── components/        # Reusable components (empty for now)
+│   ├── hooks/            # Custom hooks (empty for now)
+│   ├── lib/
+│   │   ├── aiParser.ts   # AI transaction parsing logic
+│   │   ├── config.ts     # API keys (gitignored)
+│   │   ├── db.ts         # Supabase database functions
+│   │   └── supabase.ts   # Supabase client setup
+│   ├── navigation/
+│   │   └── BottomTabNavigator.tsx
+│   ├── screens/
+│   │   ├── Add.tsx           # Add transaction (AI + Manual modes)
+│   │   ├── Dashboard.tsx     # Overview with stats
+│   │   ├── LoginScreen.tsx   # Authentication
+│   │   ├── Settings.tsx      # User settings & logout
+│   │   ├── SignupScreen.tsx  # User registration
+│   │   └── Transactions.tsx  # Transaction list with filters
+│   └── types/
+│       └── index.ts      # TypeScript types
+├── supabase-setup.sql    # Database schema & RLS policies
+└── App.tsx              # Root component
 ```
 
-## Step 2: Build and run your app
+## Setup Instructions
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+### 1. Install Dependencies
 
-### Android
-
-```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+```bash
+npm install
 ```
 
-### iOS
+### 2. Configure Supabase
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+1. Create a Supabase project at https://supabase.com
+2. Run the SQL in `supabase-setup.sql` in your Supabase SQL Editor
+3. Update `src/lib/supabase.ts` with your Supabase URL and Anon Key
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+### 3. Configure AI Provider
 
-```sh
-bundle install
+1. Copy `src/lib/config.ts` and add your API key:
+   - For OpenAI: Get key from https://platform.openai.com/api-keys
+   - For Gemini: Get key from https://aistudio.google.com/app/apikey
+2. Choose your provider in `config.ts` (default: Gemini)
+
+### 4. Run the App
+
+#### iOS
+```bash
+npx react-native run-ios
 ```
 
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
+#### Android
+```bash
+npx react-native run-android
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+## Features
 
-```sh
-# Using npm
-npm run ios
+### Authentication
+- Email/password signup and login
+- Session persistence with AsyncStorage
+- Secure logout
 
-# OR using Yarn
-yarn ios
-```
+### Dashboard
+- Net balance calculation
+- Income, Expense, Investment, and EMI totals
+- Recent transactions (last 5)
+- Personalized greeting with date
+- Pull to refresh
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+### Add Transaction
+- **AI Mode**: Natural language parsing (e.g., "200 rs petrol")
+- **Manual Mode**: Form-based entry
+- Transaction types: Income, Expense, Investment, EMI
+- Category tagging
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+### Transactions
+- Filterable list (All, Income, Expense, Investment, EMI)
+- Long press to delete
+- Pull to refresh
+- Empty state handling
 
-## Step 3: Modify your app
+### Settings
+- Display user email
+- Sign out functionality
+- App version info
 
-Now that you have successfully run the app, let's make changes!
+## Design System
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+### Colors
+- Background: `#0a0a0f`
+- Card background: `#1a1a26`
+- Border: `#2a2a3d`
+- Accent (purple): `#7c6af7`
+- Income (green): `#10b981`
+- Expense (red): `#ef4444`
+- Investment (purple): `#7c6af7`
+- EMI (amber): `#f59e0b`
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+### Currency Format
+All amounts use Indian locale formatting: ₹1,00,000
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+## Database Schema
 
-## Congratulations! :tada:
+### transactions table
+- `id`: uuid (primary key)
+- `user_id`: uuid (foreign key to auth.users)
+- `amount`: numeric
+- `type`: text (income|expense|investment|emi)
+- `note`: text
+- `category`: text
+- `created_at`: timestamptz
 
-You've successfully run and modified your React Native App. :partying_face:
+### Row Level Security
+- Users can only access their own transactions
+- Full CRUD permissions for own data
 
-### Now what?
+## Security Notes
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
+- `src/lib/config.ts` is gitignored to protect API keys
+- Never commit API keys to version control
+- RLS policies ensure data isolation between users
 
-# Troubleshooting
+## License
 
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+MIT
