@@ -8,13 +8,13 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { getBankAccounts, addBankAccount, updateBankAccount, deleteBankAccount } from '../lib/bankDb';
-import { getTransactions } from '../lib/db';
-import { BankAccount, Transaction } from '../types';
+import { BankAccount } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../components';
 import { getBankColor, getBankSuggestions } from '../constants/bankLogos';
@@ -22,8 +22,8 @@ import { getBankColor, getBankSuggestions } from '../constants/bankLogos';
 export default function BanksScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [banks, setBanks] = useState<BankAccount[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingBank, setEditingBank] = useState<BankAccount | null>(null);
 
@@ -32,6 +32,7 @@ export default function BanksScreen() {
   const [accountLast4, setAccountLast4] = useState('');
   const [accountType, setAccountType] = useState<'savings' | 'current' | 'credit_card' | 'loan'>('savings');
   const [startingBalance, setStartingBalance] = useState('');
+  const [currentBalance, setCurrentBalance] = useState('');
   const [creditLimit, setCreditLimit] = useState('');
   const [loanTotal, setLoanTotal] = useState('');
   const [saving, setSaving] = useState(false);
@@ -53,12 +54,8 @@ export default function BanksScreen() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [banksData, transactionsData] = await Promise.all([
-        getBankAccounts(),
-        getTransactions(),
-      ]);
+      const banksData = await getBankAccounts();
       setBanks(banksData);
-      setTransactions(transactionsData);
     } catch (error) {
       console.error('Error loading data:', error);
       Toast.show({
@@ -71,42 +68,31 @@ export default function BanksScreen() {
     }
   };
 
+  const onRefresh = async () => {
+    try {
+      setRefreshing(true);
+      const banksData = await getBankAccounts();
+      setBanks(banksData);
+      Toast.show({
+        type: 'success',
+        text1: 'Refreshed',
+        text2: 'Bank balances updated',
+      });
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to refresh',
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const calculateCurrentBalance = (bank: BankAccount): number => {
-    // Get all transactions for this bank
-    const bankTxns = transactions.filter(t => {
-      return t.note.includes(`••${bank.account_last4}`);
-    });
-
-    const totalSpent = bankTxns
-      .filter(t => t.type === 'expense' ||
-        (t.type === 'transfer' && t.note.includes(`••${bank.account_last4} →`)))
-      .reduce((sum, t) => sum + Number(t.amount), 0);
-
-    const totalReceived = bankTxns
-      .filter(t => t.type === 'income' ||
-        (t.type === 'transfer' && t.note.includes(`→ ${bank.bank_name} ••${bank.account_last4}`)))
-      .reduce((sum, t) => sum + Number(t.amount), 0);
-
-    const totalEMI = bankTxns
-      .filter(t => t.type === 'emi')
-      .reduce((sum, t) => sum + Number(t.amount), 0);
-
-    if (bank.account_type === 'savings' || bank.account_type === 'current') {
-      return bank.starting_balance + totalReceived - totalSpent;
-    }
-
-    if (bank.account_type === 'credit_card') {
-      // Available credit = limit - spent + payments received
-      const used = totalSpent - totalReceived;
-      return bank.credit_limit - used;
-    }
-
-    if (bank.account_type === 'loan') {
-      // Remaining loan = total loan - EMI paid
-      return bank.loan_total - totalEMI;
-    }
-
-    return bank.starting_balance;
+    // Use the balance field from the database which is updated by background tasks
+    return bank.balance || bank.starting_balance;
   };
 
 
@@ -134,6 +120,7 @@ export default function BanksScreen() {
     setAccountLast4(bank.account_last4);
     setAccountType(bank.account_type || 'savings');
     setStartingBalance(bank.starting_balance.toString());
+    setCurrentBalance((bank.balance || bank.starting_balance).toString());
     setCreditLimit(bank.credit_limit?.toString() || '0');
     setLoanTotal(bank.loan_total?.toString() || '0');
     setShowAddModal(true);
@@ -176,6 +163,7 @@ export default function BanksScreen() {
     setAccountLast4('');
     setAccountType('savings');
     setStartingBalance('');
+    setCurrentBalance('');
     setCreditLimit('');
     setLoanTotal('');
     setSuggestions([]);
@@ -229,6 +217,16 @@ export default function BanksScreen() {
       return;
     }
 
+    const current = parseFloat(currentBalance || '0');
+    if (editingBank && isNaN(current)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Please enter a valid current balance',
+      });
+      return;
+    }
+
     const limit = parseFloat(creditLimit || '0');
     if (accountType === 'credit_card' && (isNaN(limit) || limit <= 0)) {
       Toast.show({
@@ -257,6 +255,7 @@ export default function BanksScreen() {
           account_last4: accountLast4.trim(),
           account_type: accountType,
           starting_balance: balance,
+          balance: current,
           credit_limit: limit,
           loan_total: loan,
           upi_ids: [],
@@ -395,6 +394,14 @@ export default function BanksScreen() {
         renderItem={renderBankCard}
         keyExtractor={item => item.id}
         contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.accent]}
+            tintColor={colors.accent}
+          />
+        }
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="bank-off" size={64} color={colors.border} />
@@ -525,33 +532,83 @@ export default function BanksScreen() {
               />
 
               {(accountType === 'savings' || accountType === 'current') && (
-                <AppInput
-                  label="Starting Balance *"
-                  placeholder="e.g. 10000"
-                  value={startingBalance}
-                  onChangeText={setStartingBalance}
-                  keyboardType="numeric"
-                />
+                <>
+                  {!editingBank && (
+                    <AppInput
+                      label="Starting Balance *"
+                      placeholder="e.g. 10000"
+                      value={startingBalance}
+                      onChangeText={setStartingBalance}
+                      keyboardType="numeric"
+                    />
+                  )}
+                  {editingBank && (
+                    <>
+                      <AppInput
+                        label="Current Balance *"
+                        placeholder="e.g. 10000"
+                        value={currentBalance}
+                        onChangeText={setCurrentBalance}
+                        keyboardType="numeric"
+                      />
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+                        Sync this with your actual bank balance
+                      </Text>
+                    </>
+                  )}
+                </>
               )}
 
               {accountType === 'credit_card' && (
-                <AppInput
-                  label="Credit Limit *"
-                  placeholder="e.g. 50000"
-                  value={creditLimit}
-                  onChangeText={setCreditLimit}
-                  keyboardType="numeric"
-                />
+                <>
+                  <AppInput
+                    label="Credit Limit *"
+                    placeholder="e.g. 50000"
+                    value={creditLimit}
+                    onChangeText={setCreditLimit}
+                    keyboardType="numeric"
+                  />
+                  {editingBank && (
+                    <>
+                      <AppInput
+                        label="Current Balance *"
+                        placeholder="e.g. 5000"
+                        value={currentBalance}
+                        onChangeText={setCurrentBalance}
+                        keyboardType="numeric"
+                      />
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+                        Current outstanding amount on your card
+                      </Text>
+                    </>
+                  )}
+                </>
               )}
 
               {accountType === 'loan' && (
-                <AppInput
-                  label="Total Loan Amount *"
-                  placeholder="e.g. 500000"
-                  value={loanTotal}
-                  onChangeText={setLoanTotal}
-                  keyboardType="numeric"
-                />
+                <>
+                  <AppInput
+                    label="Total Loan Amount *"
+                    placeholder="e.g. 500000"
+                    value={loanTotal}
+                    onChangeText={setLoanTotal}
+                    keyboardType="numeric"
+                  />
+                  {editingBank && (
+                    <>
+                      <AppInput
+                        label="Current Outstanding *"
+                        placeholder="e.g. 450000"
+                        value={currentBalance}
+                        onChangeText={setCurrentBalance}
+                        keyboardType="numeric"
+                      />
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+                        Remaining loan amount to be paid
+                      </Text>
+                    </>
+                  )}
+                </>
               )}
 
               <AppButton

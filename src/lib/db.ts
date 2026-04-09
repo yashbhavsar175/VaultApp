@@ -59,3 +59,38 @@ export async function deleteTransaction(id: string): Promise<void> {
     throw new Error(error.message);
   }
 }
+
+export async function updateTransaction(
+  id: string,
+  updates: Partial<Omit<Transaction, 'id' | 'user_id' | 'created_at'>>
+): Promise<Transaction> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data;
+}
+
+export async function getUniqueCategories(userId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('category')
+    .eq('user_id', userId)
+    .not('category', 'is', null)
+    .order('category');
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  // Extract unique categories
+  const categories = data?.map(item => item.category).filter(Boolean) || [];
+  return Array.from(new Set(categories));
+}

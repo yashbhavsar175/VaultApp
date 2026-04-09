@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,10 +12,11 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
-import { getTransactions, deleteTransaction } from '../lib/db';
+import { getTransactions, deleteTransaction, updateTransaction } from '../lib/db';
 import { Transaction, TransactionType } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader } from '../components';
+import EditTransactionModal from '../components/ui/EditTransactionModal';
 
 type FilterType = 'all' | TransactionType;
 
@@ -29,6 +30,13 @@ export default function Transactions() {
   // Select mode state
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Edit modal state
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+
+  // Double-tap tracking
+  const lastTapRef = useRef<{ id: string; time: number } | null>(null);
 
   const loadTransactions = async () => {
     try {
@@ -169,6 +177,58 @@ export default function Transactions() {
     );
   };
 
+  // Edit modal functions
+  const openEditModal = (transaction: Transaction) => {
+    setEditingTransaction(transaction);
+    setIsEditModalVisible(true);
+  };
+
+  const closeEditModal = () => {
+    setIsEditModalVisible(false);
+    setEditingTransaction(null);
+  };
+
+  const handleSaveEdit = async (id: string, updates: Partial<Transaction>) => {
+    try {
+      await updateTransaction(id, updates);
+      
+      Toast.show({
+        type: 'success',
+        text1: 'Updated',
+        text2: 'Transaction updated successfully',
+      });
+      
+      closeEditModal();
+      loadTransactions();
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to update transaction',
+      });
+    }
+  };
+
+  // Double-tap handler
+  const handleTransactionPress = (item: Transaction) => {
+    if (selectMode) {
+      toggleSelection(item.id);
+      return;
+    }
+
+    const now = Date.now();
+    const lastTap = lastTapRef.current;
+
+    if (lastTap && lastTap.id === item.id && now - lastTap.time < 300) {
+      // Double tap detected
+      openEditModal(item);
+      lastTapRef.current = null;
+    } else {
+      // Single tap
+      lastTapRef.current = { id: item.id, time: now };
+    }
+  };
+
   const formatAmount = (amount: number) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -234,11 +294,7 @@ export default function Transactions() {
     
     return (
       <TouchableOpacity
-        onPress={() => {
-          if (selectMode) {
-            toggleSelection(item.id);
-          }
-        }}
+        onPress={() => handleTransactionPress(item)}
         onLongPress={() => {
           if (!selectMode) {
             enterSelectMode(item.id);
@@ -467,6 +523,13 @@ export default function Transactions() {
           </TouchableOpacity>
         </View>
       )}
+
+      <EditTransactionModal
+        visible={isEditModalVisible}
+        transaction={editingTransaction}
+        onClose={closeEditModal}
+        onSave={handleSaveEdit}
+      />
     </ScreenWrapper>
   );
 }

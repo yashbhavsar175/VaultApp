@@ -15,6 +15,9 @@ export const signInWithGoogle = async () => {
     // Check if device supports Google Play Services
     await GoogleSignin.hasPlayServices();
     
+    // Add a small delay to ensure activity is ready
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
     // Sign in with Google
     const userInfo = await GoogleSignin.signIn();
     
@@ -70,6 +73,17 @@ export const signInWithGoogle = async () => {
     return { data, error: null };
   } catch (error) {
     console.error('Google Sign-In error:', error);
+    
+    // Handle specific error cases
+    if (error instanceof Error) {
+      if (error.message.includes('Current activity is null')) {
+        return { 
+          data: null, 
+          error: new Error('Please wait a moment and try again. The app is still initializing.')
+        };
+      }
+    }
+    
     return { data: null, error };
   }
 };

@@ -31,7 +31,7 @@ import {
   getPayments,
 } from '../lib/peopleLedger';
 import { PeopleLedger, PeopleLedgerPayment } from '../types';
-import { scheduleLedgerNotifications, requestNotificationPermission } from '../lib/notifications';
+import { scheduleLedgerNotifications } from '../lib/notifications';
 
 type FilterType = 'all' | 'lent' | 'settled';
 
@@ -50,7 +50,7 @@ export default function PeopleScreen() {
 
   useEffect(() => {
     loadData();
-    requestNotificationPermission();
+    // Don't request notification permission here - user should enable it from Settings
   }, []);
 
   useEffect(() => {

@@ -17,6 +17,7 @@ export interface BankAccount {
   account_last4: string;
   account_type: 'savings' | 'current' | 'credit_card' | 'loan';
   starting_balance: number;
+  balance: number;
   credit_limit: number;
   loan_total: number;
   upi_ids: string[];

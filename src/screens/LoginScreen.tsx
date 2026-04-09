@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import { supabase } from '../lib/supabase';
-import { signInWithGoogle, configureGoogleSignIn } from '../lib/googleAuth';
+import { signInWithGoogle } from '../lib/googleAuth';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput } from '../components';
 
@@ -18,11 +18,6 @@ export default function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    // Configure Google Sign-In on mount
-    configureGoogleSignIn();
-  }, []);
 
   const handleLogin = async () => {
     if (!email || !password) {

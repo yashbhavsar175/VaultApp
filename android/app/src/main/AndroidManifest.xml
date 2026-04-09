@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
       android:name=".MainApplication"
@@ -42,26 +43,22 @@
         </intent-filter>
       </receiver>
 
+      <!-- Boot Receiver - Restart services after device reboot -->
+      <receiver
+        android:name=".BootReceiver"
+        android:enabled="true"
+        android:exported="true"
+        android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+        <intent-filter>
+          <action android:name="android.intent.action.BOOT_COMPLETED" />
+          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+          <category android:name="android.intent.category.DEFAULT" />
+        </intent-filter>
+      </receiver>
+
       <!-- Headless JS Service -->
       <service
         android:name=".SmsProcessorService"
-        android:enabled="true"
-        android:exported="false" />
-
-      <!-- Notification Listener Service -->
-      <service
-        android:name=".NotificationListener"
-        android:label="Financial Transaction Tracker"
-        android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-        android:exported="true">
-        <intent-filter>
-          <action android:name="android.service.notification.NotificationListenerService" />
-        </intent-filter>
-      </service>
-
-      <!-- Notification Processor Headless Service -->
-      <service
-        android:name=".NotificationProcessorService"
         android:enabled="true"
         android:exported="false" />
     </application>

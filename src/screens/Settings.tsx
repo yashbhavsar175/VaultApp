@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, Switch } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, Switch, Linking, AppState, AppStateStatus } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
@@ -29,6 +29,7 @@ export default function Settings() {
   const [smsTrackingEnabled, setSmsTrackingEnabled] = useState(false);
 
   useEffect(() => {
+    console.log('🔧 [Settings] Component mounted');
     loadUserInfo();
     checkSmsStatus();
   }, []);

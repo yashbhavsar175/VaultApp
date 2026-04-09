@@ -20,7 +20,7 @@ export async function getBankAccounts(): Promise<BankAccount[]> {
   }
 }
 
-export async function addBankAccount(bank: Omit<BankAccount, 'id' | 'user_id' | 'created_at'>): Promise<void> {
+export async function addBankAccount(bank: Omit<BankAccount, 'id' | 'user_id' | 'created_at' | 'balance'>): Promise<void> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user found');
@@ -33,6 +33,7 @@ export async function addBankAccount(bank: Omit<BankAccount, 'id' | 'user_id' | 
         account_last4: bank.account_last4,
         account_type: bank.account_type || 'savings',
         starting_balance: bank.starting_balance,
+        balance: bank.starting_balance, // Initialize balance with starting_balance
         credit_limit: bank.credit_limit || 0,
         loan_total: bank.loan_total || 0,
         upi_ids: bank.upi_ids,

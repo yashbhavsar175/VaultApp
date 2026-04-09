@@ -29,11 +29,14 @@ interface BankAccount {
 const ALLOWED_PACKAGES = [
   'com.google.android.apps.nbu.paisa.user', // Google Pay
   'com.phonepe.app', // PhonePe
-  'tech.ula', // Slice
+  'tech.ula', // Slice (legacy)
+  'indwin.c3.shareapp', // Slice (actual package name)
   'com.dreamplug.androidapp', // CRED
   'in.amazon.mShop.android.shopping', // Amazon Pay
   'net.one97.paytm', // Paytm
   'com.whatsapp', // WhatsApp (for UPI)
+  'money.super.app', // Super.money
+  'com.spendsense', // Test notifications from our own app
 ];
 
 // Package name to sender ID mapping
@@ -41,10 +44,13 @@ const PACKAGE_TO_SENDER: { [key: string]: string } = {
   'com.google.android.apps.nbu.paisa.user': 'GPAYID',
   'com.phonepe.app': 'PHONEPE',
   'tech.ula': 'SLICE',
+  'indwin.c3.shareapp': 'SLICE',
   'com.dreamplug.androidapp': 'CRED',
   'in.amazon.mShop.android.shopping': 'AMAZONP',
   'net.one97.paytm': 'PAYTMB',
   'com.whatsapp': 'WHATSAP',
+  'money.super.app': 'SUPERM',
+  'com.spendsense': 'TEST', // Test notifications
 };
 
 // Known bank and UPI sender IDs
@@ -55,7 +61,7 @@ const BANK_SENDERS = [
 
 const UPI_SENDERS = [
   'PAYTMB', 'GPAYID', 'PHONEPE', 'BHARTP', 'AMAZONP', 'WHATSAP',
-  'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED'
+  'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED', 'SUPERM', 'TEST'
 ];
 
 /**
@@ -131,10 +137,13 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
     }
 
     // Determine transaction type
-    const isDebit = /debited|deducted|paid|spent|withdrawn|purchase|sent|dr\s/i.test(body);
-    const isCredit = /credited|received|deposited|refund|added|cr\s/i.test(body);
+    // Check for "paid you" pattern first (indicates credit/income)
+    const isPaidToYou = /paid\s+(?:to\s+)?you/i.test(body);
+    const isCredit = isPaidToYou || /credited|received|deposited|refund|added|cr\s/i.test(body);
+    const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\s/i.test(body) || 
+                    (!isCredit && /paid/i.test(body)); // "paid" alone is debit only if not credit
     
-    const type: 'debit' | 'credit' = isDebit ? 'debit' : isCredit ? 'credit' : 'debit';
+    const type: 'debit' | 'credit' = isCredit ? 'credit' : isDebit ? 'debit' : 'debit';
 
     // Extract reference number
     const refPatterns = [
@@ -153,9 +162,10 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
 
     // Extract merchant/payee name
     const merchantPatterns = [
+      /(?:at|made at)\s+([A-Za-z0-9\s&]+?)(?:\s+using|\s+on|\.|$)/i, // "at Amazon" or "made at Swiggy"
       /(?:to)\s+([A-Z][A-Za-z\s&]+?)(?:\s*\(UPI Ref)/i,
-      /(?:to|at|from|paid to|sent to)\s+([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\.|$)/i,
-      /(?:paid to|sent to|received from)\s+([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\.|$)/i,
+      /(?:to|from|paid to|sent to)\s+([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+to A\/c|\.|$)/i,
+      /(?:paid to|sent to|received from)\s+([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\s+to A\/c|\.|$)/i,
     ];
 
     let merchant: string | undefined;
@@ -193,30 +203,93 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
 
 /**
  * Check for duplicate transactions in the last 5 minutes
+ * Prevents false positives by checking:
+ * 1. Transaction type (debit vs credit)
+ * 2. Reference number (UTR) if available
+ * 3. Amount and time window as fallback
+ * 4. SMS source (to allow SMS + Notification for same transaction)
  */
 async function checkForDuplicates(
   userId: string,
   amount: number,
-  timestamp: number
+  timestamp: number,
+  type: 'expense' | 'income', // Changed to match DB type
+  referenceNumber?: string,
+  smsSource?: 'bank' | 'upi'
 ): Promise<any | null> {
   try {
     const fiveMinutesAgo = new Date(timestamp - 5 * 60 * 1000).toISOString();
     
-    const { data, error } = await supabase
+    // Build the base query
+    let query = supabase
       .from('transactions')
       .select('*')
       .eq('user_id', userId)
       .eq('amount', amount)
+      .eq('type', type) // Must match transaction type
       .gte('created_at', fiveMinutesAgo)
-      .order('created_at', { ascending: false })
-      .limit(1);
+      .order('created_at', { ascending: false });
+
+    // If we have a reference number, use it for precise matching
+    if (referenceNumber) {
+      query = query.eq('reference_number', referenceNumber);
+    }
+
+    const { data, error } = await query.limit(1);
 
     if (error) {
       console.error('Error checking duplicates:', error);
       return null;
     }
 
-    return data && data.length > 0 ? data[0] : null;
+    // If we found a match with reference number, check if it's from the same source
+    if (data && data.length > 0) {
+      const existingTxn = data[0];
+      
+      // If both have sms_source and they're different, this IS a duplicate
+      // (e.g., Slice SMS 'bank' + Slice Notification 'upi' for the same transaction)
+      // Same reference number + amount + type + time = same transaction from different sources
+      if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+        console.log(`Different sources detected: ${smsSource} vs ${existingTxn.sms_source} - IS a duplicate (same transaction)`);
+        return existingTxn; // Return as duplicate
+      }
+      
+      return existingTxn;
+    }
+
+    // If no reference number was provided, check for duplicates without it
+    // This handles cases where SMS doesn't contain UTR
+    if (!referenceNumber) {
+      const { data: fallbackData, error: fallbackError } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('amount', amount)
+        .eq('type', type)
+        .gte('created_at', fiveMinutesAgo)
+        .is('reference_number', null) // Only match transactions without reference numbers
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (fallbackError) {
+        console.error('Error in fallback duplicate check:', fallbackError);
+        return null;
+      }
+
+      if (fallbackData && fallbackData.length > 0) {
+        const existingTxn = fallbackData[0];
+        
+        // Same source check for fallback - different sources = duplicate
+        if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+          console.log(`Different sources detected in fallback: ${smsSource} vs ${existingTxn.sms_source} - IS a duplicate`);
+          return existingTxn; // Return as duplicate
+        }
+        
+        return existingTxn;
+      }
+    }
+
+    return null;
   } catch (error) {
     console.error('Error in checkForDuplicates:', error);
     return null;
@@ -266,7 +339,8 @@ async function checkForTransferByUTR(
   amount: number
 ): Promise<any | null> {
   try {
-    const oppositeType = currentType === 'debit' ? 'credit' : 'debit';
+    // Map credit/debit to income/expense (DB column values)
+    const oppositeType = currentType === 'debit' ? 'income' : 'expense';
     
     const { data, error } = await supabase
       .from('transactions')
@@ -302,7 +376,8 @@ async function checkForPendingTransfer(
 ): Promise<any | null> {
   try {
     const threeMinutesAgo = new Date(timestamp - 3 * 60 * 1000).toISOString();
-    const oppositeType = currentType === 'debit' ? 'credit' : 'debit';
+    // Map credit/debit to income/expense (DB column values)
+    const oppositeType = currentType === 'debit' ? 'income' : 'expense';
     
     const { data, error } = await supabase
       .from('transactions')
@@ -348,37 +423,50 @@ async function convertToTransfer(
   toAccountId: string
 ): Promise<boolean> {
   try {
-    console.log('Converting to transfer:', { debitTxn: debitTxn.id, creditTxn: creditTxn.id });
+    console.log('Converting to transfer:', { 
+      debitTxn: debitTxn?.id || 'no debit txn', 
+      creditTxn: creditTxn?.id || 'no credit txn' 
+    });
 
-    const { error: deleteError } = await supabase
-      .from('transactions')
-      .delete()
-      .eq('id', creditTxn.id);
+    // Only delete the credit transaction if it exists and has a valid ID
+    if (creditTxn && creditTxn.id) {
+      const { error: deleteError } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', creditTxn.id);
 
-    if (deleteError) {
-      console.error('Error deleting credit transaction:', deleteError);
-      return false;
+      if (deleteError) {
+        console.error('Error deleting credit transaction:', deleteError);
+        return false;
+      }
     }
 
-    const { error: updateError } = await supabase
-      .from('transactions')
-      .update({
-        type: 'transfer',
-        from_account_id: fromAccountId,
-        to_account_id: toAccountId,
-        is_transfer_pending: false,
-        note: `Transfer from ${debitTxn.account_last4 || 'account'} to ${creditTxn.account_last4 || 'account'}`,
-        category: 'transfer',
-      })
-      .eq('id', debitTxn.id);
+    // Only update the debit transaction if it exists and has a valid ID
+    if (debitTxn && debitTxn.id) {
+      const { error: updateError } = await supabase
+        .from('transactions')
+        .update({
+          type: 'transfer',
+          from_account_id: fromAccountId,
+          to_account_id: toAccountId,
+          is_transfer_pending: false,
+          note: `Transfer from ${debitTxn.account_last4 || 'account'} to ${creditTxn?.account_last4 || 'account'}`,
+          category: 'transfer',
+        })
+        .eq('id', debitTxn.id);
 
-    if (updateError) {
-      console.error('Error updating to transfer:', updateError);
-      return false;
+      if (updateError) {
+        console.error('Error updating to transfer:', updateError);
+        return false;
+      }
+
+      console.log('Successfully converted to transfer');
+      return true;
     }
 
-    console.log('Successfully converted to transfer');
-    return true;
+    // If neither transaction has an ID, we can't convert
+    console.log('Cannot convert to transfer: no valid transaction IDs');
+    return false;
   } catch (error) {
     console.error('Error in convertToTransfer:', error);
     return false;
@@ -388,33 +476,74 @@ async function convertToTransfer(
 /**
  * Main Notification Processor Task
  */
-export default async (taskData: NotificationData) => {
+export default async (taskData: any) => {
+  // CRITICAL: First line for debugging - confirms bridge is working
+  console.log('🔔 NOTIFICATION WOKE UP:', taskData);
   console.log('Notification Processor Task Started', taskData);
 
   try {
+    // Parse the incoming notification string
+    const notif = JSON.parse(taskData.notification);
+    console.log('Parsed notification object:', notif);
+
     // Filter: Only process allowed packages
-    if (!ALLOWED_PACKAGES.includes(taskData.packageName)) {
-      console.log('Notification from non-financial app, ignoring:', taskData.packageName);
+    if (!ALLOWED_PACKAGES.includes(notif.app)) {
+      console.log('Notification from non-financial app, ignoring:', notif.app);
       return;
     }
 
-    console.log('Processing notification from allowed app:', taskData.packageName);
+    console.log('Processing notification from allowed app:', notif.app);
 
     // Combine title and text into a single string
-    const combinedText = `${taskData.title} ${taskData.text}`.trim();
+    const combinedText = `${notif.title || ''} ${notif.text || ''}`.trim();
+    
+    // STRICT GUARD CLAUSE FOR WHATSAPP
+    // WhatsApp notifications include normal chats which can contain numbers or money-related words
+    // Only process actual WhatsApp Pay notifications with strong UPI indicators
+    if (notif.app === 'com.whatsapp') {
+      const textLower = combinedText.toLowerCase();
+      
+      // WhatsApp Pay notifications MUST contain UPI-specific keywords
+      // Normal chats mentioning money should be ignored
+      const hasUPIReference = textLower.includes('upi ref') || 
+                             textLower.includes('upi id') || 
+                             textLower.includes('transaction id') ||
+                             textLower.includes('utr');
+      
+      const hasPaymentKeyword = textLower.includes('payment') || 
+                               textLower.includes('₹') || 
+                               textLower.includes('rs.');
+      
+      // Only proceed if it has BOTH UPI reference AND payment indicators
+      if (!hasUPIReference || !hasPaymentKeyword) {
+        console.log('⚠️ Ignoring WhatsApp notification - not a valid payment (normal chat detected)');
+        console.log('Text:', combinedText);
+        return;
+      }
+      
+      console.log('✅ WhatsApp notification passed strict validation - processing as payment');
+    }
     
     // Map package name to sender ID
-    const sender = PACKAGE_TO_SENDER[taskData.packageName] || 'UNKNOWN';
+    const sender = PACKAGE_TO_SENDER[notif.app] || 'UNKNOWN';
 
     // Parse the notification using the same logic as SMS
     const parsed = parseNotification(combinedText, sender);
     
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
+      console.log('Combined text was:', combinedText);
+      console.log('Sender was:', sender);
       return;
     }
 
-    console.log('Parsed Transaction from Notification:', parsed);
+    console.log('✅ Parsed Transaction from Notification:', {
+      amount: parsed.amount,
+      type: parsed.type,
+      merchant: parsed.merchant,
+      source: parsed.source,
+      accountLast4: parsed.accountLast4,
+    });
 
     // Get current user session
     let userId: string | null = null;
@@ -490,46 +619,83 @@ export default async (taskData: NotificationData) => {
           const fromAccountId = parsed.type === 'debit' ? currentAccount.id : matchingAccount.id;
           const toAccountId = parsed.type === 'credit' ? currentAccount.id : matchingAccount.id;
 
-          if (matchingTxn.id) {
-            const success = await convertToTransfer(
-              matchingTxn,
-              { id: null, account_last4: parsed.accountLast4 },
-              fromAccountId,
-              toAccountId
-            );
+          // First, reverse the balance update from the first transaction
+          const firstTxnAccountId = matchingAccount.id;
+          const firstTxnType = parsed.type === 'debit' ? 'credit' : 'debit';
+          
+          const { data: firstBankData } = await supabase
+            .from('bank_accounts')
+            .select('balance')
+            .eq('id', firstTxnAccountId)
+            .single();
 
-            if (success) {
-              console.log('Successfully converted to transfer by UTR');
-              return;
-            }
+          if (firstBankData) {
+            // Reverse the first transaction's balance update
+            const currentBal = Number(firstBankData.balance) || 0;
+            const reversedBalance = firstTxnType === 'debit' 
+              ? currentBal + parsed.amount 
+              : currentBal - parsed.amount;
+            
+            await supabase
+              .from('bank_accounts')
+              .update({ balance: reversedBalance })
+              .eq('id', firstTxnAccountId);
+            console.log(`Reversed first transaction balance: ${currentBal} -> ${reversedBalance}`);
+          }
+
+          // Now apply the correct transfer balance updates
+          // Debit account (from)
+          const { data: fromBankData } = await supabase
+            .from('bank_accounts')
+            .select('balance')
+            .eq('id', fromAccountId)
+            .single();
+
+          if (fromBankData) {
+            const fromBalance = Number(fromBankData.balance) || 0;
+            const newFromBalance = fromBalance - parsed.amount;
+            await supabase
+              .from('bank_accounts')
+              .update({ balance: newFromBalance })
+              .eq('id', fromAccountId);
+            console.log(`From account balance updated: ${fromBalance} -> ${newFromBalance}`);
+          }
+
+          // Credit account (to)
+          const { data: toBankData } = await supabase
+            .from('bank_accounts')
+            .select('balance')
+            .eq('id', toAccountId)
+            .single();
+
+          if (toBankData) {
+            const toBalance = Number(toBankData.balance) || 0;
+            const newToBalance = toBalance + parsed.amount;
+            await supabase
+              .from('bank_accounts')
+              .update({ balance: newToBalance })
+              .eq('id', toAccountId);
+            console.log(`To account balance updated: ${toBalance} -> ${newToBalance}`);
+          }
+
+          // Update the existing matching transaction to be a transfer
+          const { error: updateError } = await supabase
+            .from('transactions')
+            .update({
+              type: 'transfer',
+              from_account_id: fromAccountId,
+              to_account_id: toAccountId,
+              is_transfer_pending: false,
+              note: `Transfer from ${parsed.type === 'debit' ? parsed.accountLast4 : matchingTxn.account_last4} to ${parsed.type === 'credit' ? parsed.accountLast4 : matchingTxn.account_last4}`,
+              category: 'transfer',
+            })
+            .eq('id', matchingTxn.id);
+
+          if (updateError) {
+            console.error('Error updating to transfer:', updateError);
           } else {
-            const { error: insertError } = await supabase
-              .from('transactions')
-              .insert({
-                user_id: userId,
-                amount: parsed.amount,
-                type: 'transfer',
-                from_account_id: fromAccountId,
-                to_account_id: toAccountId,
-                account_last4: parsed.accountLast4,
-                note: `Transfer between accounts`,
-                category: 'transfer',
-                reference_number: parsed.reference,
-                balance: parsed.balance,
-                sms_source: parsed.source,
-                sms_sender: parsed.rawSender,
-                raw_sms: combinedText,
-                transaction_date: new Date(taskData.timestamp).toISOString(),
-                created_at: new Date().toISOString(),
-                is_transfer_pending: false,
-              });
-
-            if (insertError) {
-              console.error('Error inserting transfer:', insertError);
-            } else {
-              console.log('Transfer transaction created by UTR');
-              return;
-            }
+            console.log('Successfully converted to transfer by UTR');
+            return;
           }
         }
       }
@@ -541,7 +707,7 @@ export default async (taskData: NotificationData) => {
         userId,
         parsed.amount,
         parsed.type,
-        taskData.timestamp,
+        notif.time || Date.now(),
         userAccounts
       );
 
@@ -554,14 +720,119 @@ export default async (taskData: NotificationData) => {
           const fromAccountId = parsed.type === 'credit' ? pendingAccount.id : currentAccount.id;
           const toAccountId = parsed.type === 'credit' ? currentAccount.id : pendingAccount.id;
 
-          const success = await convertToTransfer(
-            pendingTransfer,
-            { id: null, account_last4: parsed.accountLast4 },
-            fromAccountId,
-            toAccountId
-          );
+          // First, reverse the balance update from the first transaction
+          const firstTxnAccountId = pendingAccount.id;
+          const firstTxnType = parsed.type === 'debit' ? 'credit' : 'debit';
+          
+          console.log(`Attempting to reverse first transaction for account ID: ${firstTxnAccountId}`);
+          
+          const { data: firstBankData, error: firstBankError } = await supabase
+            .from('bank_accounts')
+            .select('balance, bank_name, account_last4')
+            .eq('id', firstTxnAccountId)
+            .single();
 
-          if (success) {
+          if (firstBankError) {
+            console.error('Error fetching first bank data:', firstBankError);
+          }
+
+          if (firstBankData) {
+            const currentBal = Number(firstBankData.balance) || 0;
+            const reversedBalance = firstTxnType === 'debit' 
+              ? currentBal + parsed.amount 
+              : currentBal - parsed.amount;
+            
+            const { error: reverseError } = await supabase
+              .from('bank_accounts')
+              .update({ balance: reversedBalance })
+              .eq('id', firstTxnAccountId);
+            
+            if (reverseError) {
+              console.error('Error reversing balance:', reverseError);
+            } else {
+              console.log(`[${firstBankData.bank_name} ••${firstBankData.account_last4}] Reversed first transaction: ₹${currentBal} -> ₹${reversedBalance}`);
+            }
+          } else {
+            console.log('First bank data not found');
+          }
+
+          // Now apply the correct transfer balance updates
+          // Debit account (from)
+          console.log(`Fetching FROM account data for ID: ${fromAccountId}`);
+          
+          const { data: fromBankData, error: fromBankError } = await supabase
+            .from('bank_accounts')
+            .select('balance, bank_name, account_last4')
+            .eq('id', fromAccountId)
+            .single();
+
+          if (fromBankError) {
+            console.error('Error fetching FROM bank data:', fromBankError);
+          }
+
+          if (fromBankData) {
+            const fromBalance = Number(fromBankData.balance) || 0;
+            const newFromBalance = fromBalance - parsed.amount;
+            const { error: fromUpdateError } = await supabase
+              .from('bank_accounts')
+              .update({ balance: newFromBalance })
+              .eq('id', fromAccountId);
+            
+            if (fromUpdateError) {
+              console.error('Error updating FROM balance:', fromUpdateError);
+            } else {
+              console.log(`[${fromBankData.bank_name} ••${fromBankData.account_last4}] Transfer FROM: ₹${fromBalance} -> ₹${newFromBalance} (Debited ₹${parsed.amount})`);
+            }
+          } else {
+            console.log('FROM bank data not found');
+          }
+
+          // Credit account (to)
+          console.log(`Fetching TO account data for ID: ${toAccountId}`);
+          
+          const { data: toBankData, error: toBankError } = await supabase
+            .from('bank_accounts')
+            .select('balance, bank_name, account_last4')
+            .eq('id', toAccountId)
+            .single();
+
+          if (toBankError) {
+            console.error('Error fetching TO bank data:', toBankError);
+          }
+
+          if (toBankData) {
+            const toBalance = Number(toBankData.balance) || 0;
+            const newToBalance = toBalance + parsed.amount;
+            const { error: toUpdateError } = await supabase
+              .from('bank_accounts')
+              .update({ balance: newToBalance })
+              .eq('id', toAccountId);
+            
+            if (toUpdateError) {
+              console.error('Error updating TO balance:', toUpdateError);
+            } else {
+              console.log(`[${toBankData.bank_name} ••${toBankData.account_last4}] Transfer TO: ₹${toBalance} -> ₹${newToBalance} (Credited ₹${parsed.amount})`);
+            }
+          } else {
+            console.log('TO bank data not found');
+          }
+
+          // Update the existing pending transaction to be a transfer
+          const { error: updateError } = await supabase
+            .from('transactions')
+            .update({
+              type: 'transfer',
+              from_account_id: fromAccountId,
+              to_account_id: toAccountId,
+              is_transfer_pending: false,
+              note: `Transfer from ${parsed.type === 'credit' ? pendingTransfer.account_last4 : parsed.accountLast4} to ${parsed.type === 'credit' ? parsed.accountLast4 : pendingTransfer.account_last4}`,
+              category: 'transfer',
+            })
+            .eq('id', pendingTransfer.id);
+
+          if (updateError) {
+            console.error('Error updating to transfer:', updateError);
+          } else {
             console.log('Successfully converted pending transfer');
             return;
           }
@@ -569,8 +840,18 @@ export default async (taskData: NotificationData) => {
       }
     }
 
+    // Map debit/credit to expense/income BEFORE duplicate check
+    const transactionType = parsed.type === 'debit' ? 'expense' : 'income';
+
     // Check for duplicates
-    const duplicate = await checkForDuplicates(userId, parsed.amount, taskData.timestamp);
+    const duplicate = await checkForDuplicates(
+      userId, 
+      parsed.amount, 
+      notif.time || Date.now(),
+      transactionType, // Use converted type for duplicate check
+      parsed.reference,
+      parsed.source // Pass the source to check for different sources
+    );
 
     if (duplicate) {
       console.log('Duplicate transaction found, ignoring notification');
@@ -580,11 +861,14 @@ export default async (taskData: NotificationData) => {
     // Insert new transaction
     console.log('Inserting new transaction from notification');
 
+    // transactionType already defined above before duplicate check
+    const transactionCategory = parsed.type === 'debit' ? 'other' : 'income';
+
     const insertPayload: any = {
       user_id: userId,
       amount: parsed.amount,
-      type: parsed.type,
-      category: parsed.type === 'debit' ? 'other' : 'income',
+      type: transactionType, // Use 'expense' or 'income' instead of 'debit' or 'credit'
+      category: transactionCategory,
       note: parsed.merchant || 'Unknown',
       reference_number: parsed.reference,
       balance: parsed.balance,
@@ -619,7 +903,7 @@ export default async (taskData: NotificationData) => {
       if (currentAccount) {
         const { data: bankData, error: fetchError } = await supabase
           .from('bank_accounts')
-          .select('balance')
+          .select('balance, bank_name, account_last4')
           .eq('id', currentAccount.id)
           .single();
 
@@ -637,7 +921,7 @@ export default async (taskData: NotificationData) => {
           if (updateError) {
             console.error('Failed to update bank balance:', updateError);
           } else {
-            console.log(`Bank balance updated successfully to ${newBalance}`);
+            console.log(`[${bankData.bank_name} ••${bankData.account_last4}] Balance updated: ₹${currentBalance} -> ₹${newBalance} (${parsed.type === 'debit' ? 'Debited' : 'Credited'} ₹${parsed.amount})`);
           }
         }
       }
@@ -648,7 +932,7 @@ export default async (taskData: NotificationData) => {
           userId,
           parsed.amount,
           parsed.type,
-          taskData.timestamp,
+          notif.time || Date.now(),
           userAccounts
         );
 
