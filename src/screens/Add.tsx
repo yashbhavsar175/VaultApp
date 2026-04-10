@@ -16,13 +16,14 @@ import {
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
-import { addTransaction } from '../lib/db';
+import { addTransaction, getUniqueCategories } from '../lib/db';
 import { parseTransactionWithAI } from '../lib/aiParser';
 import { TransactionType, BankAccount } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppHeader } from '../components';
 import { getBankAccounts, updateBankAccount } from '../lib/bankDb';
 import { getBankColor } from '../constants/bankLogos';
+import { supabase } from '../lib/supabase';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 
 const TYPE_OPTIONS = [
@@ -98,31 +99,14 @@ export default function Add() {
 
   const loadSavedCategories = async () => {
     try {
-      const saved = await AsyncStorage.getItem('spendsense_categories');
-      if (saved) {
-        setSavedCategories(JSON.parse(saved));
-      }
-    } catch (error) {
-      console.error('Error loading saved categories:', error);
-    }
-  };
-
-  const saveCategoryToHistory = async (categoryName: string) => {
-    try {
-      const trimmed = categoryName.trim();
-      if (!trimmed) return;
-
-      const existing = await AsyncStorage.getItem('spendsense_categories');
-      const categories = existing ? JSON.parse(existing) : [];
-      
-      if (!categories.includes(trimmed)) {
-        categories.unshift(trimmed); // Add to front
-        if (categories.length > 20) categories.pop(); // Remove oldest
-        await AsyncStorage.setItem('spendsense_categories', JSON.stringify(categories));
+      // Load from database instead of AsyncStorage for consistency
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const categories = await getUniqueCategories(user.id);
         setSavedCategories(categories);
       }
     } catch (error) {
-      console.error('Error saving category:', error);
+      console.error('Error loading saved categories:', error);
     }
   };
 
@@ -136,13 +120,16 @@ export default function Add() {
       setCategorySuggestions(filtered);
       setShowSuggestions(filtered.length > 0);
     } else {
-      setShowSuggestions(false);
+      // Show all categories when field is empty
+      setCategorySuggestions(savedCategories.slice(0, 5));
+      setShowSuggestions(savedCategories.length > 0);
     }
   };
 
   const selectCategory = (cat: string) => {
     setCategory(cat);
     setShowSuggestions(false);
+    Keyboard.dismiss();
   };
 
   const getSelectedTypeOption = () => {
@@ -337,10 +324,8 @@ export default function Add() {
         category: category || (selectedType === 'lent' ? 'Unknown' : 'general'),
       });
 
-      // Save category to history
-      if (category.trim()) {
-        await saveCategoryToHistory(category);
-      }
+      // Reload categories to include the newly added one
+      await loadSavedCategories();
 
       // Update bank balance if bank is selected (not cash)
       if (selectedAccount !== 'cash') {
@@ -615,14 +600,26 @@ export default function Add() {
           <View style={{ position: 'relative', zIndex: 999 }}>
             <TextInput
               style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text, borderRadius: borderRadius.md, padding: spacing.md }]}
-              placeholder={selectedType === 'lent' ? "Person name (e.g., Rahul, Priya)" : "e.g., Food, Transport, Salary"}
+              placeholder={selectedType === 'lent' ? "Person name (e.g., Rahul, Priya)" : "Enter or select category"}
               placeholderTextColor={colors.subtext}
               value={category}
               onChangeText={handleCategoryChange}
               onFocus={() => {
-                if (category.trim() && categorySuggestions.length > 0) {
-                  setShowSuggestions(true);
+                // Show suggestions on focus (either filtered or all)
+                if (category.trim()) {
+                  const filtered = savedCategories.filter(cat => 
+                    cat.toLowerCase().includes(category.toLowerCase())
+                  ).slice(0, 5);
+                  setCategorySuggestions(filtered);
+                  setShowSuggestions(filtered.length > 0);
+                } else {
+                  setCategorySuggestions(savedCategories.slice(0, 5));
+                  setShowSuggestions(savedCategories.length > 0);
                 }
+              }}
+              onBlur={() => {
+                // Hide suggestions when focus is lost (with small delay for tap to register)
+                setTimeout(() => setShowSuggestions(false), 10);
               }}
             />
             
@@ -632,17 +629,17 @@ export default function Add() {
                 top: 50,
                 left: 0,
                 right: 0,
-                maxHeight: 220,
+                maxHeight: 200,
                 zIndex: 9999,
                 backgroundColor: colors.card,
-                borderRadius: 12,
+                borderRadius: borderRadius.md,
                 borderWidth: 1,
                 borderColor: colors.border,
-                elevation: 10,
+                elevation: 5,
                 shadowColor: '#000',
-                shadowOffset: { width: 0, height: 4 },
-                shadowOpacity: 0.15,
-                shadowRadius: 8,
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.25,
+                shadowRadius: 3.84,
                 overflow: 'hidden',
               }}>
                 <ScrollView showsVerticalScrollIndicator={false}>
@@ -650,8 +647,8 @@ export default function Add() {
                     <TouchableOpacity
                       key={index}
                       style={{
-                        height: 44,
                         paddingHorizontal: 16,
+                        paddingVertical: 14,
                         flexDirection: 'row',
                         alignItems: 'center',
                         borderBottomWidth: index < categorySuggestions.length - 1 ? 1 : 0,
@@ -661,25 +658,22 @@ export default function Add() {
                       onPress={() => selectCategory(cat)}
                     >
                       <View style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 4,
-                        backgroundColor: colors.accent,
-                        marginRight: 12,
-                      }} />
+                        width: 32,
+                        height: 32,
+                        borderRadius: 16,
+                        backgroundColor: colors.accent + '20',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        marginRight: 10,
+                      }}>
+                        <Text style={{ fontSize: 16 }}>🏷️</Text>
+                      </View>
                       <Text style={{
                         flex: 1,
-                        fontSize: 14,
+                        fontSize: 15,
                         color: colors.text,
-                        fontWeight: '500',
                       }}>
                         {cat}
-                      </Text>
-                      <Text style={{
-                        fontSize: 11,
-                        color: colors.subtext,
-                      }}>
-                        tap to use
                       </Text>
                     </TouchableOpacity>
                   ))}
