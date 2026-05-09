@@ -30,10 +30,10 @@ export default function AppConfirmModal({
     <Modal visible={visible} transparent animationType="fade">
       <View style={[styles.modalOverlay, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
         <View style={[
-          styles.modalContent, 
-          { 
-            backgroundColor: colors.card, 
-            borderRadius: borderRadius.lg, 
+          styles.modalContent,
+          {
+            backgroundColor: colors.card,
+            borderRadius: borderRadius.lg,
             padding: spacing.lg,
             shadowColor: '#000',
             shadowOffset: { width: 0, height: 4 },
@@ -48,22 +48,22 @@ export default function AppConfirmModal({
           <Text style={[typography.body, { color: colors.subtext, marginBottom: spacing.xl, lineHeight: 22 }]}>
             {message}
           </Text>
-          
+
           <View style={styles.buttonRow}>
-            <AppButton 
-              title={cancelText} 
-              variant="secondary" 
-              onPress={onCancel} 
-              style={styles.button} 
+            <AppButton
+              title={cancelText}
+              variant="secondary"
+              onPress={onCancel}
+              style={styles.button}
             />
-            <AppButton 
-              title={confirmText} 
-              variant="primary" 
-              onPress={onConfirm} 
+            <AppButton
+              title={confirmText}
+              variant="primary"
+              onPress={onConfirm}
               style={[
-                styles.button, 
+                styles.button,
                 isDestructive && { backgroundColor: colors.danger }
-              ] as any} 
+              ] as any}
             />
           </View>
         </View>

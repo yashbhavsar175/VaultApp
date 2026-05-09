@@ -77,6 +77,8 @@ export default function Settings() {
       confirmText: 'Sign Out',
       isDestructive: true,
       onConfirm: async () => {
+        // Dismiss dialog instantly for a faster feel
+        setConfirmDialog(null);
         try {
           await supabase.auth.signOut();
           Toast.show({
@@ -84,7 +86,6 @@ export default function Settings() {
             text1: 'Signed Out',
             text2: 'You have been logged out successfully',
           });
-          setConfirmDialog(null);
         } catch (error) {
           Toast.show({
             type: 'error',

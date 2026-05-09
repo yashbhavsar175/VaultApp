@@ -9,6 +9,7 @@ import {
   RefreshControl,
   ScrollView,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
@@ -154,6 +155,7 @@ export default function Transactions() {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
   
@@ -197,6 +199,7 @@ export default function Transactions() {
       });
     } finally {
       setRefreshing(false);
+      setLoading(false);
     }
   }, [filter]);
 
@@ -236,6 +239,13 @@ export default function Transactions() {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
+        // Dismiss dialog immediately for a faster feel
+        setConfirmDialog(null);
+        
+        // Optimistic UI Update: Remove from list instantly
+        setTransactions(prev => prev.filter(t => t.id !== id));
+        setFilteredTransactions(prev => prev.filter(t => t.id !== id));
+        
         try {
           await deleteTransaction(id);
           Toast.show({
@@ -243,9 +253,11 @@ export default function Transactions() {
             text1: 'Deleted',
             text2: 'Transaction deleted successfully',
           });
+          // Background sync
           loadTransactions();
-          setConfirmDialog(null);
         } catch (error) {
+          // Revert optimistic update on failure
+          loadTransactions();
           Toast.show({
             type: 'error',
             text1: 'Error',
@@ -303,6 +315,15 @@ export default function Transactions() {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
+        // Dismiss dialog immediately for a faster feel
+        setConfirmDialog(null);
+        
+        // Optimistic UI update: Remove from list instantly
+        const idSet = new Set(ids);
+        setTransactions(prev => prev.filter(t => !idSet.has(t.id)));
+        setFilteredTransactions(prev => prev.filter(t => !idSet.has(t.id)));
+        exitSelectMode();
+        
         try {
           await Promise.all(ids.map(id => deleteTransaction(id)));
           
@@ -312,10 +333,10 @@ export default function Transactions() {
             text2: `${count} transaction${count > 1 ? 's' : ''} deleted successfully`,
           });
           
-          exitSelectMode();
           loadTransactions();
-          setConfirmDialog(null);
         } catch (error) {
+          // Revert on failure
+          loadTransactions();
           Toast.show({
             type: 'error',
             text1: 'Error',
@@ -389,13 +410,39 @@ export default function Transactions() {
     );
   }, [selectedMap, selectMode, handleItemPress, handleItemLongPress, colors, typography, spacing]);
 
-  const renderEmptyState = useCallback(() => (
-    <View style={styles.emptyState}>
-      <MaterialCommunityIcons name="inbox-outline" size={64} color={colors.border} />
-      <Text style={[typography.h3, { color: colors.subtext, marginTop: spacing.md }]}>No transactions yet</Text>
-      <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>Add your first transaction to get started</Text>
-    </View>
-  ), [colors, typography, spacing]);
+  const renderEmptyState = useCallback(() => {
+    if (loading) {
+      return (
+        <View style={{ paddingTop: 8 }}>
+          {[1, 2, 3, 4, 5, 6, 7, 8].map((key) => (
+            <View key={key} style={[styles.rowCard, { 
+              backgroundColor: colors.card, 
+              borderRadius: 16, 
+              padding: 10, 
+              marginBottom: 6, 
+              flexDirection: 'row', 
+              alignItems: 'center',
+              opacity: 0.8 - (key * 0.08) // Nice fade out effect
+            }]}>
+              <View style={[styles.iconBox, { backgroundColor: colors.border, borderRadius: 10 }]} />
+              <View style={styles.transactionInfo}>
+                <View style={{ height: 14, backgroundColor: colors.border, borderRadius: 4, width: '60%', marginBottom: 8 }} />
+                <View style={{ height: 10, backgroundColor: colors.border, borderRadius: 4, width: '40%' }} />
+              </View>
+              <View style={{ height: 14, backgroundColor: colors.border, borderRadius: 4, width: '20%' }} />
+            </View>
+          ))}
+        </View>
+      );
+    }
+    return (
+      <View style={styles.emptyState}>
+        <MaterialCommunityIcons name="inbox-outline" size={64} color={colors.border} />
+        <Text style={[typography.h3, { color: colors.subtext, marginTop: spacing.md }]}>No transactions yet</Text>
+        <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>Add your first transaction to get started</Text>
+      </View>
+    );
+  }, [loading, colors, typography, spacing]);
 
   // Stable key extractor
   const keyExtractor = useCallback((item: Transaction) => item.id, []);

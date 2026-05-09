@@ -143,6 +143,12 @@ export default function BanksScreen() {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
+        // Dismiss dialog immediately for a faster feel
+        setConfirmDialog(null);
+        
+        // Optimistic UI Update: Remove from list instantly
+        setBanks(prev => prev.filter(b => b.id !== bank.id));
+        
         try {
           await deleteBankAccount(bank.id);
           Toast.show({
@@ -150,9 +156,11 @@ export default function BanksScreen() {
             text1: 'Deleted',
             text2: 'Bank account deleted successfully',
           });
+          // Background sync
           loadData();
-          setConfirmDialog(null);
         } catch (error) {
+          // Revert optimistic update on failure
+          loadData();
           Toast.show({
             type: 'error',
             text1: 'Error',
@@ -362,15 +370,7 @@ export default function BanksScreen() {
     );
   };
 
-  if (loading) {
-    return (
-      <ScreenWrapper>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.accent} />
-        </View>
-      </ScreenWrapper>
-    );
-  }
+  // Removed early return for loading to prevent header flash
 
   const totalBalance = getTotalBalance();
 
@@ -408,13 +408,38 @@ export default function BanksScreen() {
             tintColor={colors.accent}
           />
         }
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="bank-off" size={64} color={colors.border} />
-            <Text style={[typography.h3, { color: colors.subtext, marginTop: spacing.md }]}>No bank accounts yet</Text>
-            <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm, textAlign: 'center' }]}>Add your first bank account to track balances</Text>
-          </View>
-        }
+        ListEmptyComponent={() => {
+          if (loading) {
+            return (
+              <View>
+                {[1, 2, 3].map((key) => (
+                  <Card key={key} style={{ marginBottom: spacing.md, padding: spacing.md, opacity: 0.8 - (key * 0.15) }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: colors.border, marginRight: spacing.md }} />
+                        <View style={{ flex: 1 }}>
+                          <View style={{ height: 14, backgroundColor: colors.border, borderRadius: 4, width: '60%', marginBottom: 6 }} />
+                          <View style={{ height: 10, backgroundColor: colors.border, borderRadius: 4, width: '40%' }} />
+                        </View>
+                      </View>
+                      <View style={{ alignItems: 'flex-end', width: 80 }}>
+                        <View style={{ height: 18, backgroundColor: colors.border, borderRadius: 4, width: '100%', marginBottom: 6 }} />
+                        <View style={{ height: 18, backgroundColor: colors.border, borderRadius: 4, width: '50%' }} />
+                      </View>
+                    </View>
+                  </Card>
+                ))}
+              </View>
+            );
+          }
+          return (
+            <View style={styles.emptyState}>
+              <MaterialCommunityIcons name="bank-off" size={64} color={colors.border} />
+              <Text style={[typography.h3, { color: colors.subtext, marginTop: spacing.md }]}>No bank accounts yet</Text>
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm, textAlign: 'center' }]}>Add your first bank account to track balances</Text>
+            </View>
+          );
+        }}
       />
 
       {/* Add/Edit Bank Modal */}

@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, ScrollView } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { supabase } from '../lib/supabase';
@@ -125,4 +125,5 @@ export default function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     setShowPrivacyModal(true);
   };
 
-  return (
+  return null;
+}

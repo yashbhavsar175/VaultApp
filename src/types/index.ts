@@ -8,6 +8,10 @@ export interface Transaction {
   note: string;
   category: string;
   created_at: string;
+  account_id?: string;
+  account_last4?: string;
+  sms_source?: string;
+  sms_sender?: string;
 }
 
 export interface BankAccount {

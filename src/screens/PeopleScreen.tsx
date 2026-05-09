@@ -43,7 +43,7 @@ export default function PeopleScreen() {
   const [filter, setFilter] = useState<FilterType>('active');
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState({ totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 });
-  
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
@@ -75,7 +75,7 @@ export default function PeopleScreen() {
       ]);
       setLedgerEntries(entries);
       setSummary(summaryData);
-      
+
       // Schedule notifications for active entries
       const activeEntries = entries.filter(e => !e.is_settled);
       await scheduleLedgerNotifications(activeEntries);
@@ -113,11 +113,20 @@ export default function PeopleScreen() {
       confirmText: 'Settle',
       isDestructive: false,
       onConfirm: async () => {
+        // Dismiss dialog instantly for a faster feel
+        setConfirmDialog(null);
+
+        // Optimistic UI Update: Move to settled instantly
+        setLedgerEntries(prev => prev.map(e => e.id === entry.id ? { ...e, is_settled: true } : e));
+        setFilteredEntries(prev => prev.filter(e => e.id !== entry.id)); // Assuming we are on active tab
+
         try {
           await markAsSettled(entry.id);
+          // Background sync
           await loadData();
-          setConfirmDialog(null);
         } catch (error) {
+          // Revert optimistic update on failure
+          await loadData();
           Alert.alert('Error', 'Failed to settle entry');
         }
       }
@@ -132,11 +141,20 @@ export default function PeopleScreen() {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
+        // Dismiss dialog instantly for a faster feel
+        setConfirmDialog(null);
+
+        // Optimistic UI Update: Remove from list instantly
+        setLedgerEntries(prev => prev.filter(e => e.id !== entry.id));
+        setFilteredEntries(prev => prev.filter(e => e.id !== entry.id));
+
         try {
           await deleteLedgerEntry(entry.id);
+          // Background sync
           await loadData();
-          setConfirmDialog(null);
         } catch (error) {
+          // Revert optimistic update on failure
+          await loadData();
           Alert.alert('Error', 'Failed to delete entry');
         }
       }
@@ -201,25 +219,25 @@ export default function PeopleScreen() {
       <View style={{ paddingHorizontal: spacing.md, flex: 1 }}>
         {/* Summary Cards */}
         <View style={[styles.summaryRow, { marginBottom: spacing.md }]}>
-          <Card style={[styles.summaryCard, { 
-            borderLeftWidth: 4, 
+          <Card style={[styles.summaryCard, {
+            borderLeftWidth: 4,
             borderLeftColor: colors.success,
             minHeight: 120,
             padding: 24,
             position: 'relative',
             overflow: 'hidden',
           }]}>
-            <MaterialCommunityIcons 
-              name="account-group" 
-              size={48} 
-              color={colors.success} 
-              style={{ 
-                position: 'absolute', 
-                right: 20, 
-                top: '50%', 
+            <MaterialCommunityIcons
+              name="account-group"
+              size={48}
+              color={colors.success}
+              style={{
+                position: 'absolute',
+                right: 20,
+                top: '50%',
                 marginTop: -24,
-                opacity: 0.2 
-              }} 
+                opacity: 0.2
+              }}
             />
             <Text style={[typography.caption, { color: colors.subtext, fontSize: 16 }]}>
               Active Lent
@@ -252,10 +270,10 @@ export default function PeopleScreen() {
                     borderColor: colors.border,
                   },
                 ]}>
-                <Text 
+                <Text
                   style={[
-                    typography.caption, 
-                    { 
+                    typography.caption,
+                    {
                       color: isActive ? '#fff' : colors.text,
                       fontSize: 11,
                       fontWeight: isActive ? '600' : '400',
@@ -271,9 +289,31 @@ export default function PeopleScreen() {
         </View>
         {/* People List */}
         {loading ? (
-          <Text style={[typography.body, { color: colors.subtext, textAlign: 'center', marginTop: spacing.xl }]}>
-            Loading...
-          </Text>
+          <View>
+            {[1, 2, 3].map((key) => (
+              <Card key={key} style={{ marginBottom: spacing.md, padding: spacing.md, opacity: 0.8 - (key * 0.15) }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: colors.border, marginRight: spacing.md }} />
+                  <View style={{ flex: 1 }}>
+                    <View style={{ height: 16, backgroundColor: colors.border, borderRadius: 4, width: '50%', marginBottom: 8 }} />
+                    <View style={{ height: 12, backgroundColor: colors.border, borderRadius: 4, width: '30%', marginBottom: 12 }} />
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <View style={{ height: 20, backgroundColor: colors.border, borderRadius: 10, width: 50 }} />
+                      <View style={{ height: 20, backgroundColor: colors.border, borderRadius: 10, width: 70 }} />
+                    </View>
+                  </View>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.md }}>
+                  {[1, 2, 3].map(i => (
+                    <View key={i} style={{ alignItems: 'center' }}>
+                      <View style={{ height: 10, backgroundColor: colors.border, borderRadius: 4, width: 40, marginBottom: 4 }} />
+                      <View style={{ height: 16, backgroundColor: colors.border, borderRadius: 4, width: 50 }} />
+                    </View>
+                  ))}
+                </View>
+              </Card>
+            ))}
+          </View>
         ) : filteredEntries.length === 0 ? (
           <View style={{ alignItems: 'center', marginTop: spacing.xl }}>
             <MaterialCommunityIcons name="account-group-outline" size={64} color={colors.subtext} />
@@ -357,8 +397,8 @@ const SettledRow = React.memo(({
           ₹{Number(item.total_amount).toFixed(0)}
         </Text>
         <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
-          {item.settled_at 
-            ? `Cleared on: ${new Date(item.settled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` 
+          {item.settled_at
+            ? `Cleared on: ${new Date(item.settled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
             : 'Cleared'}
         </Text>
       </View>
@@ -370,15 +410,15 @@ const SettledRow = React.memo(({
 });
 
 // Memoized Card Component
-const LedgerCard = React.memo(({ 
-  item, 
-  colors, 
-  typography, 
+const LedgerCard = React.memo(({
+  item,
+  colors,
+  typography,
   spacing,
   borderRadius,
-  onAddPayment, 
-  onSettle, 
-  onDelete, 
+  onAddPayment,
+  onSettle,
+  onDelete,
   onViewHistory,
   getAvatarColor,
   getPersonInitial
@@ -455,7 +495,7 @@ const LedgerCard = React.memo(({
 
       {item.repayment_type === 'one_time' && item.due_date && (
         <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]}>
-          Due: {new Date(item.due_date).toLocaleDateString()} 
+          Due: {new Date(item.due_date).toLocaleDateString()}
           {daysUntilDue !== null && ` (${daysUntilDue > 0 ? `${daysUntilDue} days left` : `${Math.abs(daysUntilDue)} days overdue`})`}
         </Text>
       )}
@@ -473,7 +513,7 @@ const LedgerCard = React.memo(({
       )}
 
       {Number(item.paid_amount) > 0 && (
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => onViewHistory(item)}
           style={{ marginTop: spacing.sm }}>
           <Text style={[typography.caption, { color: colors.accent }]}>
@@ -499,10 +539,10 @@ const LedgerCard = React.memo(({
             />
           </>
         )}
-        <TouchableOpacity 
-          onPress={() => onDelete(item)} 
-          style={{ 
-            marginLeft: spacing.xs, 
+        <TouchableOpacity
+          onPress={() => onDelete(item)}
+          style={{
+            marginLeft: spacing.xs,
             padding: spacing.sm,
             justifyContent: 'center',
             alignItems: 'center',
@@ -734,7 +774,7 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
 
   const loadPayments = async () => {
     if (!entry) return;
-    
+
     try {
       setLoading(true);
       const data = await getPayments(entry.id);
@@ -793,12 +833,12 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
             ) : (
               <ScrollView style={{ maxHeight: 300 }}>
                 {payments.map((payment, index) => (
-                  <View 
-                    key={payment.id} 
+                  <View
+                    key={payment.id}
                     style={[
-                      { 
-                        padding: spacing.md, 
-                        backgroundColor: colors.card, 
+                      {
+                        padding: spacing.md,
+                        backgroundColor: colors.card,
                         borderRadius: borderRadius.md,
                         marginBottom: spacing.sm,
                       }
@@ -809,9 +849,9 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
                           ₹{Number(payment.amount).toFixed(0)}
                         </Text>
                         <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>
-                          Paid on {new Date(payment.created_at).toLocaleString('en-IN', { 
-                            day: 'numeric', 
-                            month: 'short', 
+                          Paid on {new Date(payment.created_at).toLocaleString('en-IN', {
+                            day: 'numeric',
+                            month: 'short',
                             year: 'numeric',
                             hour: 'numeric',
                             minute: '2-digit',

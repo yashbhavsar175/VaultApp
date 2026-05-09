@@ -6,7 +6,15 @@ import Transactions from '../screens/Transactions';
 import AnalyticsScreen from '../screens/AnalyticsScreen';
 import TransactionDetail from '../screens/TransactionDetail';
 
-const Stack = createStackNavigator();
+export type DashboardStackParamList = {
+  DashboardHome: undefined;
+  Banks: undefined;
+  Transactions: undefined;
+  Analytics: undefined;
+  TransactionDetail: { transactionId: string };
+};
+
+const Stack = createStackNavigator<DashboardStackParamList>();
 
 export default function DashboardStack() {
   return (

@@ -75,6 +75,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
+        // Dismiss dialog and navigate back immediately for a faster feel
+        setConfirmDialog(null);
+        navigation.goBack();
         try {
           await deleteTransaction(transaction.id);
           Toast.show({
@@ -82,8 +85,6 @@ export default function TransactionDetail({ route, navigation }: Props) {
             text1: 'Deleted',
             text2: 'Transaction deleted successfully',
           });
-          setConfirmDialog(null);
-          navigation.goBack();
         } catch (error) {
           Toast.show({
             type: 'error',

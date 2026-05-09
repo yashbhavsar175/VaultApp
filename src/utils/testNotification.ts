@@ -78,7 +78,7 @@ export const sendMultipleTestNotifications = async () => {
 
     // Wait 2 seconds
     console.log('⏳ [TestNotification] Waiting 2 seconds...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(() => resolve(undefined), 2000));
 
     // Test notification 2: Google Pay credit (income)
     console.log('📱 [TestNotification] Sending notification 2/4: GPay Credit...');
@@ -94,7 +94,7 @@ export const sendMultipleTestNotifications = async () => {
 
     // Wait 2 seconds
     console.log('⏳ [TestNotification] Waiting 2 seconds...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(() => resolve(undefined), 2000));
 
     // Test notification 3: Slice card payment (expense)
     console.log('📱 [TestNotification] Sending notification 3/4: Slice Payment...');
@@ -110,7 +110,7 @@ export const sendMultipleTestNotifications = async () => {
 
     // Wait 2 seconds
     console.log('⏳ [TestNotification] Waiting 2 seconds...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(() => resolve(undefined), 2000));
 
     // Test notification 4: Kotak UPI debit (expense)
     console.log('📱 [TestNotification] Sending notification 4/4: Kotak UPI...');

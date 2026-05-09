@@ -16,7 +16,7 @@ export const signInWithGoogle = async () => {
     await GoogleSignin.hasPlayServices();
     
     // Add a small delay to ensure activity is ready
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(() => resolve(undefined), 300));
     
     // Sign in with Google
     const userInfo = await GoogleSignin.signIn();
