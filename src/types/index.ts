@@ -39,6 +39,7 @@ export interface PeopleLedger {
   start_date: string | null;
   notes: string | null;
   is_settled: boolean;
+  settled_at: string | null;
   created_at: string;
 }
 

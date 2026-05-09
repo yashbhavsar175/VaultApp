@@ -37,9 +37,13 @@ export default function BottomTabNavigator() {
           marginTop: 2,
         },
         tabBarHideOnKeyboard: true,
-        tabBarButton: (props) => (
-          <TouchableOpacity {...props} activeOpacity={1} />
-        ),
+        tabBarButton: (props) => {
+          // Strip null values from navigation props — TouchableOpacity only accepts undefined
+          const cleanProps = Object.fromEntries(
+            Object.entries(props).map(([k, v]) => [k, v === null ? undefined : v])
+          );
+          return <TouchableOpacity {...cleanProps as any} activeOpacity={1} />;
+        },
       }}>
       <Tab.Screen
         name="Dashboard"
@@ -54,11 +58,11 @@ export default function BottomTabNavigator() {
         name="Add"
         component={Add}
         options={{
-          tabBarIcon: ({ focused }) => (
+          tabBarIcon: ({ focused, color, size }) => (
             <MaterialCommunityIcons 
               name="plus-circle" 
               size={26} 
-              color={focused ? '#7c3aed' : '#888888'} 
+              color={focused ? colors.accent : '#888888'} 
             />
           ),
         }}

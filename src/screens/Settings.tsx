@@ -1,13 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, Switch, Linking, AppState, AppStateStatus } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../components';
+import AppConfirmModal from '../components/ui/AppConfirmModal';
 import { useNavigation } from '@react-navigation/native';
-import { requestSmsPermissions, checkSmsPermissions } from '../utils/smsPermissions';
+import { runAllNotificationTests } from '../utils/testTransactionNotification';
 
 export default function Settings() {
   const navigation = useNavigation();
@@ -24,20 +24,21 @@ export default function Settings() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [changingPassword, setChangingPassword] = useState(false);
-  
-  // SMS Tracking state
-  const [smsTrackingEnabled, setSmsTrackingEnabled] = useState(false);
+
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    isDestructive: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   useEffect(() => {
     console.log('🔧 [Settings] Component mounted');
     loadUserInfo();
-    checkSmsStatus();
   }, []);
-
-  const checkSmsStatus = async () => {
-    const hasPermissions = await checkSmsPermissions();
-    setSmsTrackingEnabled(hasPermissions);
-  };
 
   const getInitials = (name: string) => {
     if (!name) return '?';
@@ -47,54 +48,52 @@ export default function Settings() {
   };
 
   const loadUserInfo = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user?.email) {
-      setUserEmail(user.email);
-      
-      // Load profile name
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('full_name')
-        .eq('id', user.id)
-        .single();
-      
-      if (profile?.full_name) {
-        setUserName(profile.full_name);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.email) {
+        setUserEmail(user.email);
+        
+        // Load profile name
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('id', user.id)
+          .single();
+        
+        if (profile?.full_name) {
+          setUserName(profile.full_name);
+        }
       }
+    } catch (error) {
+      console.error('Error loading user info:', error);
     }
   };
 
   const handleLogout = async () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        { 
-          text: 'Cancel', 
-          style: 'cancel' 
-        },
-        { 
-          text: 'Sign Out', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await supabase.auth.signOut();
-              Toast.show({
-                type: 'success',
-                text1: 'Signed Out',
-                text2: 'You have been logged out successfully',
-              });
-            } catch (error) {
-              Toast.show({
-                type: 'error',
-                text1: 'Error',
-                text2: 'Failed to sign out',
-              });
-            }
-          }
+    setConfirmDialog({
+      visible: true,
+      title: 'Sign Out',
+      message: 'Are you sure you want to sign out?',
+      confirmText: 'Sign Out',
+      isDestructive: true,
+      onConfirm: async () => {
+        try {
+          await supabase.auth.signOut();
+          Toast.show({
+            type: 'success',
+            text1: 'Signed Out',
+            text2: 'You have been logged out successfully',
+          });
+          setConfirmDialog(null);
+        } catch (error) {
+          Toast.show({
+            type: 'error',
+            text1: 'Error',
+            text2: 'Failed to sign out',
+          });
         }
-      ]
-    );
+      }
+    });
   };
 
   const handleEditName = () => {
@@ -198,46 +197,6 @@ export default function Settings() {
     }
   };
 
-  const handleToggleSmsTracking = async (value: boolean) => {
-    if (value) {
-      // Request permissions
-      const granted = await requestSmsPermissions();
-      if (granted) {
-        setSmsTrackingEnabled(true);
-        Toast.show({
-          type: 'success',
-          text1: 'SMS Tracking Enabled',
-          text2: 'Transactions will be automatically tracked from SMS',
-        });
-      } else {
-        Toast.show({
-          type: 'error',
-          text1: 'Permission Denied',
-          text2: 'SMS permissions are required for automatic tracking',
-        });
-      }
-    } else {
-      Alert.alert(
-        'Disable SMS Tracking?',
-        'You can re-enable this later from Settings. Note: You need to manually revoke SMS permissions from Android Settings.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Disable',
-            onPress: () => {
-              setSmsTrackingEnabled(false);
-              Toast.show({
-                type: 'info',
-                text1: 'SMS Tracking Disabled',
-                text2: 'Revoke SMS permissions from Android Settings',
-              });
-            },
-          },
-        ]
-      );
-    }
-  };
-
   const handleDeleteAccount = () => {
     Alert.alert(
       'Delete Account?',
@@ -271,8 +230,7 @@ export default function Settings() {
                 text2: 'Contact support to complete.',
               });
 
-              // Navigate to login
-              navigation.navigate('Login' as never);
+              // Auth state change will redirect to login automatically
             } catch (error) {
               console.error('Error deleting account:', error);
               Toast.show({
@@ -373,33 +331,6 @@ export default function Settings() {
           </Card>
         </View>
 
-        {/* Features Section */}
-        <View style={{ marginTop: spacing.xl }}>
-          <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
-            Features
-          </Text>
-          
-          <Card>
-            <View style={styles.accountRow}>
-              <MaterialCommunityIcons name="message-text-outline" size={22} color={colors.accent} />
-              <View style={{ flex: 1, marginLeft: spacing.md }}>
-                <Text style={[typography.body, { color: colors.text }]}>
-                  SMS Tracking
-                </Text>
-                <Text style={[typography.caption, { color: colors.subtext, fontSize: 12, marginTop: 2 }]}>
-                  Auto-track transactions from bank SMS
-                </Text>
-              </View>
-              <Switch
-                value={smsTrackingEnabled}
-                onValueChange={handleToggleSmsTracking}
-                trackColor={{ false: colors.border, true: colors.accent }}
-                thumbColor="#fff"
-              />
-            </View>
-          </Card>
-        </View>
-
         {/* Account Section */}
         <View style={{ marginTop: spacing.xl }}>
           <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
@@ -411,6 +342,40 @@ export default function Settings() {
               <MaterialCommunityIcons name="lock-outline" size={22} color={colors.accent} />
               <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
                 Change Password
+              </Text>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+          </Card>
+        </View>
+
+        {/* Developer Section */}
+        <View style={{ marginTop: spacing.xl }}>
+          <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+            Developer
+          </Text>
+          
+          <Card>
+            <TouchableOpacity 
+              style={styles.accountRow} 
+              onPress={async () => {
+                try {
+                  await runAllNotificationTests();
+                  Toast.show({
+                    type: 'success',
+                    text1: 'Tests Running',
+                    text2: 'Check notifications and console logs',
+                  });
+                } catch (error) {
+                  Toast.show({
+                    type: 'error',
+                    text1: 'Test Failed',
+                    text2: String(error),
+                  });
+                }
+              }}>
+              <MaterialCommunityIcons name="test-tube" size={22} color={colors.accent} />
+              <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
+                Test Notifications
               </Text>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
@@ -550,6 +515,16 @@ export default function Settings() {
           </Card>
         </View>
       </Modal>
+
+      <AppConfirmModal
+        visible={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        confirmText={confirmDialog?.confirmText}
+        isDestructive={confirmDialog?.isDestructive}
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
     </ScreenWrapper>
   );
 }

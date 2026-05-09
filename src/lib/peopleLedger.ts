@@ -106,10 +106,17 @@ export async function getPayments(ledgerId: string): Promise<PeopleLedgerPayment
  * Mark a ledger entry as settled
  */
 export async function markAsSettled(ledgerId: string): Promise<void> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
   const { error } = await supabase
     .from('people_ledger')
-    .update({ is_settled: true })
-    .eq('id', ledgerId);
+    .update({ 
+      is_settled: true,
+      settled_at: new Date().toISOString()
+    })
+    .eq('id', ledgerId)
+    .eq('user_id', user.id);
 
   if (error) throw error;
 }
@@ -118,10 +125,14 @@ export async function markAsSettled(ledgerId: string): Promise<void> {
  * Delete a ledger entry
  */
 export async function deleteLedgerEntry(ledgerId: string): Promise<void> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
   const { error } = await supabase
     .from('people_ledger')
     .delete()
-    .eq('id', ledgerId);
+    .eq('id', ledgerId)
+    .eq('user_id', user.id);
 
   if (error) throw error;
 }

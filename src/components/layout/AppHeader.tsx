@@ -30,20 +30,28 @@ export default function AppHeader({ title, showBack = false, showBackButton = fa
         {showBackBtn && (
           <TouchableOpacity
             onPress={() => navigation.goBack()}
-            style={[styles.iconButton, { marginRight: spacing.sm }]}>
+            style={[styles.iconButton, { marginRight: spacing.sm }]}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <MaterialCommunityIcons name="arrow-left" size={24} color={colors.text} />
           </TouchableOpacity>
         )}
-        <Text style={[typography.h2, { color: colors.text }]}>{title}</Text>
+        <Text style={[typography.h2, { color: colors.text }]} numberOfLines={1}>{title}</Text>
       </View>
       <View style={{ flexDirection: 'row', gap: 8 }}>
         {rightActions && rightActions.map((action, index) => (
-          <TouchableOpacity key={index} onPress={action.onPress} style={styles.iconButton}>
+          <TouchableOpacity 
+            key={index} 
+            onPress={action.onPress} 
+            style={styles.iconButton}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <MaterialCommunityIcons name={action.icon} size={24} color={colors.text} />
           </TouchableOpacity>
         ))}
         {rightAction && (
-          <TouchableOpacity onPress={rightAction.onPress} style={styles.iconButton}>
+          <TouchableOpacity 
+            onPress={rightAction.onPress} 
+            style={styles.iconButton}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <MaterialCommunityIcons name={rightAction.icon} size={24} color={colors.text} />
           </TouchableOpacity>
         )}

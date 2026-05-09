@@ -11,3 +11,6 @@ export { default as Badge } from './ui/Badge';
 // Common Components
 export { default as TransactionItem } from './common/TransactionItem';
 export { default as SectionHeader } from './common/SectionHeader';
+
+// Permission Components
+export { default as PermissionPrompt } from './PermissionPrompt';

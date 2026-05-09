@@ -79,7 +79,15 @@ export default function AnalyticsScreen() {
     .filter(t => t.type === 'income')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const netSavings = totalIncome - totalSpent;
+  const totalInvestment = transactions
+    .filter(t => t.type === 'investment')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  const totalEMI = transactions
+    .filter(t => t.type === 'emi')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  const netSavings = totalIncome - totalSpent - totalInvestment - totalEMI;
 
   // Group by category for chart
   const categoryData: { [key: string]: number } = {};

@@ -17,6 +17,7 @@ import { getBankAccounts, addBankAccount, updateBankAccount, deleteBankAccount }
 import { BankAccount } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../components';
+import AppConfirmModal from '../components/ui/AppConfirmModal';
 import { getBankColor, getBankSuggestions } from '../constants/bankLogos';
 
 export default function BanksScreen() {
@@ -26,6 +27,14 @@ export default function BanksScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingBank, setEditingBank] = useState<BankAccount | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    isDestructive: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   // Form state
   const [bankName, setBankName] = useState('');
@@ -127,34 +136,31 @@ export default function BanksScreen() {
   };
 
   const handleDeleteBank = (bank: BankAccount) => {
-    Alert.alert(
-      'Delete Bank Account',
-      `Delete ${bank.bank_name} ••${bank.account_last4}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteBankAccount(bank.id);
-              Toast.show({
-                type: 'success',
-                text1: 'Deleted',
-                text2: 'Bank account deleted successfully',
-              });
-              loadData();
-            } catch (error) {
-              Toast.show({
-                type: 'error',
-                text1: 'Error',
-                text2: 'Failed to delete bank account',
-              });
-            }
-          },
-        },
-      ]
-    );
+    setConfirmDialog({
+      visible: true,
+      title: 'Delete Bank Account',
+      message: `Delete ${bank.bank_name} ••${bank.account_last4}?`,
+      confirmText: 'Delete',
+      isDestructive: true,
+      onConfirm: async () => {
+        try {
+          await deleteBankAccount(bank.id);
+          Toast.show({
+            type: 'success',
+            text1: 'Deleted',
+            text2: 'Bank account deleted successfully',
+          });
+          loadData();
+          setConfirmDialog(null);
+        } catch (error) {
+          Toast.show({
+            type: 'error',
+            text1: 'Error',
+            text2: 'Failed to delete bank account',
+          });
+        }
+      }
+    });
   };
 
   const resetForm = () => {
@@ -622,6 +628,16 @@ export default function BanksScreen() {
           </ScreenWrapper>
         </View>
       </Modal>
+
+      <AppConfirmModal
+        visible={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        confirmText={confirmDialog?.confirmText}
+        isDestructive={confirmDialog?.isDestructive}
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
     </ScreenWrapper>
   );
 }

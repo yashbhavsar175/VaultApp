@@ -51,10 +51,14 @@ export async function updateBankAccount(
   bank: Partial<Omit<BankAccount, 'id' | 'user_id' | 'created_at'>>
 ): Promise<void> {
   try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('No user found');
+
     const { error } = await supabase
       .from('bank_accounts')
       .update(bank)
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', user.id);
 
     if (error) throw error;
   } catch (error) {
@@ -65,11 +69,15 @@ export async function updateBankAccount(
 
 export async function deleteBankAccount(id: string): Promise<void> {
   try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('No user found');
+
     // First, delete all transactions associated with this bank account
     // This handles the foreign key constraint from transactions table
     const { error: deleteTransactionsError } = await supabase
       .from('transactions')
       .delete()
+      .eq('user_id', user.id)
       .or(`from_account_id.eq.${id},to_account_id.eq.${id},account_id.eq.${id}`);
 
     if (deleteTransactionsError) {
@@ -81,7 +89,8 @@ export async function deleteBankAccount(id: string): Promise<void> {
     const { error } = await supabase
       .from('bank_accounts')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', user.id);
 
     if (error) throw error;
   } catch (error) {

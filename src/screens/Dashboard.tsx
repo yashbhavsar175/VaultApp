@@ -3,7 +3,6 @@ import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { getTransactions } from '../lib/db';
-import { supabase } from '../lib/supabase';
 import { Transaction, PeopleLedger } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader } from '../components';
@@ -150,23 +149,12 @@ export default function Dashboard() {
     }
   };
 
-  const loadProfile = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('id', user.id)
-          .single();
-      }
-    } catch (error) {
-      console.error('Error loading profile:', error);
-    }
-  };
+
 
   useEffect(() => {
-    loadData();
+    if (!isInitialLoad) {
+      loadData();
+    }
   }, [selectedDate]);
 
   useFocusEffect(
@@ -174,12 +162,10 @@ export default function Dashboard() {
       if (isInitialLoad) {
         // First time: show loader
         loadData();
-        loadProfile();
         setIsInitialLoad(false);
       } else {
         // Subsequent visits: load silently in background
         loadDataSilently();
-        loadProfile();
       }
     }, [isInitialLoad])
   );

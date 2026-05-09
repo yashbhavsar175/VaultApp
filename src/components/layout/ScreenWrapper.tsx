@@ -6,8 +6,9 @@ import {
   Platform,
   StyleSheet,
   ViewStyle,
+  StatusBar,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../context/ThemeContext';
 
 interface ScreenWrapperProps {
@@ -24,6 +25,7 @@ export default function ScreenWrapper({
   style,
 }: ScreenWrapperProps) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
   const content = scrollable ? (
     <ScrollView
@@ -40,20 +42,22 @@ export default function ScreenWrapper({
 
   if (keyboardAvoiding) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['top']}>
+      <View style={[styles.safeArea, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+        <StatusBar barStyle="light-content" backgroundColor={colors.background} />
         <KeyboardAvoidingView
           style={styles.keyboardView}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           {content}
         </KeyboardAvoidingView>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['top']}>
+    <View style={[styles.safeArea, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+      <StatusBar barStyle="light-content" backgroundColor={colors.background} />
       {content}
-    </SafeAreaView>
+    </View>
   );
 }
 

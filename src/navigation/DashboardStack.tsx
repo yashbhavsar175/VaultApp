@@ -4,6 +4,7 @@ import Dashboard from '../screens/Dashboard';
 import BanksScreen from '../screens/BanksScreen';
 import Transactions from '../screens/Transactions';
 import AnalyticsScreen from '../screens/AnalyticsScreen';
+import TransactionDetail from '../screens/TransactionDetail';
 
 const Stack = createStackNavigator();
 
@@ -14,6 +15,7 @@ export default function DashboardStack() {
       <Stack.Screen name="Banks" component={BanksScreen} />
       <Stack.Screen name="Transactions" component={Transactions} />
       <Stack.Screen name="Analytics" component={AnalyticsScreen} />
+      <Stack.Screen name="TransactionDetail" component={TransactionDetail} />
     </Stack.Navigator>
   );
 }

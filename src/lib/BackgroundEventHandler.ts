@@ -5,13 +5,25 @@
 
 import notifee, { EventType } from '@notifee/react-native';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
+import { handleTransactionNotificationEvent } from './transactionNotifications';
 
 /**
  * Background event handler for Notifee
  * This runs even when the app is closed
  */
-export async function onBackgroundEvent({ type, detail }: any) {
+export async function onBackgroundEvent(event: any) {
+  const { type, detail } = event;
   console.log('🔔 [Background] Notifee event received:', type);
+  
+  // Handle transaction notification actions (delete, ok)
+  if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
+    const action = detail?.notification?.data?.action;
+    
+    if (action === 'transaction_confirmation') {
+      await handleTransactionNotificationEvent(event);
+      return;
+    }
+  }
   
   // Handle notification events in background
   if (type === EventType.DELIVERED) {

@@ -190,11 +190,22 @@ export default function Add() {
     setParsing(true);
     try {
       const result = await parseTransactionWithAI(aiInput);
-      setParsedData(result);
+      
+      // Auto-fill the manual form with parsed data
+      setAmount(result.amount.toString());
+      setNote(result.note);
+      setType(result.type);
+      setSelectedType(result.type);
+      setCategory(result.category);
+      
+      // Switch to manual mode for review and account selection
+      setMode('manual');
+      setAiInput('');
+      
       Toast.show({
         type: 'success',
         text1: 'Parsed Successfully',
-        text2: 'Review and confirm the details',
+        text2: 'Please select an account and save',
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -209,46 +220,6 @@ export default function Add() {
     } finally {
       setParsing(false);
     }
-  };
-
-  const handleConfirmAI = async () => {
-    if (!parsedData) return;
-
-    setSaving(true);
-    try {
-      await addTransaction({
-        amount: parsedData.amount,
-        note: parsedData.note,
-        type: parsedData.type,
-        category: parsedData.category,
-      });
-      Toast.show({
-        type: 'success',
-        text1: 'Success',
-        text2: 'Transaction added successfully',
-      });
-      navigation.navigate('Dashboard' as never);
-      resetForm();
-    } catch (error) {
-      Toast.show({
-        type: 'error',
-        text1: 'Error',
-        text2: 'Failed to save transaction',
-      });
-      console.error(error);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleEditManually = () => {
-    if (parsedData) {
-      setAmount(parsedData.amount.toString());
-      setNote(parsedData.note);
-      setType(parsedData.type);
-      setCategory(parsedData.category);
-    }
-    setMode('manual');
   };
 
   const handleSaveManual = async () => {
@@ -331,7 +302,7 @@ export default function Add() {
       if (selectedAccount !== 'cash') {
         const selectedBank = banks.find(b => b.id === selectedAccount);
         if (selectedBank) {
-          let newBalance = selectedBank.starting_balance;
+          let newBalance = selectedBank.balance || selectedBank.starting_balance;
           
           // Debit transactions: subtract from balance
           if (selectedType === 'expense' || selectedType === 'emi' || selectedType === 'investment' || selectedType === 'lent') {
@@ -343,7 +314,7 @@ export default function Add() {
           }
           
           await updateBankAccount(selectedBank.id, {
-            starting_balance: newBalance,
+            balance: newBalance,
           });
         }
       }
@@ -369,7 +340,6 @@ export default function Add() {
 
   const resetForm = () => {
     setAiInput('');
-    setParsedData(null);
     setAmount('');
     setNote('');
     setType('expense');
@@ -450,46 +420,6 @@ export default function Add() {
             fullWidth
             style={{ marginTop: spacing.lg }}
           />
-
-          {parsedData && (
-            <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
-              <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Parsed Result</Text>
-              <View style={styles.previewRow}>
-                <Text style={[typography.caption, { color: colors.subtext }]}>Note:</Text>
-                <Text style={[typography.body, { color: colors.text }]}>{parsedData.note}</Text>
-              </View>
-              <View style={styles.previewRow}>
-                <Text style={[typography.caption, { color: colors.subtext }]}>Amount:</Text>
-                <Text style={[typography.body, { color: colors.text }]}>{formatAmount(parsedData.amount)}</Text>
-              </View>
-              <View style={styles.previewRow}>
-                <Text style={[typography.caption, { color: colors.subtext }]}>Type:</Text>
-                <View style={[styles.typeBadge, { backgroundColor: getTypeColor(parsedData.type), borderRadius: borderRadius.md }]}>
-                  <Text style={[typography.caption, { color: '#fff' }]}>{parsedData.type}</Text>
-                </View>
-              </View>
-              <View style={styles.previewRow}>
-                <Text style={[typography.caption, { color: colors.subtext }]}>Category:</Text>
-                <Text style={[typography.body, { color: colors.text }]}>{parsedData.category}</Text>
-              </View>
-
-              <AppButton
-                title="Confirm & Save"
-                onPress={handleConfirmAI}
-                loading={saving}
-                fullWidth
-                style={{ marginTop: spacing.lg }}
-              />
-
-              <AppButton
-                title="Edit manually"
-                onPress={handleEditManually}
-                variant="secondary"
-                fullWidth
-                style={{ marginTop: spacing.sm }}
-              />
-            </Card>
-          )}
         </View>
       ) : (
         <ScrollView 
@@ -522,6 +452,9 @@ export default function Add() {
                 setErrors({ ...errors, amount: false });
               }
             }}
+            onFocus={() => {
+              setShowSuggestions(false); // Hide category suggestions
+            }}
             keyboardType="numeric"
           />
 
@@ -548,6 +481,9 @@ export default function Add() {
               if (errors.note) {
                 setErrors({ ...errors, note: false });
               }
+            }}
+            onFocus={() => {
+              setShowSuggestions(false); // Hide category suggestions
             }}
           />
 
@@ -616,10 +552,6 @@ export default function Add() {
                   setCategorySuggestions(savedCategories.slice(0, 5));
                   setShowSuggestions(savedCategories.length > 0);
                 }
-              }}
-              onBlur={() => {
-                // Hide suggestions when focus is lost (with small delay for tap to register)
-                setTimeout(() => setShowSuggestions(false), 10);
               }}
             />
             
@@ -704,6 +636,7 @@ export default function Add() {
               ]}
               onPress={() => {
                 Keyboard.dismiss();
+                setShowSuggestions(false); // Hide category suggestions
                 setShowAccountModal(true);
                 if (errors.account) {
                   setErrors({ ...errors, account: false });

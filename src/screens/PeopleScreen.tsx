@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import AppHeader from '../components/layout/AppHeader';
 import Card from '../components/ui/Card';
 import AppButton from '../components/ui/AppButton';
 import AppInput from '../components/ui/AppInput';
+import AppConfirmModal from '../components/ui/AppConfirmModal';
 import {
   getPeopleLedger,
   getLedgerSummary,
@@ -33,13 +34,13 @@ import {
 import { PeopleLedger, PeopleLedgerPayment } from '../types';
 import { scheduleLedgerNotifications } from '../lib/notifications';
 
-type FilterType = 'all' | 'lent' | 'settled';
+type FilterType = 'active' | 'settled';
 
 export default function PeopleScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [ledgerEntries, setLedgerEntries] = useState<PeopleLedger[]>([]);
   const [filteredEntries, setFilteredEntries] = useState<PeopleLedger[]>([]);
-  const [filter, setFilter] = useState<FilterType>('all');
+  const [filter, setFilter] = useState<FilterType>('active');
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState({ totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 });
   
@@ -47,6 +48,14 @@ export default function PeopleScreen() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState<PeopleLedger | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    confirmText: string;
+    isDestructive: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   useEffect(() => {
     loadData();
@@ -61,7 +70,7 @@ export default function PeopleScreen() {
     try {
       setLoading(true);
       const [entries, summaryData] = await Promise.all([
-        getPeopleLedger(true),
+        getPeopleLedger(true), // Fetch all, including settled
         getLedgerSummary(),
       ]);
       setLedgerEntries(entries);
@@ -79,16 +88,11 @@ export default function PeopleScreen() {
   };
 
   const applyFilter = () => {
-    let filtered = ledgerEntries.filter(e => e.type === 'lent'); // Only show lent entries
-    if (filter === 'lent') {
-      filtered = ledgerEntries.filter(e => e.type === 'lent' && !e.is_settled);
-    } else if (filter === 'settled') {
-      filtered = ledgerEntries.filter(e => e.type === 'lent' && e.is_settled);
+    if (filter === 'settled') {
+      setFilteredEntries(ledgerEntries.filter(e => e.is_settled));
     } else {
-      filtered = ledgerEntries.filter(e => e.type === 'lent' && !e.is_settled);
+      setFilteredEntries(ledgerEntries.filter(e => !e.is_settled));
     }
-    console.log('Filter:', filter, 'Total entries:', ledgerEntries.length, 'Filtered:', filtered.length);
-    setFilteredEntries(filtered);
   };
 
   const handleAddEntry = () => {
@@ -96,188 +100,93 @@ export default function PeopleScreen() {
     setShowAddModal(true);
   };
 
-  const handleAddPayment = (entry: PeopleLedger) => {
+  const handleAddPayment = useCallback((entry: PeopleLedger) => {
     setSelectedEntry(entry);
     setShowPaymentModal(true);
-  };
+  }, []);
 
-  const handleSettle = async (entry: PeopleLedger) => {
-    Alert.alert(
-      'Settle Entry',
-      `Mark ${entry.person_name} as settled?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Settle',
-          onPress: async () => {
-            try {
-              await markAsSettled(entry.id);
-              await loadData();
-            } catch (error) {
-              Alert.alert('Error', 'Failed to settle entry');
-            }
-          },
-        },
-      ]
-    );
-  };
+  const handleSettle = useCallback(async (entry: PeopleLedger) => {
+    setConfirmDialog({
+      visible: true,
+      title: 'Settle Entry',
+      message: `Mark ${entry.person_name} as settled?`,
+      confirmText: 'Settle',
+      isDestructive: false,
+      onConfirm: async () => {
+        try {
+          await markAsSettled(entry.id);
+          await loadData();
+          setConfirmDialog(null);
+        } catch (error) {
+          Alert.alert('Error', 'Failed to settle entry');
+        }
+      }
+    });
+  }, [loadData]);
 
-  const handleDelete = async (entry: PeopleLedger) => {
-    Alert.alert(
-      'Delete Entry',
-      `Delete ${entry.person_name}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteLedgerEntry(entry.id);
-              await loadData();
-            } catch (error) {
-              Alert.alert('Error', 'Failed to delete entry');
-            }
-          },
-        },
-      ]
-    );
-  };
+  const handleDelete = useCallback(async (entry: PeopleLedger) => {
+    setConfirmDialog({
+      visible: true,
+      title: 'Delete Entry',
+      message: `Delete ${entry.person_name}? This action cannot be undone.`,
+      confirmText: 'Delete',
+      isDestructive: true,
+      onConfirm: async () => {
+        try {
+          await deleteLedgerEntry(entry.id);
+          await loadData();
+          setConfirmDialog(null);
+        } catch (error) {
+          Alert.alert('Error', 'Failed to delete entry');
+        }
+      }
+    });
+  }, [loadData]);
 
-  const getPersonInitial = (name: string) => {
+  const getPersonInitial = useCallback((name: string) => {
     return name.charAt(0).toUpperCase();
-  };
+  }, []);
 
-  const getAvatarColor = (name: string) => {
-    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F'];
-    const index = name.charCodeAt(0) % colors.length;
-    return colors[index];
-  };
+  const getAvatarColor = useCallback((name: string) => {
+    const colorsList = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F'];
+    const index = name.charCodeAt(0) % colorsList.length;
+    return colorsList[index];
+  }, []);
 
-  const renderLedgerCard = ({ item }: { item: PeopleLedger }) => {
-    const progress = Number(item.paid_amount) / Number(item.total_amount);
-    const overdue = isOverdue(item);
-    const dueToday = isDueToday(item);
-    const daysUntilDue = getDaysUntilDue(item);
-    const expectedByToday = calculateExpectedByToday(item);
+  const openPaymentHistory = useCallback((entry: PeopleLedger) => {
+    setSelectedEntry(entry);
+    setShowPaymentHistoryModal(true);
+  }, []);
 
+  const renderLedgerCard = useCallback(({ item }: { item: PeopleLedger }) => {
+    if (item.is_settled) {
+      return (
+        <SettledRow
+          item={item}
+          colors={colors}
+          typography={typography}
+          spacing={spacing}
+          borderRadius={borderRadius}
+          onDelete={handleDelete}
+        />
+      );
+    }
     return (
-      <Card style={{ marginBottom: spacing.md }}>
-        <View style={styles.cardHeader}>
-          <View style={styles.personInfo}>
-            <View style={[styles.avatar, { backgroundColor: getAvatarColor(item.person_name) }]}>
-              <Text style={[typography.h3, { color: '#fff' }]}>{getPersonInitial(item.person_name)}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[typography.h4, { color: colors.text }]}>{item.person_name}</Text>
-              <View style={styles.badgeContainer}>
-                <View style={[styles.badge, { backgroundColor: colors.success + '20' }]}>
-                  <Text style={[typography.caption, { color: colors.success }]}>
-                    Lent
-                  </Text>
-                </View>
-                {overdue && (
-                  <View style={[styles.badge, { backgroundColor: colors.danger + '20' }]}>
-                    <Text style={[typography.caption, { color: colors.danger }]}>Overdue</Text>
-                  </View>
-                )}
-                {dueToday && (
-                  <View style={[styles.badge, { backgroundColor: colors.warning + '20' }]}>
-                    <Text style={[typography.caption, { color: colors.warning }]}>Due Today</Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          </View>
-        </View>
-
-        <View style={[styles.amountRow, { marginTop: spacing.md }]}>
-          <View style={styles.amountItem}>
-            <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={1}>Total</Text>
-            <Text style={[typography.h4, { color: colors.text, fontSize: 16 }]} numberOfLines={1} adjustsFontSizeToFit>
-              ₹{Number(item.total_amount).toFixed(0)}
-            </Text>
-          </View>
-          <View style={styles.amountItem}>
-            <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={1}>Paid</Text>
-            <Text style={[typography.h4, { color: colors.success, fontSize: 16 }]} numberOfLines={1} adjustsFontSizeToFit>
-              ₹{Number(item.paid_amount).toFixed(0)}
-            </Text>
-          </View>
-          <View style={styles.amountItem}>
-            <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={1}>Remaining</Text>
-            <Text style={[typography.h4, { color: colors.danger, fontSize: 16 }]} numberOfLines={1} adjustsFontSizeToFit>
-              ₹{Number(item.remaining_amount).toFixed(0)}
-            </Text>
-          </View>
-        </View>
-
-        <View style={[styles.progressBar, { backgroundColor: colors.border, marginTop: spacing.md }]}>
-          <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: colors.success }]} />
-        </View>
-
-        {item.repayment_type === 'one_time' && item.due_date && (
-          <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]}>
-            Due: {new Date(item.due_date).toLocaleDateString()} 
-            {daysUntilDue !== null && ` (${daysUntilDue > 0 ? `${daysUntilDue} days left` : `${Math.abs(daysUntilDue)} days overdue`})`}
-          </Text>
-        )}
-
-        {item.repayment_type === 'installment' && (
-          <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]}>
-            ₹{item.installment_amount}/day • Expected by today: ₹{expectedByToday.toFixed(0)}
-          </Text>
-        )}
-
-        {item.notes && (
-          <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm, fontStyle: 'italic' }]}>
-            {item.notes}
-          </Text>
-        )}
-
-        {/* Payment Info */}
-        {Number(item.paid_amount) > 0 && (
-          <TouchableOpacity 
-            onPress={() => {
-              setSelectedEntry(item);
-              setShowPaymentHistoryModal(true);
-            }}
-            style={{ marginTop: spacing.sm }}>
-            <Text style={[typography.caption, { color: colors.accent }]}>
-              💰 {Number(item.paid_amount) > 0 ? `₹${Number(item.paid_amount).toFixed(0)} paid` : 'No payments yet'} • Tap to view history
-            </Text>
-          </TouchableOpacity>
-        )}
-
-        {!item.is_settled && (
-          <View style={[styles.actionButtons, { marginTop: spacing.md }]}>
-            <AppButton
-              title="Add Payment"
-              onPress={() => handleAddPayment(item)}
-              variant="primary"
-              style={{ flex: 1, marginRight: spacing.xs, paddingVertical: spacing.sm }}
-            />
-            <AppButton
-              title="Settle"
-              onPress={() => handleSettle(item)}
-              variant="secondary"
-              style={{ flex: 1, paddingVertical: spacing.sm }}
-            />
-            <TouchableOpacity 
-              onPress={() => handleDelete(item)} 
-              style={{ 
-                marginLeft: spacing.xs, 
-                padding: spacing.sm,
-                justifyContent: 'center',
-                alignItems: 'center',
-              }}>
-              <MaterialCommunityIcons name="delete" size={20} color={colors.danger} />
-            </TouchableOpacity>
-          </View>
-        )}
-      </Card>
+      <LedgerCard
+        item={item}
+        colors={colors}
+        typography={typography}
+        spacing={spacing}
+        borderRadius={borderRadius}
+        onAddPayment={handleAddPayment}
+        onSettle={handleSettle}
+        onDelete={handleDelete}
+        onViewHistory={openPaymentHistory}
+        getAvatarColor={getAvatarColor}
+        getPersonInitial={getPersonInitial}
+      />
     );
-  };
+  }, [colors, typography, spacing, borderRadius, handleAddPayment, handleSettle, handleDelete, openPaymentHistory, getAvatarColor, getPersonInitial]);
 
   return (
     <ScreenWrapper>
@@ -313,7 +222,7 @@ export default function PeopleScreen() {
               }} 
             />
             <Text style={[typography.caption, { color: colors.subtext, fontSize: 16 }]}>
-              You Lent
+              Active Lent
             </Text>
             <Text style={[typography.h2, { color: colors.success, fontSize: 36, fontWeight: '800', marginTop: 4 }]}>
               ₹{summary.totalLent.toFixed(0)}
@@ -326,15 +235,12 @@ export default function PeopleScreen() {
 
         {/* Filter Tabs */}
         <View style={[styles.filterTabs, { marginBottom: spacing.md }]}>
-          {(['all', 'lent', 'settled'] as FilterType[]).map((f) => {
+          {(['active', 'settled'] as FilterType[]).map((f) => {
             const isActive = filter === f;
             return (
               <TouchableOpacity
                 key={f}
-                onPress={() => {
-                  console.log('Filter changed to:', f);
-                  setFilter(f);
-                }}
+                onPress={() => setFilter(f)}
                 style={[
                   styles.filterTab,
                   {
@@ -363,7 +269,6 @@ export default function PeopleScreen() {
             );
           })}
         </View>
-
         {/* People List */}
         {loading ? (
           <Text style={[typography.body, { color: colors.subtext, textAlign: 'center', marginTop: spacing.xl }]}>
@@ -373,19 +278,8 @@ export default function PeopleScreen() {
           <View style={{ alignItems: 'center', marginTop: spacing.xl }}>
             <MaterialCommunityIcons name="account-group-outline" size={64} color={colors.subtext} />
             <Text style={[typography.body, { color: colors.subtext, marginTop: spacing.md }]}>
-              {filter === 'settled' 
-                ? 'No settled entries' 
-                : filter === 'lent'
-                ? 'No lent entries'
-                : 'No entries found'}
+              {filter === 'settled' ? 'No settled entries' : 'No active entries'}
             </Text>
-            {filter !== 'all' && ledgerEntries.length > 0 && (
-              <TouchableOpacity onPress={() => setFilter('all')} style={{ marginTop: spacing.sm }}>
-                <Text style={[typography.caption, { color: colors.accent }]}>
-                  View all entries
-                </Text>
-              </TouchableOpacity>
-            )}
           </View>
         ) : (
           <FlatList
@@ -415,9 +309,210 @@ export default function PeopleScreen() {
         entry={selectedEntry}
         onClose={() => setShowPaymentHistoryModal(false)}
       />
+
+      <AppConfirmModal
+        visible={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        confirmText={confirmDialog?.confirmText}
+        isDestructive={confirmDialog?.isDestructive}
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
     </ScreenWrapper>
   );
 }
+
+// Compact Table Row for Settled Entries
+const SettledRow = React.memo(({
+  item,
+  colors,
+  typography,
+  spacing,
+  borderRadius,
+  onDelete
+}: any) => {
+  return (
+    <View style={{
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      backgroundColor: colors.card,
+      borderRadius: borderRadius.md,
+      marginBottom: spacing.xs,
+      borderWidth: 1,
+      borderColor: colors.border
+    }}>
+      <View style={{ flex: 1 }}>
+        <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]} numberOfLines={1}>
+          {item.person_name}
+        </Text>
+        <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
+          Given: {new Date(item.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+        </Text>
+      </View>
+      <View style={{ flex: 1, alignItems: 'flex-end', paddingRight: spacing.md }}>
+        <Text style={[typography.bodyBold, { color: colors.success, fontSize: 14 }]}>
+          ₹{Number(item.total_amount).toFixed(0)}
+        </Text>
+        <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
+          {item.settled_at 
+            ? `Cleared on: ${new Date(item.settled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` 
+            : 'Cleared'}
+        </Text>
+      </View>
+      <TouchableOpacity onPress={() => onDelete(item)} style={{ padding: spacing.xs }}>
+        <MaterialCommunityIcons name="delete" size={20} color={colors.danger} />
+      </TouchableOpacity>
+    </View>
+  );
+});
+
+// Memoized Card Component
+const LedgerCard = React.memo(({ 
+  item, 
+  colors, 
+  typography, 
+  spacing,
+  borderRadius,
+  onAddPayment, 
+  onSettle, 
+  onDelete, 
+  onViewHistory,
+  getAvatarColor,
+  getPersonInitial
+}: any) => {
+  const progress = Number(item.paid_amount) / Number(item.total_amount);
+  const overdue = isOverdue(item);
+  const dueToday = isDueToday(item);
+  const daysUntilDue = getDaysUntilDue(item);
+  const expectedByToday = calculateExpectedByToday(item);
+
+  return (
+    <Card style={{ marginBottom: spacing.md }}>
+      <View style={styles.cardHeader}>
+        <View style={styles.personInfo}>
+          <View style={[styles.avatar, { backgroundColor: getAvatarColor(item.person_name) }]}>
+            <Text style={[typography.h3, { color: '#fff' }]}>{getPersonInitial(item.person_name)}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[typography.bodyBold, { color: colors.text }]}>{item.person_name}</Text>
+            <Text style={[typography.caption, { color: colors.subtext, fontSize: 10, marginTop: 2, marginBottom: 4 }]}>
+              Given on: {new Date(item.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </Text>
+            <View style={styles.badgeContainer}>
+              <View style={[styles.badge, { backgroundColor: colors.success + '20' }]}>
+                <Text style={[typography.caption, { color: colors.success }]}>Lent</Text>
+              </View>
+              {item.is_settled ? (
+                <View style={[styles.badge, { backgroundColor: colors.subtext + '30' }]}>
+                  <Text style={[typography.caption, { color: colors.subtext, fontWeight: 'bold' }]}>SETTLED</Text>
+                </View>
+              ) : (
+                <>
+                  {overdue && (
+                    <View style={[styles.badge, { backgroundColor: colors.danger + '20' }]}>
+                      <Text style={[typography.caption, { color: colors.danger }]}>Overdue</Text>
+                    </View>
+                  )}
+                  {dueToday && (
+                    <View style={[styles.badge, { backgroundColor: colors.warning + '20' }]}>
+                      <Text style={[typography.caption, { color: colors.warning }]}>Due Today</Text>
+                    </View>
+                  )}
+                </>
+              )}
+            </View>
+          </View>
+        </View>
+      </View>
+
+      <View style={[styles.amountRow, { marginTop: spacing.md }]}>
+        <View style={styles.amountItem}>
+          <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={1}>Total</Text>
+          <Text style={[typography.bodyBold, { color: colors.text, fontSize: 16 }]} numberOfLines={1} adjustsFontSizeToFit>
+            ₹{Number(item.total_amount).toFixed(0)}
+          </Text>
+        </View>
+        <View style={styles.amountItem}>
+          <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={1}>Paid</Text>
+          <Text style={[typography.bodyBold, { color: colors.success, fontSize: 16 }]} numberOfLines={1} adjustsFontSizeToFit>
+            ₹{Number(item.paid_amount).toFixed(0)}
+          </Text>
+        </View>
+        <View style={styles.amountItem}>
+          <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={1}>{item.is_settled ? 'Cleared' : 'Remaining'}</Text>
+          <Text style={[typography.bodyBold, { color: item.is_settled ? colors.subtext : colors.danger, fontSize: 16 }]} numberOfLines={1} adjustsFontSizeToFit>
+            ₹{item.is_settled ? '0' : Number(item.remaining_amount).toFixed(0)}
+          </Text>
+        </View>
+      </View>
+
+      <View style={[styles.progressBar, { backgroundColor: colors.border, marginTop: spacing.md }]}>
+        <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: colors.success }]} />
+      </View>
+
+      {item.repayment_type === 'one_time' && item.due_date && (
+        <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]}>
+          Due: {new Date(item.due_date).toLocaleDateString()} 
+          {daysUntilDue !== null && ` (${daysUntilDue > 0 ? `${daysUntilDue} days left` : `${Math.abs(daysUntilDue)} days overdue`})`}
+        </Text>
+      )}
+
+      {item.repayment_type === 'installment' && (
+        <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]}>
+          ₹{item.installment_amount}/day • Expected by today: ₹{expectedByToday.toFixed(0)}
+        </Text>
+      )}
+
+      {item.notes && (
+        <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm, fontStyle: 'italic' }]}>
+          {item.notes}
+        </Text>
+      )}
+
+      {Number(item.paid_amount) > 0 && (
+        <TouchableOpacity 
+          onPress={() => onViewHistory(item)}
+          style={{ marginTop: spacing.sm }}>
+          <Text style={[typography.caption, { color: colors.accent }]}>
+            💰 ₹{Number(item.paid_amount).toFixed(0)} paid • Tap to view history
+          </Text>
+        </TouchableOpacity>
+      )}
+
+      <View style={[styles.actionButtons, { marginTop: spacing.md }]}>
+        {!item.is_settled && (
+          <>
+            <AppButton
+              title="Add Payment"
+              onPress={() => onAddPayment(item)}
+              variant="primary"
+              style={{ flex: 1, marginRight: spacing.xs, paddingVertical: spacing.sm }}
+            />
+            <AppButton
+              title="Settle"
+              onPress={() => onSettle(item)}
+              variant="secondary"
+              style={{ flex: 1, paddingVertical: spacing.sm }}
+            />
+          </>
+        )}
+        <TouchableOpacity 
+          onPress={() => onDelete(item)} 
+          style={{ 
+            marginLeft: spacing.xs, 
+            padding: spacing.sm,
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}>
+          <MaterialCommunityIcons name="delete" size={20} color={colors.danger} />
+        </TouchableOpacity>
+      </View>
+    </Card>
+  );
+});
 
 // Add Entry Modal Component
 function AddEntryModal({ visible, onClose, onSuccess }: { visible: boolean; onClose: () => void; onSuccess: () => void }) {
@@ -673,15 +768,15 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
             <View style={[styles.amountRow, { marginBottom: spacing.md, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
               <View style={styles.amountItem}>
                 <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>Total</Text>
-                <Text style={[typography.h4, { color: colors.text, fontSize: 16 }]}>₹{Number(entry.total_amount).toFixed(0)}</Text>
+                <Text style={[typography.bodyBold, { color: colors.text, fontSize: 16 }]}>₹{Number(entry.total_amount).toFixed(0)}</Text>
               </View>
               <View style={styles.amountItem}>
                 <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>Paid</Text>
-                <Text style={[typography.h4, { color: colors.success, fontSize: 16 }]}>₹{Number(entry.paid_amount).toFixed(0)}</Text>
+                <Text style={[typography.bodyBold, { color: colors.success, fontSize: 16 }]}>₹{Number(entry.paid_amount).toFixed(0)}</Text>
               </View>
               <View style={styles.amountItem}>
-                <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>Remaining</Text>
-                <Text style={[typography.h4, { color: colors.danger, fontSize: 16 }]}>₹{Number(entry.remaining_amount).toFixed(0)}</Text>
+                <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>{entry.is_settled ? 'Cleared' : 'Remaining'}</Text>
+                <Text style={[typography.bodyBold, { color: entry.is_settled ? colors.subtext : colors.danger, fontSize: 16 }]}>₹{entry.is_settled ? '0' : Number(entry.remaining_amount).toFixed(0)}</Text>
               </View>
             </View>
 
@@ -714,10 +809,13 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
                           ₹{Number(payment.amount).toFixed(0)}
                         </Text>
                         <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>
-                          {new Date(payment.paid_date).toLocaleDateString('en-IN', { 
+                          Paid on {new Date(payment.created_at).toLocaleString('en-IN', { 
                             day: 'numeric', 
                             month: 'short', 
-                            year: 'numeric' 
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            hour12: true
                           })}
                         </Text>
                         {payment.notes && (

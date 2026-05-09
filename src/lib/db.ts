@@ -50,10 +50,14 @@ export async function getTransactions(): Promise<Transaction[]> {
 }
 
 export async function deleteTransaction(id: string): Promise<void> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('User not authenticated');
+
   const { error } = await supabase
     .from('transactions')
     .delete()
-    .eq('id', id);
+    .eq('id', id)
+    .eq('user_id', user.id);
 
   if (error) {
     throw new Error(error.message);
@@ -64,10 +68,14 @@ export async function updateTransaction(
   id: string,
   updates: Partial<Omit<Transaction, 'id' | 'user_id' | 'created_at'>>
 ): Promise<Transaction> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('User not authenticated');
+
   const { data, error } = await supabase
     .from('transactions')
     .update(updates)
     .eq('id', id)
+    .eq('user_id', user.id)
     .select()
     .single();
 

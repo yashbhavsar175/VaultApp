@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { 
+  isSpamMessage, 
+  showSmsFailedNotification, 
+  showTransactionConfirmation 
+} from './transactionNotifications';
 
 interface SmsData {
   sender: string;
@@ -27,13 +32,46 @@ interface BankAccount {
 // Known bank and UPI sender IDs
 const BANK_SENDERS = [
   'HDFCBK', 'ICICIB', 'SBIINB', 'AXISBK', 'KOTAKB', 'PNBSMS', 
-  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB'
+  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'JM-UTKSPR', 'UTKARSH', 'SFBL'
 ];
 
 const UPI_SENDERS = [
   'PAYTMB', 'GPAYID', 'PHONEPE', 'BHARTP', 'AMAZONP', 'WHATSAP',
   'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED'
 ];
+
+// Blocked senders - system test messages that should be ignored
+const BLOCKED_SENDERS = ['TEST', 'TEST-SMS', 'DM-TEST', 'VM-TEST'];
+
+// TRAI DLT prefixes for legitimate business SMS
+const TRAI_DLT_PREFIXES = ['JM-', 'BT-', 'AD-', 'VM-', 'DM-', 'TM-', 'AM-', 'LM-'];
+
+/**
+ * Check if sender is blocked (test messages)
+ */
+function isBlockedSender(sender: string): boolean {
+  const upperSender = sender.toUpperCase();
+  return BLOCKED_SENDERS.some(blocked => upperSender.includes(blocked));
+}
+
+/**
+ * Check if sender is from a legitimate financial institution
+ * Must either be in whitelist OR have TRAI DLT prefix
+ */
+function isLegitimateFinancialSender(sender: string): boolean {
+  const upperSender = sender.toUpperCase();
+  
+  // Check whitelist
+  const isWhitelisted = BANK_SENDERS.some(bank => upperSender.includes(bank)) ||
+                       UPI_SENDERS.some(upi => upperSender.includes(upi));
+  
+  if (isWhitelisted) return true;
+  
+  // Check TRAI DLT prefix
+  const hasDLTPrefix = TRAI_DLT_PREFIXES.some(prefix => upperSender.startsWith(prefix));
+  
+  return hasDLTPrefix;
+}
 
 /**
  * Determines if sender is from a bank or UPI app
@@ -57,6 +95,7 @@ function identifySource(sender: string): 'bank' | 'upi' | 'unknown' {
  */
 function extractAccountLast4(body: string): string | undefined {
   const accountPatterns = [
+    /(?:SuperCard|Card)\s+(\d{4})/i, // Utkarsh SuperCard 6055
     /A\/?C\s*[-:xX*]*\s*(\d{4})/i, // Highly permissive: catches "AC X1447", "A/C 1447", "A/c xx5235"
     /A\/c\s*(?:no\.?|number)?\s*[xX*]*(\d{4})/i,
     /account\s*(?:no\.?|number)?\s*[xX*]*(\d{4})/i,
@@ -72,6 +111,13 @@ function extractAccountLast4(body: string): string | undefined {
   }
 
   return undefined;
+}
+
+/**
+ * Check if a string is a pure numeric UPI ID (not a merchant name)
+ */
+function isNumericUpiId(str: string): boolean {
+  return /^\d+$/.test(str.trim());
 }
 
 /**
@@ -106,17 +152,29 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
       return null; // No valid amount found
     }
 
-    // Determine transaction type
-    // Check for "paid you" pattern first (indicates credit/income)
+    // BUG FIX 2: Determine transaction type with fallback check
+    // CRITICAL: "debited" MUST always be 'debit', "credited" MUST always be 'credit'
     const isPaidToYou = /paid\s+(?:to\s+)?you/i.test(body);
-    const isCredit = isPaidToYou || /credited|received|deposited|refund|added|cr\s/i.test(body);
+    const isCredit = isPaidToYou || 
+                     /you'?ve\s+got/i.test(body) ||   // ADD THIS LINE
+                     /credited|received|deposited|refund|added|cr\s/i.test(body);
     const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\s/i.test(body) || 
                     (!isCredit && /paid/i.test(body)); // "paid" alone is debit only if not credit
     
-    const type: 'debit' | 'credit' = isCredit ? 'credit' : isDebit ? 'debit' : 'debit';
+    // Fallback: If SMS contains "debited" keyword, force type to 'debit'
+    // If SMS contains "credited" keyword, force type to 'credit'
+    let type: 'debit' | 'credit';
+    if (/\bdebited\b/i.test(body)) {
+      type = 'debit';
+    } else if (/\bcredited\b/i.test(body)) {
+      type = 'credit';
+    } else {
+      type = isCredit ? 'credit' : isDebit ? 'debit' : 'debit';
+    }
 
     // Extract reference number (UPI Ref/UTR/Transaction ID)
     const refPatterns = [
+      /(?:for\s+)?UPI\s*-?\s*(\d+)/i, // BUG FIX 1: "for UPI - 610384124320"
       /(?:UPI Ref|UPI ID|UTR|Ref No|Transaction ID|TXN ID)[\s:]*([A-Z0-9]+)/i,
       /Ref[\s#:]*([0-9]{12,})/i,
     ];
@@ -132,8 +190,14 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
 
     // Extract merchant/payee name (including UPI IDs)
     const merchantPatterns = [
+      // NEW: "You've got ₹250 from NAME in your..." (Slice/Super.money format)
+      /You'?ve\s+got\s+(?:INR|Rs\.?|₹)[0-9,.]+ from\s+([A-Za-z\s]+?)(?:\s+in\s+your|\s+to\s+your|\s+on|\.|$)/i,
+      // NEW: Generic "from NAME in your..."
+      /(?:received from|from)\s+([A-Z][A-Za-z\s]+?)(?:\s+in\s+your|\s+to\s+your|\s+on\s+\d|\.|$)/i,
+      // EXISTING (keep all, but add "in your" as stop word to the 3rd pattern)
+      /(?:at|for)\s+([A-Z][A-Za-z\s&]+?)(?:\s+using|\s+on|\.|$)/i, // "at Swiggy", "for Amazon"
       /(?:to)\s+([A-Z][A-Za-z\s&]+?)(?:\s*\(UPI Ref)/i,
-      /(?:to|at|from|paid to|sent to)\s+([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\.|$)/i, // Improved: handles adjacent parentheses
+      /(?:to|at|from|paid to|sent to)\s+([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+in\s+your|\.|$)/i,
       /(?:paid to|sent to|received from)\s+([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\.|$)/i,
     ];
 
@@ -144,6 +208,11 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
         merchant = match[1].trim();
         break;
       }
+    }
+
+    // BUG FIX 3: If merchant is a numeric UPI ID, replace with "UPI Payment"
+    if (merchant && isNumericUpiId(merchant)) {
+      merchant = 'UPI Payment';
     }
 
     // Extract balance
@@ -482,6 +551,25 @@ export default async (taskData: SmsData) => {
   console.log('SMS Processor Task Started', taskData);
 
   try {
+    // SENDER FILTER 1: Block test/system messages
+    if (isBlockedSender(taskData.sender)) {
+      console.log('⛔ Blocked sender detected - skipping:', taskData.sender);
+      return; // Skip entirely, no parse, no notification
+    }
+
+    // SENDER FILTER 2: Only process legitimate financial senders
+    if (!isLegitimateFinancialSender(taskData.sender)) {
+      console.log('⛔ Non-financial sender detected - skipping:', taskData.sender);
+      return; // Skip silently, no notification
+    }
+
+    // SPAM FILTER: Check if SMS is promotional/spam before parsing
+    if (isSpamMessage(taskData.body)) {
+      console.log('⚠️ SMS identified as spam/promo - skipping parse');
+      console.log('Spam SMS body:', taskData.body.substring(0, 100));
+      return; // Skip processing
+    }
+
     // Parse the SMS
     const parsed = parseSms(taskData.body, taskData.sender);
     
@@ -848,12 +936,32 @@ export default async (taskData: SmsData) => {
 
     // transactionType already defined above before duplicate check
 
+    // BUG FIX 3 & 4: Validate merchant before insertion
+    let finalMerchant = parsed.merchant;
+    let finalNote = parsed.merchant || 'Unknown';
+    
+    // If merchant is null, "Unknown", or empty after parsing
+    if (!finalMerchant || finalMerchant.trim() === '' || finalMerchant.toLowerCase() === 'unknown') {
+      console.log('Merchant is null or Unknown - firing SMS failed notification');
+      
+      // BUG FIX 4: Fire notification instead of silent insert
+      await showSmsFailedNotification(taskData.body, taskData.sender);
+      return; // Do not insert transaction
+    }
+    
+    // BUG FIX 3: If merchant is numeric UPI ID, store in notes
+    let additionalNotes = '';
+    if (parsed.reference && isNumericUpiId(parsed.reference)) {
+      additionalNotes = `UPI ID: ${parsed.reference}`;
+      finalNote = finalMerchant === 'UPI Payment' ? `UPI Payment (${parsed.reference})` : finalMerchant;
+    }
+
     const insertPayload: any = {
       user_id: userId,
       amount: parsed.amount,
       type: transactionType, // Use 'expense' or 'income' instead of 'debit' or 'credit'
       category: parsed.type === 'debit' ? 'other' : 'income',
-      note: parsed.merchant || 'Unknown',
+      note: additionalNotes ? `${finalNote}\n${additionalNotes}` : finalNote,
       reference_number: parsed.reference,
       balance: parsed.balance,
       sms_source: parsed.source,
@@ -885,6 +993,18 @@ export default async (taskData: SmsData) => {
       console.error('Error details:', JSON.stringify(insertError, null, 2));
     } else {
       console.log('Transaction inserted successfully:', insertData);
+      
+      // Show confirmation notification
+      if (insertData && insertData[0]) {
+        const transaction = insertData[0];
+        await showTransactionConfirmation(
+          transaction.id,
+          transaction.type,
+          finalNote,
+          parsed.amount,
+          currentAccount ? `${currentAccount.bank_name} ••${currentAccount.account_last4}` : undefined
+        );
+      }
       
       // Update bank balance
       if (currentAccount) {

@@ -213,12 +213,8 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     loadThemePreference();
   }, []);
 
-  // Update theme when system preference changes (only if mode is 'system')
-  useEffect(() => {
-    if (themeMode === 'system') {
-      // Force re-render when system theme changes
-    }
-  }, [systemColorScheme]);
+  // Theme automatically updates when systemColorScheme changes
+  // because getActiveTheme() is called during render
 
   const loadThemePreference = async () => {
     try {
