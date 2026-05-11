@@ -20,6 +20,7 @@ import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../components';
 import AppConfirmModal from '../components/ui/AppConfirmModal';
 import { getBankColor, getBankSuggestions } from '../constants/bankLogos';
+import { getCached, setCache, CACHE_KEYS } from '../lib/dataCache';
 
 export default function BanksScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
@@ -68,7 +69,18 @@ export default function BanksScreen() {
 
   const loadData = async () => {
     try {
-      setLoading(true);
+      // Show cached data instantly
+      const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+      if (cached && cached.length > 0) {
+        const cachedStr = JSON.stringify(cached);
+        if (lastDataStringRef.current !== cachedStr) {
+          lastDataStringRef.current = cachedStr;
+          setBanks(cached);
+        }
+        setLoading(false);
+      }
+
+      // Then fetch fresh from cloud
       const banksData = await getBankAccounts();
       const dataStr = JSON.stringify(banksData);
       
@@ -76,6 +88,7 @@ export default function BanksScreen() {
         lastDataStringRef.current = dataStr;
         setBanks(banksData);
       }
+      setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
     } catch (error) {
       console.error('Error loading data:', error);
       Toast.show({

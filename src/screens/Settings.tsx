@@ -78,11 +78,19 @@ export default function Settings() {
 
   const loadUserInfo = async () => {
     try {
+      // Show cached profile instantly
+      const cachedProfile = await AsyncStorage.getItem('cache_user_profile');
+      if (cachedProfile) {
+        const { email, name } = JSON.parse(cachedProfile);
+        if (email) setUserEmail(email);
+        if (name) setUserName(name);
+      }
+
+      // Then fetch fresh from cloud
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.email) {
         setUserEmail(user.email);
 
-        // Load profile name
         const { data: profile } = await supabase
           .from('profiles')
           .select('full_name')
@@ -92,6 +100,12 @@ export default function Settings() {
         if (profile?.full_name) {
           setUserName(profile.full_name);
         }
+
+        // Update cache
+        AsyncStorage.setItem('cache_user_profile', JSON.stringify({
+          email: user.email,
+          name: profile?.full_name || '',
+        }));
       }
     } catch (error) {
       console.error('Error loading user info:', error);
@@ -158,6 +172,11 @@ export default function Settings() {
 
       setUserName(editedName.trim());
       setShowEditModal(false);
+      // Update profile cache
+      AsyncStorage.setItem('cache_user_profile', JSON.stringify({
+        email: userEmail,
+        name: editedName.trim(),
+      }));
       Toast.show({
         type: 'success',
         text1: 'Success',

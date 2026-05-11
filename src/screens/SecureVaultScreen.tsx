@@ -10,6 +10,7 @@ import { ScreenWrapper, Card, AppHeader } from '../components';
 import AppConfirmModal from '../components/ui/AppConfirmModal';
 import AppButton from '../components/ui/AppButton';
 import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../lib/vaultDb';
+import { getCached, setCache, CACHE_KEYS } from '../lib/dataCache';
 
 type VaultCategory = 'bank_pin' | 'upi_pin' | 'card' | 'netbanking' | 'app_password' | 'other';
 
@@ -91,18 +92,30 @@ export default function SecureVaultScreen() {
     loadItems();
   }, []);
 
+  const mapToVaultItem = (d: any): VaultItem => ({
+    id: d.id,
+    title: d.title,
+    category: d.category as VaultCategory,
+    fields: d.fields,
+    notes: d.notes,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
+  });
+
   const loadItems = async () => {
     try {
+      // Show cached data instantly
+      const cached = await getCached<VaultItem[]>(CACHE_KEYS.VAULT_ITEMS);
+      if (cached && cached.length > 0) {
+        setItems(cached);
+        setLoading(false);
+      }
+
+      // Then fetch fresh from cloud
       const data = await getVaultItems();
-      setItems(data.map(d => ({
-        id: d.id,
-        title: d.title,
-        category: d.category as VaultCategory,
-        fields: d.fields,
-        notes: d.notes,
-        createdAt: d.createdAt,
-        updatedAt: d.updatedAt,
-      })));
+      const mapped = data.map(mapToVaultItem);
+      setItems(mapped);
+      setCache(CACHE_KEYS.VAULT_ITEMS, mapped);
     } catch (e) {
       console.error('Error loading vault items:', e);
       Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to load vault items' });
@@ -110,6 +123,13 @@ export default function SecureVaultScreen() {
       setLoading(false);
     }
   };
+
+  // Keep cache in sync with items state (after add/edit/delete)
+  useEffect(() => {
+    if (items.length > 0) {
+      setCache(CACHE_KEYS.VAULT_ITEMS, items);
+    }
+  }, [items]);
 
   const onRefresh = async () => {
     setRefreshing(true);

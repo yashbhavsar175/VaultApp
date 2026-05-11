@@ -4,6 +4,8 @@ const CACHE_KEYS = {
   TRANSACTIONS: 'cache_transactions',
   PEOPLE_LEDGER: 'cache_people_ledger',
   PLACES: 'cache_places',
+  VAULT_ITEMS: 'cache_vault_items',
+  BANK_ACCOUNTS: 'cache_bank_accounts',
 } as const;
 
 // Max age before cache is considered too stale (5 minutes)

@@ -16,6 +16,7 @@ import { configureGoogleSignIn } from './src/lib/googleAuth';
 import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/BackgroundEventHandler';
 import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/PorterDistanceCalculator';
 import PermissionPrompt from './src/components/PermissionPrompt';
+import { prefetchAllData } from './src/lib/prefetch';
 
 const toastConfig = {
   success: (props: any) => (
@@ -175,6 +176,7 @@ function App() {
             setSession(session);
             if (session?.user) {
               checkProfile(session.user.id);
+              prefetchAllData(); // Prefetch all data for instant screen loads
               AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
                 access_token: session.access_token,
                 refresh_token: session.refresh_token,
@@ -193,6 +195,7 @@ function App() {
       setSession(session);
       if (session?.user) {
         checkProfile(session.user.id);
+        prefetchAllData(); // Prefetch all data for instant screen loads
         AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
           access_token: session.access_token,
           refresh_token: session.refresh_token,
