@@ -122,14 +122,22 @@ export default function Dashboard() {
     }
   };
 
+  // Deep equality tracking
+  const lastTransactionsStringRef = useRef<string | null>(null);
+  const lastPeopleStringRef = useRef<string | null>(null);
+
   const loadDataSilently = async () => {
     try {
       // Load transactions
       try {
         const data = await getTransactions();
-        setTransactions(data);
-        // Save to cache for next instant load
-        setCache(CACHE_KEYS.TRANSACTIONS, data);
+        const dataStr = JSON.stringify(data);
+        if (lastTransactionsStringRef.current !== dataStr) {
+          lastTransactionsStringRef.current = dataStr;
+          setTransactions(data);
+          // Save to cache for next instant load
+          setCache(CACHE_KEYS.TRANSACTIONS, data);
+        }
       } catch (error) {
         console.error('Error loading transactions:', error);
       }
@@ -137,10 +145,14 @@ export default function Dashboard() {
       // Load people ledger data
       try {
         const ledgerData = await getPeopleLedger(false);
-        setPeopleLedger(ledgerData);
-        setPeopleSummary(computePeopleSummary(ledgerData));
-        // Save to cache
-        setCache(CACHE_KEYS.PEOPLE_LEDGER, ledgerData);
+        const ledgerStr = JSON.stringify(ledgerData);
+        if (lastPeopleStringRef.current !== ledgerStr) {
+          lastPeopleStringRef.current = ledgerStr;
+          setPeopleLedger(ledgerData);
+          setPeopleSummary(computePeopleSummary(ledgerData));
+          // Save to cache
+          setCache(CACHE_KEYS.PEOPLE_LEDGER, ledgerData);
+        }
       } catch (error) {
         console.error('Error loading people ledger:', error);
       }

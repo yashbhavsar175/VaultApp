@@ -64,11 +64,18 @@ export default function BanksScreen() {
     }, [])
   );
 
+  const lastDataStringRef = useRef<string | null>(null);
+
   const loadData = async () => {
     try {
       setLoading(true);
       const banksData = await getBankAccounts();
-      setBanks(banksData);
+      const dataStr = JSON.stringify(banksData);
+      
+      if (lastDataStringRef.current !== dataStr) {
+        lastDataStringRef.current = dataStr;
+        setBanks(banksData);
+      }
     } catch (error) {
       console.error('Error loading data:', error);
       Toast.show({
@@ -85,6 +92,8 @@ export default function BanksScreen() {
     try {
       setRefreshing(true);
       const banksData = await getBankAccounts();
+      const dataStr = JSON.stringify(banksData);
+      lastDataStringRef.current = dataStr;
       setBanks(banksData);
       Toast.show({
         type: 'success',

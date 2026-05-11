@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,11 +26,17 @@ export default function LoansList() {
   const [loans, setLoans] = useState<Loan[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const lastDataStringRef = useRef<string | null>(null);
 
   const loadLoans = async () => {
     try {
       const data = await getLoans();
-      setLoans(data);
+      const dataStr = JSON.stringify(data);
+      
+      if (lastDataStringRef.current !== dataStr) {
+        lastDataStringRef.current = dataStr;
+        setLoans(data);
+      }
     } catch (error) {
       console.error('Error loading loans:', error);
     } finally {

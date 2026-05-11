@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, InteractionManager } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getTransactions } from '../lib/db';
@@ -20,6 +20,7 @@ export default function AnalyticsScreen() {
   const [timeRange, setTimeRange] = useState<TimeRange>('month');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const lastDataStringRef = useRef<string | null>(null);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -35,7 +36,12 @@ export default function AnalyticsScreen() {
     try {
       const data = await getTransactions();
       const filtered = filterByTimeRange(data, timeRange);
-      setTransactions(filtered);
+      const dataStr = JSON.stringify(filtered);
+      
+      if (lastDataStringRef.current !== dataStr) {
+        lastDataStringRef.current = dataStr;
+        setTransactions(filtered);
+      }
     } catch (error) {
       console.error('Error loading analytics data:', error);
     } finally {

@@ -48,10 +48,18 @@ These are real bugs that were introduced and caught during development. Read the
 - **Root cause**: `useNavigationState` only resolved one level deep. It saw "Dashboard" tab but didn't drill into `DashboardStack` to see that the active screen was `TransactionDetail`.
 - **Correct fix**: Deep-resolve the navigation state by looping `while (route.state)` to get the actual leaf screen name. Only show exit on exact root screens (`DashboardHome`, `People`, `Add`, `Vault`, `Settings`).
 
-### ❌ Mistake 3: Touches dropped after screen transition
-- **What happened**: When navigating to the Transactions screen, tapping an entry within the first 1-2 seconds did nothing. Same issue when going back.
-- **Root cause**: `useFocusEffect` called `loadTransactions()` immediately on focus. The async fetch resolved during the slide-in animation, triggering a full FlatList re-render that blocked the JS thread and swallowed touch events.
-- **Correct fix**: Wrap ALL data fetching inside `InteractionManager.runAfterInteractions()` so the fetch only starts AFTER the animation completes and the UI is idle.
+### ❌ Mistake 3: Touches dropped after screen transition (JS Thread Freeze)
+- **What happened**: When navigating to the Transactions screen, tapping an entry within the first 1-2 seconds did nothing.
+- **Root cause**: `useFocusEffect` called `loadData()` which ran `setState(data)` with new array references on EVERY screen focus. Even if data was identical, React reconciled the entire `FlatList`, freezing the JS thread and dropping touches.
+- **Correct fix 1 (Timing)**: Wrap ALL data fetching inside `InteractionManager.runAfterInteractions()` so it starts after animations.
+- **Correct fix 2 (Deep Equality Check)**: Before updating state in `loadData`, compare the stringified data. If it hasn't changed, `return` to prevent the useless re-render.
+  ```typescript
+  const data = await getTransactions();
+  const dataStr = JSON.stringify(data);
+  if (lastDataStringRef.current === dataStr) return; // Prevent re-render!
+  lastDataStringRef.current = dataStr;
+  setTransactions(data);
+  ```
 
 ### ❌ Mistake 4: Vault data stored only in AsyncStorage (LOCAL)
 - **What happened**: User saved passwords/PINs in the Secure Vault. After uninstalling the app, ALL vault entries were permanently deleted.
@@ -67,5 +75,10 @@ These are real bugs that were introduced and caught during development. Read the
 - **What happened**: Transaction detail showed "Tracked Via: Upi" instead of "Notification (Google Pay)" or "SMS (HDFC)".
 - **Root cause**: `sms_source` was set to `parsed.source` which was the parser's internal classification (`'bank'` or `'upi'`), not the actual channel the data came from.
 - **Correct fix**: Set `sms_source` explicitly to `'sms'`, `'notification'`, `'mail'`, `'voice'`, or `'manual'` depending on the entry point. Store the raw sender/package in `sms_sender` for display.
+
+### ❌ Mistake 7: Hardcoding API Keys in AndroidManifest.xml
+- **What happened**: A Google Maps API key (or other secret) was hardcoded directly in `AndroidManifest.xml` via a `<meta-data>` tag, causing a severe secret leak detected by GitGuardian.
+- **Root cause**: The developer placed the plain-text string directly into the tracked source code instead of loading it securely from a local environment file.
+- **Correct fix**: Define the key in `android/local.properties` (which is ignored by Git). Use a Gradle script (`build.gradle`) to load the property and inject it into `AndroidManifest.xml` using `manifestPlaceholders`. For example: `android:value="${GOOGLE_MAPS_API_KEY}"`. NEVER commit API keys or secrets to the repository.
 
 **Priority**: These rules are absolute. When interpreting a prompt, adjust the implementation to match these guidelines even if not explicitly requested by the user.

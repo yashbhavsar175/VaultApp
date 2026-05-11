@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,11 +26,17 @@ export default function CreditCardsList() {
   const [cards, setCards] = useState<CreditCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const lastDataStringRef = useRef<string | null>(null);
 
   const loadCards = async () => {
     try {
       const data = await getCreditCards();
-      setCards(data);
+      const dataStr = JSON.stringify(data);
+      
+      if (lastDataStringRef.current !== dataStr) {
+        lastDataStringRef.current = dataStr;
+        setCards(data);
+      }
     } catch (error) {
       console.error('Error loading cards:', error);
     } finally {
