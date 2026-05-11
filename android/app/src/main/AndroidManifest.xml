@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -10,6 +11,10 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <application
       android:name=".MainApplication"
@@ -18,7 +23,15 @@
       android:allowBackup="false"
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
-      android:supportsRtl="true">
+      android:supportsRtl="true"
+      tools:replace="android:appComponentFactory"
+      android:appComponentFactory="androidx.core.app.CoreComponentFactory">
+
+      <!-- Google Maps API Key -->
+      <meta-data
+        android:name="com.google.android.geo.API_KEY"
+        android:value="AIzaSyBjw5hkphW59klyy4DO1lj5u5WJaCF_fFo" />
+
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
@@ -61,5 +74,18 @@
         android:name=".SmsProcessorService"
         android:enabled="true"
         android:exported="false" />
+
+      <!-- Porter Accessibility Service -->
+      <service
+        android:name=".PorterAccessibilityService"
+        android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.accessibilityservice.AccessibilityService" />
+        </intent-filter>
+        <meta-data
+            android:name="android.accessibilityservice"
+            android:resource="@xml/accessibility_service_config" />
+      </service>
     </application>
 </manifest>

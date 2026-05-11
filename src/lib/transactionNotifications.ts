@@ -5,9 +5,11 @@
 
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import { supabase } from './supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Spam/Promo keywords to filter out
 const SPAM_KEYWORDS = [
+  // Promotional / marketing
   'loan offer',
   'get your',
   'instantly',
@@ -28,6 +30,43 @@ const SPAM_KEYWORDS = [
   'no documents',
   'easy emi',
   'cashback offer',
+  // EMI / Bill reminders (NOT actual transactions)
+  'emi due',
+  'emi is due',
+  'is due on',
+  'due on ',       // trailing space to avoid false positives
+  'payment due',
+  'bill due',
+  'pay now with',
+  'overdue',
+  'reminder:',
+  'upcoming emi',
+  'emi reminder',
+  'bill reminder',
+  'autopay scheduled',
+  'autopay reminder',
+  'auto-debit scheduled',
+  'scheduled for',
+  'will be debited on',
+  'will be deducted on',
+  'mandate',
+  'pay before',
+  'avoid late',
+  'late fee',
+  'penalty',
+  // Insurance / subscription reminders
+  'policy renewal',
+  'renew now',
+  'subscription due',
+  'recharge due',
+  // Rewards / cashback promos
+  'earn cashback',
+  'win up to',
+  'scratch card',
+  'goldfly',
+  'gold*',
+  'book domestic',
+  'every domestic trip',
 ];
 
 /**
@@ -73,7 +112,9 @@ export async function showTransactionConfirmation(
   type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed',
   merchant: string,
   amount: number,
-  accountName?: string
+  accountName?: string,
+  rawSms?: string,
+  logicLog?: string
 ): Promise<void> {
   try {
     await createTransactionChannels();
@@ -114,11 +155,19 @@ export async function showTransactionConfirmation(
               id: 'delete',
             },
           },
+          {
+            title: '🐛 Report Bug',
+            pressAction: {
+              id: 'report_bug',
+            },
+          },
         ],
       },
       data: {
         transactionId,
         action: 'transaction_confirmation',
+        rawSms: rawSms || '',
+        logicLog: logicLog || '',
       },
     });
 
@@ -133,7 +182,8 @@ export async function showTransactionConfirmation(
  */
 export async function showSmsFailedNotification(
   smsBody: string,
-  sender: string
+  sender: string,
+  logicLog?: string
 ): Promise<void> {
   try {
     await createTransactionChannels();
@@ -152,11 +202,20 @@ export async function showSmsFailedNotification(
         pressAction: {
           id: 'default',
         },
+        actions: [
+          {
+            title: '🐛 Report Bug',
+            pressAction: {
+              id: 'report_bug',
+            },
+          },
+        ],
       },
       data: {
         action: 'sms_failed',
         rawSms: smsBody,
         sender,
+        logicLog: logicLog || '',
       },
     });
 
@@ -207,6 +266,37 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
       // Just dismiss the notification
       await notifee.cancelNotification(notification.id);
       console.log('✅ Transaction confirmed by user');
+    } else if (pressAction?.id === 'report_bug') {
+      try {
+        console.log('🐛 Reporting bug for notification');
+        const rawSms = notification?.data?.rawSms || 'No raw SMS available';
+        const sender = notification?.data?.sender || 'Unknown Sender';
+        const logicLog = notification?.data?.logicLog || 'No logic log available';
+        const actionType = notification?.data?.action;
+        
+        const currentLogsStr = await AsyncStorage.getItem('debug_bug_reports');
+        const currentLogs = currentLogsStr ? JSON.parse(currentLogsStr) : [];
+        
+        currentLogs.unshift({
+          id: Date.now().toString(),
+          timestamp: new Date().toISOString(),
+          transactionId: transactionId || 'failed_parse',
+          type: actionType,
+          sender,
+          rawSms,
+          logicLog,
+        });
+        
+        // Keep only last 50 logs
+        if (currentLogs.length > 50) currentLogs.length = 50;
+        
+        await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(currentLogs));
+        
+        await notifee.cancelNotification(notification.id);
+        console.log('✅ Bug report saved successfully');
+      } catch (error) {
+        console.error('❌ Error saving bug report:', error);
+      }
     }
   }
 

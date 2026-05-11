@@ -1,68 +1,106 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, Modal, StyleSheet, TouchableOpacity, Alert } from 'react-native';
-import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import { PermissionsAndroid, Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import notifee from '@notifee/react-native';
-import { useTheme } from '../context/ThemeContext';
-import { checkSmsPermissions, requestSmsPermissions } from '../utils/smsPermissions';
 import { checkNotificationPermission, requestNotificationPermission } from '../utils/notificationPermissions';
+import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../lib/PorterModule';
+import Toast from 'react-native-toast-message';
+import AppConfirmModal from './ui/AppConfirmModal';
 
-const PERMISSION_CHECK_KEY = 'permissions_granted';
+const PERMISSION_CHECK_KEY = 'permissions_granted_v3';
+
+type PermissionStep = 'sms' | 'location' | 'camera' | 'microphone' | 'notification' | 'push' | 'accessibility' | 'done';
 
 interface PermissionPromptProps {
   onAllPermissionsGranted?: () => void;
 }
 
 export default function PermissionPrompt({ onAllPermissionsGranted }: PermissionPromptProps) {
-  const { colors, typography, spacing, borderRadius } = useTheme();
-  const [visible, setVisible] = useState(false);
-  const [currentStep, setCurrentStep] = useState<'sms' | 'notification' | 'push' | 'complete'>('sms');
-  const [smsGranted, setSmsGranted] = useState(false);
-  const [notificationGranted, setNotificationGranted] = useState(false);
-  const [pushGranted, setPushGranted] = useState(false);
+  const [currentStep, setCurrentStep] = useState<PermissionStep>('done');
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    checkPermissions();
+    checkNextPermission();
   }, []);
 
-  const checkPermissions = async () => {
+  const checkNextPermission = async () => {
     try {
       setChecking(true);
       
-      // Always check actual permissions, ignore AsyncStorage
-      const sms = await checkSmsPermissions();
-      const notification = await checkNotificationPermission();
-      
-      // Check push notification permission (Notifee)
-      const pushSettings = await notifee.getNotificationSettings();
-      const push = pushSettings.authorizationStatus === 1; // 1 = AUTHORIZED
-
-      setSmsGranted(sms);
-      setNotificationGranted(notification);
-      setPushGranted(push);
-
-      // If all three granted, mark as complete and don't show
-      if (sms && notification && push) {
-        await AsyncStorage.setItem(PERMISSION_CHECK_KEY, 'true');
-        setVisible(false);
-        onAllPermissionsGranted?.();
+      const hasAskedBefore = await AsyncStorage.getItem(PERMISSION_CHECK_KEY);
+      if (hasAskedBefore === 'true') {
+        setCurrentStep('done');
         setChecking(false);
         return;
       }
 
-      // Show prompt for missing permissions (in order)
+      if (Platform.OS !== 'android') {
+        setCurrentStep('done');
+        setChecking(false);
+        return;
+      }
+
+      // Check SMS
+      const sms = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS);
       if (!sms) {
         setCurrentStep('sms');
-        setVisible(true);
-      } else if (!notification) {
-        setCurrentStep('notification');
-        setVisible(true);
-      } else if (!push) {
-        setCurrentStep('push');
-        setVisible(true);
+        setChecking(false);
+        return;
       }
-      
+
+      // Check Location
+      const location = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+      if (!location) {
+        setCurrentStep('location');
+        setChecking(false);
+        return;
+      }
+
+      // Check Microphone
+      const mic = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+      if (!mic) {
+        setCurrentStep('microphone');
+        setChecking(false);
+        return;
+      }
+
+      // Check Camera
+      const camera = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA);
+      if (!camera) {
+        setCurrentStep('camera');
+        setChecking(false);
+        return;
+      }
+
+      // Check Notification Listener
+      const notification = await checkNotificationPermission();
+      if (!notification) {
+        setCurrentStep('notification');
+        setChecking(false);
+        return;
+      }
+
+      // Check Push Notifications
+      const pushSettings = await notifee.getNotificationSettings();
+      const push = pushSettings.authorizationStatus === 1;
+      if (!push) {
+        setCurrentStep('push');
+        setChecking(false);
+        return;
+      }
+
+      // Check Accessibility
+      const accessibility = await isAccessibilityServiceEnabled();
+      if (!accessibility) {
+        setCurrentStep('accessibility');
+        setChecking(false);
+        return;
+      }
+
+      // All done!
+      await AsyncStorage.setItem(PERMISSION_CHECK_KEY, 'true');
+      setCurrentStep('done');
+      onAllPermissionsGranted?.();
       setChecking(false);
     } catch (error) {
       console.error('Error checking permissions:', error);
@@ -70,209 +108,115 @@ export default function PermissionPrompt({ onAllPermissionsGranted }: Permission
     }
   };
 
-  const handleSmsPermission = async () => {
-    const granted = await requestSmsPermissions();
-    setSmsGranted(granted);
+  const handleGrant = async () => {
+    if (Platform.OS !== 'android') return;
 
-    if (granted) {
-      // Move to notification permission
-      if (!notificationGranted) {
-        setCurrentStep('notification');
-      } else if (!pushGranted) {
-        setCurrentStep('push');
-      } else {
-        // All done
-        await AsyncStorage.setItem(PERMISSION_CHECK_KEY, 'true');
-        setVisible(false);
-        onAllPermissionsGranted?.();
+    try {
+      if (currentStep === 'sms') {
+        await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
+          PermissionsAndroid.PERMISSIONS.READ_SMS,
+        ]);
+      } else if (currentStep === 'location') {
+        await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+        ]);
+      } else if (currentStep === 'microphone') {
+        await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+      } else if (currentStep === 'camera') {
+        await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
+      } else if (currentStep === 'notification') {
+        requestNotificationPermission();
+        Toast.show({
+          type: 'info',
+          text1: 'Enable Notification Access',
+          text2: 'Find SpendSense and toggle it ON',
+        });
+      } else if (currentStep === 'push') {
+        await notifee.requestPermission();
+      } else if (currentStep === 'accessibility') {
+        openAccessibilitySettings();
+        Toast.show({
+          type: 'info',
+          text1: 'Enable SpendSense',
+          text2: 'Find SpendSense in Accessibility settings and turn it ON',
+        });
       }
-    } else {
-      Alert.alert(
-        'Permission Required',
-        'SMS permission is needed to automatically track transactions from bank SMS. You can enable it later from Settings.',
-        [{ text: 'OK' }]
-      );
-    }
-  };
 
-  const handleNotificationPermission = () => {
-    requestNotificationPermission();
-    // Modal will close, but will reappear on next app open if permission not granted
-    setVisible(false);
-  };
-
-  const handlePushPermission = async () => {
-    const settings = await notifee.requestPermission();
-    const granted = settings.authorizationStatus === 1; // 1 = AUTHORIZED
-    setPushGranted(granted);
-
-    if (granted) {
-      // All done
-      await AsyncStorage.setItem(PERMISSION_CHECK_KEY, 'true');
-      setVisible(false);
-      onAllPermissionsGranted?.();
-    } else {
-      Alert.alert(
-        'Permission Required',
-        'Push notification permission is needed to send you reminders and alerts. You can enable it later from Settings.',
-        [{ text: 'OK' }]
-      );
+      // After requesting, check the NEXT missing permission
+      // Give a slight delay for settings screens to open/close
+      setTimeout(() => {
+        checkNextPermission();
+      }, 500);
+      
+    } catch (err) {
+      console.warn(err);
+      checkNextPermission();
     }
   };
 
   const handleSkip = () => {
-    // Just close the modal, don't mark as complete
-    // It will show again on next app open if permissions still not granted
-    setVisible(false);
+    // DO NOT set PERMISSION_CHECK_KEY so it asks again next time app opens
+    // Move to the next step
+    if (currentStep === 'sms') setCurrentStep('location');
+    else if (currentStep === 'location') setCurrentStep('microphone');
+    else if (currentStep === 'microphone') setCurrentStep('camera');
+    else if (currentStep === 'camera') setCurrentStep('notification');
+    else if (currentStep === 'notification') setCurrentStep('push');
+    else if (currentStep === 'push') setCurrentStep('accessibility');
+    else if (currentStep === 'accessibility') setCurrentStep('done');
   };
 
-  if (!visible) return null;
+  if (checking || currentStep === 'done') return null;
+
+  let title = '';
+  let message = '';
+  let confirmText = 'Enable';
+
+  switch (currentStep) {
+    case 'sms':
+      title = 'Enable SMS Tracking';
+      message = 'SpendSense needs SMS access to automatically track your bank transactions in the background.';
+      break;
+    case 'location':
+      title = 'Enable Location';
+      message = 'Allow location access to automatically pinpoint where your transactions happened.';
+      break;
+    case 'microphone':
+      title = 'Enable Microphone';
+      message = 'Allow microphone access so you can add transactions using the AI Voice Assistant.';
+      break;
+    case 'camera':
+      title = 'Enable Camera';
+      message = 'Allow camera access to easily attach photos of receipts or places to your transactions.';
+      break;
+    case 'notification':
+      title = 'Notification Access';
+      message = 'To track UPI payments from GPay, PhonePe, Slice, etc., we need Notification Access. Please find SpendSense and turn it ON.';
+      confirmText = 'Open Settings';
+      break;
+    case 'push':
+      title = 'Push Notifications';
+      message = 'Allow push notifications to receive reminders, budget alerts, and important updates.';
+      break;
+    case 'accessibility':
+      title = 'Porter Trip Tracking';
+      message = 'To automatically track your Porter trips, we need Accessibility Service access. Please find SpendSense and turn it ON.';
+      confirmText = 'Open Settings';
+      break;
+  }
 
   return (
-    <Modal
-      visible={visible}
-      animationType="fade"
-      transparent={true}
-      onRequestClose={() => {}}
-    >
-      <View style={styles.overlay}>
-        <View style={[styles.container, { backgroundColor: colors.background }]}>
-          {/* Icon */}
-          <View style={[styles.iconContainer, { backgroundColor: colors.accent + '20' }]}>
-            <MaterialCommunityIcons
-              name={currentStep === 'sms' ? 'message-text' : currentStep === 'notification' ? 'bell' : 'bell-ring'}
-              size={48}
-              color={colors.accent}
-            />
-          </View>
-
-          {/* Title */}
-          <Text style={[typography.h2, { color: colors.text, marginTop: spacing.lg, textAlign: 'center' }]}>
-            {currentStep === 'sms' 
-              ? 'Enable SMS Tracking' 
-              : currentStep === 'notification'
-              ? 'Enable Notification Tracking'
-              : 'Enable Push Notifications'}
-          </Text>
-
-          {/* Description */}
-          <Text style={[typography.body, { color: colors.subtext, marginTop: spacing.sm, textAlign: 'center', lineHeight: 22 }]}>
-            {currentStep === 'sms'
-              ? 'SpendSense needs SMS permission to automatically track transactions from your bank SMS messages.'
-              : currentStep === 'notification'
-              ? 'Enable notification access to track transactions from payment apps like GPay, PhonePe, Slice, CRED, etc.'
-              : 'Allow push notifications to receive reminders, alerts, and important updates from SpendSense.'}
-          </Text>
-
-          {/* Features */}
-          <View style={{ marginTop: spacing.lg, width: '100%' }}>
-            <View style={styles.featureRow}>
-              <MaterialCommunityIcons name="check-circle" size={20} color="#10b981" />
-              <Text style={[typography.body, { color: colors.text, marginLeft: spacing.sm, flex: 1 }]}>
-                {currentStep === 'sms' 
-                  ? 'Auto-track bank transactions' 
-                  : currentStep === 'notification'
-                  ? 'Track UPI payments'
-                  : 'Get payment reminders'}
-              </Text>
-            </View>
-            <View style={styles.featureRow}>
-              <MaterialCommunityIcons name="check-circle" size={20} color="#10b981" />
-              <Text style={[typography.body, { color: colors.text, marginLeft: spacing.sm, flex: 1 }]}>
-                {currentStep === 'sms' 
-                  ? 'No manual entry needed' 
-                  : currentStep === 'notification'
-                  ? 'Works in background'
-                  : 'Budget alerts'}
-              </Text>
-            </View>
-            <View style={styles.featureRow}>
-              <MaterialCommunityIcons name="check-circle" size={20} color="#10b981" />
-              <Text style={[typography.body, { color: colors.text, marginLeft: spacing.sm, flex: 1 }]}>
-                {currentStep === 'sms' 
-                  ? 'Secure & private' 
-                  : currentStep === 'notification'
-                  ? 'Never miss a transaction'
-                  : 'Important updates'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Buttons */}
-          <TouchableOpacity
-            style={[styles.button, { backgroundColor: colors.accent, borderRadius: borderRadius.md, marginTop: spacing.xl }]}
-            onPress={currentStep === 'sms' ? handleSmsPermission : currentStep === 'notification' ? handleNotificationPermission : handlePushPermission}
-          >
-            <Text style={[typography.bodyBold, { color: '#fff', fontSize: 16 }]}>
-              Enable {currentStep === 'sms' ? 'SMS' : currentStep === 'notification' ? 'Notification' : 'Push'} Access
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.skipButton, { marginTop: spacing.md }]}
-            onPress={handleSkip}
-          >
-            <Text style={[typography.body, { color: colors.subtext }]}>
-              Skip for now
-            </Text>
-          </TouchableOpacity>
-
-          {/* Progress indicator */}
-          <View style={styles.progressContainer}>
-            <View style={[styles.progressDot, { backgroundColor: smsGranted ? '#10b981' : colors.border }]} />
-            <View style={[styles.progressDot, { backgroundColor: notificationGranted ? '#10b981' : colors.border }]} />
-            <View style={[styles.progressDot, { backgroundColor: pushGranted ? '#10b981' : colors.border }]} />
-          </View>
-        </View>
-      </View>
-    </Modal>
+    <AppConfirmModal
+      visible={true}
+      title={title}
+      message={message}
+      confirmText={confirmText}
+      cancelText="Skip for now"
+      onConfirm={handleGrant}
+      onCancel={handleSkip}
+    />
   );
 }
 
-const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  container: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 20,
-    padding: 24,
-    alignItems: 'center',
-  },
-  iconContainer: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  button: {
-    width: '100%',
-    paddingVertical: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  skipButton: {
-    paddingVertical: 12,
-  },
-  progressContainer: {
-    flexDirection: 'row',
-    marginTop: 20,
-    gap: 8,
-  },
-  progressDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-});

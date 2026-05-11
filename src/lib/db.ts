@@ -64,6 +64,30 @@ export async function deleteTransaction(id: string): Promise<void> {
   }
 }
 
+// Bulk delete: single API call using .in() — deletes 100s of entries instantly
+export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('User not authenticated');
+
+  if (ids.length === 0) return;
+
+  // Supabase handles .in() efficiently — batch delete in chunks of 100
+  // to avoid URL length limits
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + CHUNK_SIZE);
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .in('id', chunk)
+      .eq('user_id', user.id);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
+}
+
 export async function updateTransaction(
   id: string,
   updates: Partial<Omit<Transaction, 'id' | 'user_id' | 'created_at'>>

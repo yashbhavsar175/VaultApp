@@ -31,8 +31,8 @@ interface BankAccount {
 
 // Known bank and UPI sender IDs
 const BANK_SENDERS = [
-  'HDFCBK', 'ICICIB', 'SBIINB', 'AXISBK', 'KOTAKB', 'PNBSMS', 
-  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'JM-UTKSPR', 'UTKARSH', 'SFBL'
+  'HDFC', 'ICICI', 'SBI', 'AXIS', 'KOTAK', 'PNB', 
+  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'UTKARSH', 'SFBL', 'BOB'
 ];
 
 const UPI_SENDERS = [
@@ -59,6 +59,9 @@ function isBlockedSender(sender: string): boolean {
  * Must either be in whitelist OR have TRAI DLT prefix
  */
 function isLegitimateFinancialSender(sender: string): boolean {
+  // If it's a standard Indian DLT Sender ID (e.g. AX-ICICIB, JK-BOBSMS)
+  if (/^[A-Za-z]{2}-/.test(sender)) return true;
+
   const upperSender = sender.toUpperCase();
   
   // Check whitelist
@@ -96,10 +99,7 @@ function identifySource(sender: string): 'bank' | 'upi' | 'unknown' {
 function extractAccountLast4(body: string): string | undefined {
   const accountPatterns = [
     /(?:SuperCard|Card)\s+(\d{4})/i, // Utkarsh SuperCard 6055
-    /A\/?C\s*[-:xX*]*\s*(\d{4})/i, // Highly permissive: catches "AC X1447", "A/C 1447", "A/c xx5235"
-    /A\/c\s*(?:no\.?|number)?\s*[xX*]*(\d{4})/i,
-    /account\s*(?:no\.?|number)?\s*[xX*]*(\d{4})/i,
-    /A\/c\s*[xX*]+(\d{4})/i,
+    /(?:A\/?C|Acct|Account)\s*(?:no\.?|number)?\s*[-:xX*]*\s*(\d{3,5})/i, // Catches "AC X1447", "A/C 1447", "A/c xx5235", "Acct XX713"
     /XX(\d{4})/i,
   ];
 
@@ -157,16 +157,16 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
     const isPaidToYou = /paid\s+(?:to\s+)?you/i.test(body);
     const isCredit = isPaidToYou || 
                      /you'?ve\s+got/i.test(body) ||   // ADD THIS LINE
-                     /credited|received|deposited|refund|added|cr\s/i.test(body);
-    const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\s/i.test(body) || 
+                     /credited|received|deposited|refund|added|cr\.?\s/i.test(body);
+    const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\.?\s/i.test(body) || 
                     (!isCredit && /paid/i.test(body)); // "paid" alone is debit only if not credit
     
-    // Fallback: If SMS contains "debited" keyword, force type to 'debit'
-    // If SMS contains "credited" keyword, force type to 'credit'
+    // Fallback: If SMS contains "debited" or "dr." keyword, force type to 'debit'
+    // If SMS contains "credited" or "cr." keyword, force type to 'credit'
     let type: 'debit' | 'credit';
-    if (/\bdebited\b/i.test(body)) {
+    if (/\bdebited\b|\bdr\.?\s/i.test(body)) {
       type = 'debit';
-    } else if (/\bcredited\b/i.test(body)) {
+    } else if (/\bcredited\b|\bcr\.?\s/i.test(body)) {
       type = 'credit';
     } else {
       type = isCredit ? 'credit' : isDebit ? 'debit' : 'debit';
@@ -175,8 +175,7 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
     // Extract reference number (UPI Ref/UTR/Transaction ID)
     const refPatterns = [
       /(?:for\s+)?UPI\s*-?\s*(\d+)/i, // BUG FIX 1: "for UPI - 610384124320"
-      /(?:UPI Ref|UPI ID|UTR|Ref No|Transaction ID|TXN ID)[\s:]*([A-Z0-9]+)/i,
-      /Ref[\s#:]*([0-9]{12,})/i,
+      /(?:UPI Ref|UPI ID|UPI|UTR|Ref No|Ref|Transaction ID|TXN ID)[\s#:]*([A-Z0-9]+)/i,
     ];
 
     let reference: string | undefined;
@@ -190,6 +189,10 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
 
     // Extract merchant/payee name (including UPI IDs)
     const merchantPatterns = [
+      // NEW: "NAME paid you ₹1,000" (GPay format)
+      /^([A-Za-z0-9\s&/.!@#$-]+?)\s+paid\s+(?:to\s+)?you\s+(?:INR|Rs\.?|₹)/i,
+      // NEW: "debited...; Swiggy credited." (ICICI format)
+      /;\s*([A-Za-z0-9\s&]+?)\s+credited/i,
       // NEW: "You've got ₹250 from NAME in your..." (Slice/Super.money format)
       /You'?ve\s+got\s+(?:INR|Rs\.?|₹)[0-9,.]+ from\s+([A-Za-z\s]+?)(?:\s+in\s+your|\s+to\s+your|\s+on|\.|$)/i,
       // NEW: Generic "from NAME in your..."
@@ -197,8 +200,9 @@ function parseSms(body: string, sender: string): ParsedTransaction | null {
       // EXISTING (keep all, but add "in your" as stop word to the 3rd pattern)
       /(?:at|for)\s+([A-Z][A-Za-z\s&]+?)(?:\s+using|\s+on|\.|$)/i, // "at Swiggy", "for Amazon"
       /(?:to)\s+([A-Z][A-Za-z\s&]+?)(?:\s*\(UPI Ref)/i,
-      /(?:to|at|from|paid to|sent to)\s+([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+in\s+your|\.|$)/i,
-      /(?:paid to|sent to|received from)\s+([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\.|$)/i,
+      // Prevent "view" from being matched by "Tap to view."
+      /(?:to|at|from|paid to|sent to)\s+(?!view\b)([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+in\s+your|\.|$)/i,
+      /(?:paid to|sent to|received from)\s+(?!view\b)([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\.|$)/i,
     ];
 
     let merchant: string | undefined;
@@ -964,7 +968,7 @@ export default async (taskData: SmsData) => {
       note: additionalNotes ? `${finalNote}\n${additionalNotes}` : finalNote,
       reference_number: parsed.reference,
       balance: parsed.balance,
-      sms_source: parsed.source,
+      sms_source: 'sms',
       sms_sender: parsed.rawSender,
       raw_sms: taskData.body,
       account_last4: parsed.accountLast4,

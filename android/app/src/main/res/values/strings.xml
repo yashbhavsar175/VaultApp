@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">SpendSense</string>
+    <string name="accessibility_service_description">Reads Porter app screen to calculate distance for trips.</string>
 </resources>

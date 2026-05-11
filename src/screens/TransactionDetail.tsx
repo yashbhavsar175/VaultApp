@@ -255,6 +255,35 @@ export default function TransactionDetail({ route, navigation }: Props) {
             colors={colors}
             typography={typography}
             spacing={spacing}
+          />
+          <DetailRow
+            icon="radar"
+            label="Tracked Via"
+            value={(() => {
+              if (!transaction.sms_source) return 'Manual Entry';
+              
+              const source = transaction.sms_source.toLowerCase();
+              let sender = transaction.sms_sender || '';
+              
+              // Map package names to readable names
+              if (sender.includes('nbu.paisa.user')) sender = 'Google Pay';
+              else if (sender.includes('phonepe')) sender = 'PhonePe';
+              else if (sender.includes('paytm')) sender = 'Paytm';
+              else if (sender.includes('whatsapp')) sender = 'WhatsApp';
+              else if (sender.includes('cred')) sender = 'CRED';
+              else if (sender.includes('gmail')) sender = 'Gmail';
+              else if (sender.length > 0) sender = sender.replace('com.', '').split('.')[0];
+              
+              if (source === 'notification' || source === 'sms' || source === 'mail' || source === 'bank' || source === 'upi') {
+                const sourceCap = source.charAt(0).toUpperCase() + source.slice(1);
+                return sender ? `${sourceCap} (${sender})` : sourceCap;
+              }
+              
+              return transaction.sms_source.charAt(0).toUpperCase() + transaction.sms_source.slice(1);
+            })()}
+            colors={colors}
+            typography={typography}
+            spacing={spacing}
             isLast
           />
         </Card>

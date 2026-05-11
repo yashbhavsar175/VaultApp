@@ -55,3 +55,19 @@ export interface PeopleLedgerPayment {
   notes: string | null;
   created_at: string;
 }
+
+export type PlaceCategory = 'shop' | 'ev_charging' | 'cafe' | 'atm' | 'mechanic' | 'other';
+
+export interface Place {
+  id: string;
+  name: string;
+  category: PlaceCategory;
+  note: string;
+  location?: {
+    latitude: number;
+    longitude: number;
+    address?: string;
+  };
+  photo_uri?: string;
+  created_at: string;
+}

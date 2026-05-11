@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { getTransactions } from '../lib/db';
@@ -7,6 +7,8 @@ import { Transaction, PeopleLedger } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader } from '../components';
 import { getPeopleLedger } from '../lib/peopleLedger';
+import { getCached, setCache, CACHE_KEYS } from '../lib/dataCache';
+import QuickAddModal from '../components/ui/QuickAddModal';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -21,6 +23,8 @@ export default function Dashboard() {
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [peopleLedger, setPeopleLedger] = useState<PeopleLedger[]>([]);
   const [peopleSummary, setPeopleSummary] = useState({ totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 });
+  const [refreshing, setRefreshing] = useState(false);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
   
   // Month selector state
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -72,40 +76,45 @@ export default function Dashboard() {
     });
   };
 
+  // Helper to compute people summary from ledger data
+  const computePeopleSummary = (ledgerData: PeopleLedger[]) => {
+    const lentEntries = ledgerData.filter(e => e.type === 'lent');
+    const borrowedEntries = ledgerData.filter(e => e.type === 'borrowed');
+    const lentTotal = lentEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
+    const borrowedTotal = borrowedEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
+    return {
+      totalLent: lentTotal,
+      totalBorrowed: borrowedTotal,
+      lentCount: lentEntries.length,
+      borrowedCount: borrowedEntries.length,
+    };
+  };
+
   const loadData = async () => {
     try {
+      // Step 1: Try cache first for INSTANT display (no skeleton)
+      const [cachedTxns, cachedLedger] = await Promise.all([
+        getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS),
+        getCached<PeopleLedger[]>(CACHE_KEYS.PEOPLE_LEDGER),
+      ]);
+
+      if (cachedTxns && cachedTxns.length > 0) {
+        // Cache hit! Show data instantly — no skeleton needed
+        setTransactions(cachedTxns);
+        if (cachedLedger) {
+          setPeopleLedger(cachedLedger);
+          setPeopleSummary(computePeopleSummary(cachedLedger));
+        }
+        setLoading(false); // Skip skeleton entirely!
+
+        // Step 2: Silently refresh in background
+        loadDataSilently();
+        return;
+      }
+
+      // No cache — show skeleton and fetch
       setLoading(true);
-      
-      // Load transactions
-      try {
-        const data = await getTransactions();
-        setTransactions(data);
-      } catch (error) {
-        console.error('Error loading transactions:', error);
-        setTransactions([]);
-      }
-      
-      // Load people ledger data
-      try {
-        const ledgerData = await getPeopleLedger(false);
-        setPeopleLedger(ledgerData);
-        
-        const lentEntries = ledgerData.filter(e => e.type === 'lent');
-        const borrowedEntries = ledgerData.filter(e => e.type === 'borrowed');
-        
-        const lentTotal = lentEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
-        const borrowedTotal = borrowedEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
-        
-        setPeopleSummary({ 
-          totalLent: lentTotal, 
-          totalBorrowed: borrowedTotal,
-          lentCount: lentEntries.length,
-          borrowedCount: borrowedEntries.length,
-        });
-      } catch (error) {
-        console.error('Error loading people ledger:', error);
-        setPeopleLedger([]);
-      }
+      await loadDataSilently();
     } catch (error) {
       console.error('Error in loadData:', error);
     } finally {
@@ -114,12 +123,13 @@ export default function Dashboard() {
   };
 
   const loadDataSilently = async () => {
-    // Load data in background without showing loader
     try {
       // Load transactions
       try {
         const data = await getTransactions();
         setTransactions(data);
+        // Save to cache for next instant load
+        setCache(CACHE_KEYS.TRANSACTIONS, data);
       } catch (error) {
         console.error('Error loading transactions:', error);
       }
@@ -128,19 +138,9 @@ export default function Dashboard() {
       try {
         const ledgerData = await getPeopleLedger(false);
         setPeopleLedger(ledgerData);
-        
-        const lentEntries = ledgerData.filter(e => e.type === 'lent');
-        const borrowedEntries = ledgerData.filter(e => e.type === 'borrowed');
-        
-        const lentTotal = lentEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
-        const borrowedTotal = borrowedEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
-        
-        setPeopleSummary({ 
-          totalLent: lentTotal, 
-          totalBorrowed: borrowedTotal,
-          lentCount: lentEntries.length,
-          borrowedCount: borrowedEntries.length,
-        });
+        setPeopleSummary(computePeopleSummary(ledgerData));
+        // Save to cache
+        setCache(CACHE_KEYS.PEOPLE_LEDGER, ledgerData);
       } catch (error) {
         console.error('Error loading people ledger:', error);
       }
@@ -149,7 +149,19 @@ export default function Dashboard() {
     }
   };
 
+  // Debounce ref — prevents rapid back-to-back loads during bulk operations
+  const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const debouncedLoadSilently = useCallback(() => {
+    // Cancel any pending load
+    if (loadTimerRef.current) {
+      clearTimeout(loadTimerRef.current);
+    }
+    // Wait 500ms before actually loading — if another trigger comes, reset
+    loadTimerRef.current = setTimeout(() => {
+      loadDataSilently();
+    }, 500);
+  }, []);
 
   useEffect(() => {
     if (!isInitialLoad) {
@@ -159,16 +171,34 @@ export default function Dashboard() {
 
   useFocusEffect(
     React.useCallback(() => {
-      if (isInitialLoad) {
-        // First time: show loader
-        loadData();
-        setIsInitialLoad(false);
-      } else {
-        // Subsequent visits: load silently in background
-        loadDataSilently();
-      }
-    }, [isInitialLoad])
+      const task = InteractionManager.runAfterInteractions(() => {
+        if (isInitialLoad) {
+          // First time: show skeleton loader
+          loadData();
+          setIsInitialLoad(false);
+        } else {
+          // Debounced reload — waits for data to settle
+          debouncedLoadSilently();
+        }
+      });
+      return () => task.cancel();
+    }, [isInitialLoad, debouncedLoadSilently])
   );
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (loadTimerRef.current) {
+        clearTimeout(loadTimerRef.current);
+      }
+    };
+  }, []);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadDataSilently();
+    setRefreshing(false);
+  };
 
   // Filter transactions for selected month
   const monthlyTransactions = filterTransactionsByMonth(transactions);
@@ -202,11 +232,50 @@ export default function Dashboard() {
   };
 
   if (loading) {
+    // Skeleton loader that mimics the actual Dashboard layout
     return (
       <ScreenWrapper>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.accent} />
-        </View>
+        <AppHeader title="SpendSense" />
+        <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+          {/* Month selector skeleton */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg }}>
+            <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: colors.border }} />
+            <View style={{ width: 140, height: 20, borderRadius: 6, backgroundColor: colors.border }} />
+            <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: colors.border }} />
+          </View>
+
+          {/* Balance card skeleton */}
+          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+            <View style={{ alignItems: 'center' }}>
+              <View style={{ width: 100, height: 12, borderRadius: 4, backgroundColor: colors.border, marginBottom: 10 }} />
+              <View style={{ width: 160, height: 28, borderRadius: 6, backgroundColor: colors.border, marginBottom: 12 }} />
+              <View style={{ width: 200, height: 8, borderRadius: 4, backgroundColor: colors.border, marginBottom: 6 }} />
+              <View style={{ width: 120, height: 10, borderRadius: 4, backgroundColor: colors.border }} />
+            </View>
+          </Card>
+
+          {/* Income / Expense row skeleton */}
+          <View style={{ flexDirection: 'row', gap: spacing.md, marginBottom: spacing.lg }}>
+            <Card style={{ flex: 1, padding: spacing.md }}>
+              <View style={{ width: 50, height: 10, borderRadius: 4, backgroundColor: colors.border, marginBottom: 8 }} />
+              <View style={{ width: 80, height: 20, borderRadius: 4, backgroundColor: colors.border }} />
+            </Card>
+            <Card style={{ flex: 1, padding: spacing.md }}>
+              <View style={{ width: 50, height: 10, borderRadius: 4, backgroundColor: colors.border, marginBottom: 8 }} />
+              <View style={{ width: 80, height: 20, borderRadius: 4, backgroundColor: colors.border }} />
+            </Card>
+          </View>
+
+          {/* Section skeleton */}
+          {[1, 2].map(key => (
+            <Card key={key} style={{ padding: spacing.md, marginBottom: spacing.md, opacity: 1 - (key * 0.2) }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ width: 120, height: 14, borderRadius: 4, backgroundColor: colors.border }} />
+                <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: colors.border }} />
+              </View>
+            </Card>
+          ))}
+        </ScrollView>
       </ScreenWrapper>
     );
   }
@@ -231,7 +300,17 @@ export default function Dashboard() {
         ]}
       />
       
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.accent}
+            colors={[colors.accent]}
+          />
+        }
+      >
         {/* Month Selector */}
         <View style={[styles.monthSelector, { paddingHorizontal: spacing.lg, paddingVertical: spacing.md }]}>
           <TouchableOpacity onPress={() => navigateMonth('prev')} style={styles.monthArrow}>
@@ -465,6 +544,23 @@ export default function Dashboard() {
           </View>
         </View>
       </ScrollView>
+
+      {/* Quick Add FAB */}
+      <TouchableOpacity
+        style={[styles.quickAddFab, { backgroundColor: colors.accent }]}
+        activeOpacity={0.8}
+        onPress={() => setShowQuickAdd(true)}
+      >
+        <MaterialCommunityIcons name="microphone" size={24} color="#fff" />
+      </TouchableOpacity>
+
+      <QuickAddModal
+        visible={showQuickAdd}
+        onClose={() => setShowQuickAdd(false)}
+        onSuccess={() => {
+          loadDataSilently();
+        }}
+      />
     </ScreenWrapper>
   );
 }
@@ -577,5 +673,20 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignSelf: 'flex-start',
     marginTop: 2,
+  },
+  quickAddFab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
 });

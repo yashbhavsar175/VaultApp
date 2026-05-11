@@ -7,6 +7,7 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
+  InteractionManager,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import {
@@ -40,7 +41,10 @@ export default function LoansList() {
 
   useFocusEffect(
     useCallback(() => {
-      loadLoans();
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadLoans();
+      });
+      return () => task.cancel();
     }, [])
   );
 

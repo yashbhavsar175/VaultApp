@@ -19,7 +19,7 @@ export async function onBackgroundEvent(event: any) {
   if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
     const action = detail?.notification?.data?.action;
     
-    if (action === 'transaction_confirmation') {
+    if (action === 'transaction_confirmation' || action === 'sms_failed') {
       await handleTransactionNotificationEvent(event);
       return;
     }
@@ -29,6 +29,25 @@ export async function onBackgroundEvent(event: any) {
   if (type === EventType.DELIVERED) {
     console.log('📬 [Background] Notification delivered');
   }
+}
+
+/**
+ * Initialize foreground listeners for notifee
+ * Call this inside a useEffect in the main App component
+ */
+export function initializeForegroundListener() {
+  return notifee.onForegroundEvent(async (event) => {
+    const { type, detail } = event;
+    console.log('🔔 [Foreground] Notifee event received:', type);
+    
+    if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
+      const action = detail?.notification?.data?.action;
+      
+      if (action === 'transaction_confirmation' || action === 'sms_failed') {
+        await handleTransactionNotificationEvent(event);
+      }
+    }
+  });
 }
 
 /**

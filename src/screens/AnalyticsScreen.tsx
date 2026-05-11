@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, InteractionManager } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getTransactions } from '../lib/db';
 import { Transaction } from '../types';
@@ -23,7 +23,10 @@ export default function AnalyticsScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      loadData();
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadData();
+      });
+      return () => task.cancel();
     }, [timeRange])
   );
 

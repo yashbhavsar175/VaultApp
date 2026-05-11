@@ -12,6 +12,7 @@ import {
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
+  InteractionManager,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -85,15 +86,18 @@ export default function Add() {
 
   useFocusEffect(
     React.useCallback(() => {
-      if (isInitialBankLoad) {
-        // First time: show loader
-        loadBanks();
-        setIsInitialBankLoad(false);
-      } else {
-        // Subsequent visits: load silently
-        loadBanksSilently();
-      }
-      loadSavedCategories();
+      const task = InteractionManager.runAfterInteractions(() => {
+        if (isInitialBankLoad) {
+          // First time: show loader
+          loadBanks();
+          setIsInitialBankLoad(false);
+        } else {
+          // Subsequent visits: load silently
+          loadBanksSilently();
+        }
+        loadSavedCategories();
+      });
+      return () => task.cancel();
     }, [isInitialBankLoad])
   );
 
@@ -293,6 +297,7 @@ export default function Add() {
         note,
         type: selectedType,
         category: category || (selectedType === 'lent' ? 'Unknown' : 'general'),
+        sms_source: 'manual',
       });
 
       // Reload categories to include the newly added one

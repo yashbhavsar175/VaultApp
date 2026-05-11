@@ -5,17 +5,25 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Alert,
   RefreshControl,
   ScrollView,
   Pressable,
-  ActivityIndicator,
+  BackHandler,
+  UIManager,
+  Platform,
+  Animated,
+  InteractionManager,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
-import { getTransactions, deleteTransaction, updateTransaction } from '../lib/db';
+import { getTransactions, deleteTransaction, updateTransaction, bulkDeleteTransactions } from '../lib/db';
+import { getCached, setCache, CACHE_KEYS } from '../lib/dataCache';
 import { Transaction, TransactionType } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, AppHeader } from '../components';
@@ -37,7 +45,6 @@ type TransactionsScreenNavigationProp = StackNavigationProp<
   'Transactions'
 >;
 
-// Helper functions moved outside component to avoid re-creation
 const getTransactionIcon = (type: string) => {
   switch (type) {
     case 'income': return 'arrow-down-circle';
@@ -82,11 +89,11 @@ const formatDate = (dateString: string) => {
 };
 
 // Memoized transaction row component — only re-renders when its own props change
-const TransactionRow = React.memo(({ 
-  item, 
-  isSelected, 
-  selectMode, 
-  onPress, 
+const TransactionRow = React.memo(({
+  item,
+  isSelected,
+  selectMode,
+  onPress,
   onLongPress,
   colors,
   typography,
@@ -102,6 +109,18 @@ const TransactionRow = React.memo(({
   spacing: any;
 }) => {
   const color = getTransactionColor(item.type);
+
+  // 120 FPS smooth native thread animation using built-in Animated
+  const selectAnim = useRef(new Animated.Value(selectMode ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.spring(selectAnim, {
+      toValue: selectMode ? 1 : 0,
+      useNativeDriver: true, // Native UI thread -> 120 FPS
+      friction: 8,
+      tension: 80,
+    }).start();
+  }, [selectMode, selectAnim]);
 
   return (
     <Pressable
@@ -121,30 +140,57 @@ const TransactionRow = React.memo(({
           opacity: pressed ? 0.85 : 1,
         },
       ]}>
-      <View style={styles.transactionRow}>
-        {selectMode && (
+      <View style={[styles.transactionRow, { paddingLeft: 0 }]}>
+        {/* Checkbox slides in from left */}
+        <Animated.View style={{
+          position: 'absolute',
+          left: 0,
+          width: 36,
+          height: '100%',
+          justifyContent: 'center',
+          opacity: selectAnim,
+          transform: [{
+            translateX: selectAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [-20, 0],
+            })
+          }],
+        }}>
           <MaterialCommunityIcons
             name={isSelected ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'}
             size={24}
             color={isSelected ? colors.accent : colors.border}
-            style={{ marginRight: 12 }}
           />
-        )}
-        <View style={[styles.iconBox, { backgroundColor: color + '20', borderRadius: 10 }]}>
-          <MaterialCommunityIcons
-            name={getTransactionIcon(item.type)}
-            size={20}
-            color={color}
-          />
-        </View>
-        <View style={styles.transactionInfo}>
-          <Text style={{ color: colors.text, fontSize: 14, fontWeight: '500' }}>{item.note}</Text>
-          <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>{formatDate(item.created_at)}</Text>
-        </View>
-        <Text style={{ color, fontSize: 14, fontWeight: '600' }}>
-          {item.type === 'income' ? '+' : 
-           item.type === 'transfer' ? '↔' : '-'}{formatAmount(Number(item.amount))}
-        </Text>
+        </Animated.View>
+
+        {/* Content slides to the right */}
+        <Animated.View style={{
+          flex: 1,
+          flexDirection: 'row',
+          alignItems: 'center',
+          transform: [{
+            translateX: selectAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 36],
+            })
+          }],
+        }}>
+          <View style={[styles.iconBox, { backgroundColor: color + '20', borderRadius: 10 }]}>
+            <MaterialCommunityIcons
+              name={getTransactionIcon(item.type)}
+              size={20}
+              color={color}
+            />
+          </View>
+          <View style={styles.transactionInfo}>
+            <Text style={{ color: colors.text, fontSize: 14, fontWeight: '500' }}>{item.note}</Text>
+            <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>{formatDate(item.created_at)}</Text>
+          </View>
+          <Text style={{ color, fontSize: 14, fontWeight: '600' }}>
+            {item.type === 'income' ? '+' :
+              item.type === 'transfer' ? '↔' : '-'}{formatAmount(Number(item.amount))}
+          </Text>
+        </Animated.View>
       </View>
     </Pressable>
   );
@@ -158,7 +204,7 @@ export default function Transactions() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
-  
+
   // Select mode state — use a plain object for O(1) lookup instead of Set
   const [selectMode, setSelectMode] = useState(false);
   const [selectedMap, setSelectedMap] = useState<Record<string, boolean>>({});
@@ -186,11 +232,28 @@ export default function Transactions() {
   // Double-tap tracking
   const lastTapRef = useRef<{ id: string; time: number } | null>(null);
 
+  // Deep equality tracking to prevent re-renders
+  const lastDataStringRef = useRef<string | null>(null);
+
+  // 120 FPS smooth bottom bar animation
+  const bottomBarAnim = useRef(new Animated.Value(0)).current;
+
   const loadTransactions = useCallback(async () => {
     try {
       const data = await getTransactions();
+      const dataStr = JSON.stringify(data);
+      
+      // Prevent unnecessary state updates and re-renders that drop touches!
+      if (lastDataStringRef.current === dataStr) {
+        return;
+      }
+      
+      lastDataStringRef.current = dataStr;
+      
       setTransactions(data);
       applyFilter(data, filter);
+      // Cache for instant load next time
+      setCache(CACHE_KEYS.TRANSACTIONS, data);
     } catch (error) {
       Toast.show({
         type: 'error',
@@ -203,15 +266,48 @@ export default function Transactions() {
     }
   }, [filter]);
 
+  // Initial load: cache first, then network
   useEffect(() => {
-    loadTransactions();
+    const initLoad = async () => {
+      // Try cache for instant display
+      const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
+      if (cached && cached.length > 0) {
+        setTransactions(cached);
+        applyFilter(cached, filter);
+        setLoading(false);
+        // Background refresh
+        loadTransactions();
+      } else {
+        loadTransactions();
+      }
+    };
+    initLoad();
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadTransactions();
-    }, [])
+      let isActive = true;
+      const task = InteractionManager.runAfterInteractions(() => {
+        if (isActive) {
+          loadTransactions();
+        }
+      });
+      return () => {
+        isActive = false;
+        task.cancel();
+      };
+    }, [loadTransactions])
   );
+
+  useEffect(() => {
+    Animated.spring(bottomBarAnim, {
+      toValue: selectMode ? 1 : 0,
+      useNativeDriver: true, // Native UI thread -> 120 FPS
+      friction: 8,
+      tension: 65,
+    }).start();
+  }, [selectMode, bottomBarAnim]);
+
 
   const applyFilter = useCallback((data: Transaction[], filterType: FilterType) => {
     if (filterType === 'all') {
@@ -241,20 +337,14 @@ export default function Transactions() {
       onConfirm: async () => {
         // Dismiss dialog immediately for a faster feel
         setConfirmDialog(null);
-        
+
         // Optimistic UI Update: Remove from list instantly
         setTransactions(prev => prev.filter(t => t.id !== id));
         setFilteredTransactions(prev => prev.filter(t => t.id !== id));
-        
+
         try {
           await deleteTransaction(id);
-          Toast.show({
-            type: 'success',
-            text1: 'Deleted',
-            text2: 'Transaction deleted successfully',
-          });
-          // Background sync
-          loadTransactions();
+          // No reload needed — optimistic update already done
         } catch (error) {
           // Revert optimistic update on failure
           loadTransactions();
@@ -270,18 +360,33 @@ export default function Transactions() {
 
   // Select mode functions — instant updates with object spread
   const enterSelectMode = useCallback((id: string) => {
-    // Small delay allows the ripple animation to finish smoothly
-    // before the JS thread blocks to re-render the list
-    setTimeout(() => {
-      setSelectMode(true);
-      setSelectedMap({ [id]: true });
-    }, 50);
+    setSelectMode(true);
+    setSelectedMap({ [id]: true });
   }, []);
 
   const exitSelectMode = useCallback(() => {
     setSelectMode(false);
     setSelectedMap({});
   }, []);
+
+  // Handle hardware back press for selection mode
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (selectMode) {
+          exitSelectMode();
+          return true; // prevent default behavior
+        }
+        return false; // let default behavior happen
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+
+      return () => {
+        subscription.remove();
+      };
+    }, [selectMode, exitSelectMode])
+  );
 
   const toggleSelection = useCallback((id: string) => {
     setSelectedMap(prev => {
@@ -317,30 +422,29 @@ export default function Transactions() {
       onConfirm: async () => {
         // Dismiss dialog immediately for a faster feel
         setConfirmDialog(null);
-        
+
         // Optimistic UI update: Remove from list instantly
         const idSet = new Set(ids);
         setTransactions(prev => prev.filter(t => !idSet.has(t.id)));
         setFilteredTransactions(prev => prev.filter(t => !idSet.has(t.id)));
         exitSelectMode();
-        
+
+        Toast.show({
+          type: 'success',
+          text1: 'Deleted',
+          text2: `${count} transaction${count > 1 ? 's' : ''} deleted successfully`,
+        });
+
+        // Background: single batch API call (not 120 individual calls!)
         try {
-          await Promise.all(ids.map(id => deleteTransaction(id)));
-          
-          Toast.show({
-            type: 'success',
-            text1: 'Deleted',
-            text2: `${count} transaction${count > 1 ? 's' : ''} deleted successfully`,
-          });
-          
-          loadTransactions();
+          await bulkDeleteTransactions(ids);
         } catch (error) {
-          // Revert on failure
+          // Revert on failure — reload from server
           loadTransactions();
           Toast.show({
             type: 'error',
-            text1: 'Error',
-            text2: 'Failed to delete transactions',
+            text1: 'Sync Error',
+            text2: 'Some deletions may have failed. Reloading...',
           });
         }
       }
@@ -361,13 +465,13 @@ export default function Transactions() {
   const handleSaveEdit = useCallback(async (id: string, updates: Partial<Transaction>) => {
     try {
       await updateTransaction(id, updates);
-      
+
       Toast.show({
         type: 'success',
         text1: 'Updated',
         text2: 'Transaction updated successfully',
       });
-      
+
       closeEditModal();
       loadTransactions();
     } catch (error) {
@@ -415,12 +519,12 @@ export default function Transactions() {
       return (
         <View style={{ paddingTop: 8 }}>
           {[1, 2, 3, 4, 5, 6, 7, 8].map((key) => (
-            <View key={key} style={[styles.rowCard, { 
-              backgroundColor: colors.card, 
-              borderRadius: 16, 
-              padding: 10, 
-              marginBottom: 6, 
-              flexDirection: 'row', 
+            <View key={key} style={[styles.rowCard, {
+              backgroundColor: colors.card,
+              borderRadius: 16,
+              padding: 10,
+              marginBottom: 6,
+              flexDirection: 'row',
               alignItems: 'center',
               opacity: 0.8 - (key * 0.08) // Nice fade out effect
             }]}>
@@ -449,7 +553,7 @@ export default function Transactions() {
 
   // Stable content container style
   const listContentStyle = useMemo(() => [
-    styles.listContent, 
+    styles.listContent,
     { paddingHorizontal: 16, paddingTop: 16, paddingBottom: selectMode ? 100 : 16 }
   ], [selectMode]);
 
@@ -468,7 +572,7 @@ export default function Transactions() {
       ) : (
         <AppHeader title="History" showBack={true} />
       )}
-      
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -480,8 +584,8 @@ export default function Transactions() {
             borderColor: filter === 'all' ? colors.accent : colors.border,
           }]}
           onPress={() => handleFilterChange('all')}>
-          <Text 
-            style={[styles.filterButtonText, { 
+          <Text
+            style={[styles.filterButtonText, {
               color: filter === 'all' ? '#fff' : colors.text,
             }]}
             numberOfLines={1}>
@@ -495,8 +599,8 @@ export default function Transactions() {
             borderColor: filter === 'income' ? '#10b981' : colors.border,
           }]}
           onPress={() => handleFilterChange('income')}>
-          <Text 
-            style={[styles.filterButtonText, { 
+          <Text
+            style={[styles.filterButtonText, {
               color: filter === 'income' ? '#fff' : colors.text,
             }]}
             numberOfLines={1}>
@@ -510,8 +614,8 @@ export default function Transactions() {
             borderColor: filter === 'expense' ? '#ef4444' : colors.border,
           }]}
           onPress={() => handleFilterChange('expense')}>
-          <Text 
-            style={[styles.filterButtonText, { 
+          <Text
+            style={[styles.filterButtonText, {
               color: filter === 'expense' ? '#fff' : colors.text,
             }]}
             numberOfLines={1}>
@@ -525,8 +629,8 @@ export default function Transactions() {
             borderColor: filter === 'investment' ? '#7c6af7' : colors.border,
           }]}
           onPress={() => handleFilterChange('investment')}>
-          <Text 
-            style={[styles.filterButtonText, { 
+          <Text
+            style={[styles.filterButtonText, {
               color: filter === 'investment' ? '#fff' : colors.text,
             }]}
             numberOfLines={1}>
@@ -540,8 +644,8 @@ export default function Transactions() {
             borderColor: filter === 'emi' ? '#f59e0b' : colors.border,
           }]}
           onPress={() => handleFilterChange('emi')}>
-          <Text 
-            style={[styles.filterButtonText, { 
+          <Text
+            style={[styles.filterButtonText, {
               color: filter === 'emi' ? '#fff' : colors.text,
             }]}
             numberOfLines={1}>
@@ -555,8 +659,8 @@ export default function Transactions() {
             borderColor: filter === 'transfer' ? '#f97316' : colors.border,
           }]}
           onPress={() => handleFilterChange('transfer')}>
-          <Text 
-            style={[styles.filterButtonText, { 
+          <Text
+            style={[styles.filterButtonText, {
               color: filter === 'transfer' ? '#fff' : colors.text,
             }]}
             numberOfLines={1}>
@@ -586,7 +690,19 @@ export default function Transactions() {
       />
 
       {selectMode && (
-        <View style={[styles.bottomActionBar, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
+        <Animated.View style={[
+          styles.bottomActionBar,
+          { backgroundColor: colors.card, borderTopColor: colors.border },
+          {
+            transform: [{
+              translateY: bottomBarAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [100, 0],
+              })
+            }],
+            opacity: bottomBarAnim,
+          }
+        ]}>
           <TouchableOpacity
             style={[styles.actionButton, { backgroundColor: colors.background, borderRadius: borderRadius.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.md }]}
             onPress={toggleSelectAll}>
@@ -594,7 +710,7 @@ export default function Transactions() {
               {isAllSelected ? 'Deselect All' : 'Select All'}
             </Text>
           </TouchableOpacity>
-          
+
           <TouchableOpacity
             style={[styles.actionButton, { backgroundColor: colors.error, borderRadius: borderRadius.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.md }]}
             onPress={handleBulkDelete}
@@ -603,7 +719,7 @@ export default function Transactions() {
               Delete ({selectedCount})
             </Text>
           </TouchableOpacity>
-        </View>
+        </Animated.View>
       )}
 
       <EditTransactionModal
@@ -691,7 +807,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 28,
     borderTopWidth: 1,
   },
   actionButton: {

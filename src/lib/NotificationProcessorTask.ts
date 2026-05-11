@@ -42,6 +42,9 @@ const ALLOWED_PACKAGES = [
   'com.whatsapp', // WhatsApp (for UPI)
   'money.super.app', // Super.money
   'com.spendsense', // Test notifications from our own app
+  'com.google.android.gm', // Gmail
+  'com.yahoo.mobile.client.android.mail', // Yahoo Mail
+  'com.microsoft.office.outlook', // Outlook
 ];
 
 // Package name to sender ID mapping
@@ -56,17 +59,21 @@ const PACKAGE_TO_SENDER: { [key: string]: string } = {
   'com.whatsapp': 'WHATSAP',
   'money.super.app': 'SUPERM',
   'com.spendsense': 'TEST', // Test notifications
+  'com.google.android.gm': 'GMAIL',
+  'com.yahoo.mobile.client.android.mail': 'YAHOO',
+  'com.microsoft.office.outlook': 'OUTLOOK',
 };
 
 // Known bank and UPI sender IDs
 const BANK_SENDERS = [
-  'HDFCBK', 'ICICIB', 'SBIINB', 'AXISBK', 'KOTAKB', 'PNBSMS', 
-  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB'
+  'HDFC', 'ICICI', 'SBI', 'AXIS', 'KOTAK', 'PNB', 
+  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'UTKARSH', 'SFBL', 'BOB'
 ];
 
 const UPI_SENDERS = [
   'PAYTMB', 'GPAYID', 'PHONEPE', 'BHARTP', 'AMAZONP', 'WHATSAP',
-  'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED', 'SUPERM', 'TEST'
+  'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED', 'SUPERM', 'TEST',
+  'GMAIL', 'YAHOO', 'OUTLOOK'
 ];
 
 // Blocked senders - system test messages that should be ignored
@@ -88,6 +95,9 @@ function isBlockedSender(sender: string): boolean {
  * Must either be in whitelist OR have TRAI DLT prefix
  */
 function isLegitimateFinancialSender(sender: string): boolean {
+  // If it's a standard Indian DLT Sender ID (e.g. AX-ICICIB, JK-BOBSMS)
+  if (/^[A-Za-z]{2}-/.test(sender)) return true;
+
   const upperSender = sender.toUpperCase();
   
   // Check whitelist
@@ -124,10 +134,8 @@ function identifySource(sender: string): 'bank' | 'upi' | 'unknown' {
  */
 function extractAccountLast4(body: string): string | undefined {
   const accountPatterns = [
-    /A\/?C\s*[-:xX*]*\s*(\d{4})/i,
-    /A\/c\s*(?:no\.?|number)?\s*[xX*]*(\d{4})/i,
-    /account\s*(?:no\.?|number)?\s*[xX*]*(\d{4})/i,
-    /A\/c\s*[xX*]+(\d{4})/i,
+    /(?:SuperCard|Card)\s+(\d{4})/i,
+    /(?:A\/?C|Acct|Account)\s*(?:no\.?|number)?\s*[-:xX*]*\s*(\d{3,5})/i,
     /XX(\d{4})/i,
   ];
 
@@ -187,16 +195,16 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
     const isPaidToYou = /paid\s+(?:to\s+)?you/i.test(body);
     const isCredit = isPaidToYou || 
                      /you'?ve\s+got/i.test(body) ||   // ADD THIS LINE
-                     /credited|received|deposited|refund|added|cr\s/i.test(body);
-    const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\s/i.test(body) || 
+                     /credited|received|deposited|refund|added|cr\.?\s/i.test(body);
+    const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\.?\s/i.test(body) || 
                     (!isCredit && /paid/i.test(body)); // "paid" alone is debit only if not credit
     
-    // Fallback: If notification contains "debited" keyword, force type to 'debit'
-    // If notification contains "credited" keyword, force type to 'credit'
+    // Fallback: If notification contains "debited" or "dr." keyword, force type to 'debit'
+    // If notification contains "credited" or "cr." keyword, force type to 'credit'
     let type: 'debit' | 'credit';
-    if (/\bdebited\b/i.test(body)) {
+    if (/\bdebited\b|\bdr\.?\s/i.test(body)) {
       type = 'debit';
-    } else if (/\bcredited\b/i.test(body)) {
+    } else if (/\bcredited\b|\bcr\.?\s/i.test(body)) {
       type = 'credit';
     } else {
       type = isCredit ? 'credit' : isDebit ? 'debit' : 'debit';
@@ -205,8 +213,7 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
     // Extract reference number
     const refPatterns = [
       /(?:for\s+)?UPI\s*-?\s*(\d+)/i, // "for UPI - 610384124320"
-      /(?:UPI Ref|UPI ID|UTR|Ref No|Transaction ID|TXN ID)[\s:]*([A-Z0-9]+)/i,
-      /Ref[\s#:]*([0-9]{12,})/i,
+      /(?:UPI Ref|UPI ID|UPI|UTR|Ref No|Ref|Transaction ID|TXN ID)[\s#:]*([A-Z0-9]+)/i,
     ];
 
     let reference: string | undefined;
@@ -220,6 +227,10 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
 
     // Extract merchant/payee name
     const merchantPatterns = [
+      // NEW: "NAME paid you ₹1,000" (GPay format)
+      /^([A-Za-z0-9\s&/.!@#$-]+?)\s+paid\s+(?:to\s+)?you\s+(?:INR|Rs\.?|₹)/i,
+      // NEW: "debited...; Swiggy credited." (ICICI format)
+      /;\s*([A-Za-z0-9\s&]+?)\s+credited/i,
       // NEW: "You've got ₹250 from NAME in your..." (Slice/Super.money format)
       /You'?ve\s+got\s+(?:INR|Rs\.?|₹)[0-9,.]+ from\s+([A-Za-z\s]+?)(?:\s+in\s+your|\s+to\s+your|\s+on|\.|$)/i,
       // NEW: Generic "from NAME in your..."
@@ -227,8 +238,9 @@ function parseNotification(body: string, sender: string): ParsedTransaction | nu
       // EXISTING (keep all, but add "in your" as stop word to the 3rd pattern)
       /(?:at|made at|for)\s+([A-Za-z0-9\s&]+?)(?:\s+using|\s+on|\.|$)/i,
       /(?:to)\s+([A-Z][A-Za-z\s&]+?)(?:\s*\(UPI Ref)/i,
-      /(?:to|from|paid to|sent to)\s+([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+to A\/c|\s+in\s+your|\.|$)/i,
-      /(?:paid to|sent to|received from)\s+([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\s+to A\/c|\.|$)/i,
+      // Prevent "view" from being matched by "Tap to view."
+      /(?:to|from|paid to|sent to)\s+(?!view\b)([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+to A\/c|\s+in\s+your|\.|$)/i,
+      /(?:paid to|sent to|received from)\s+(?!view\b)([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\s+to A\/c|\.|$)/i,
     ];
 
     let merchant: string | undefined;
@@ -549,18 +561,24 @@ export default async (taskData: any) => {
   console.log('🔔 NOTIFICATION WOKE UP:', taskData);
   console.log('Notification Processor Task Started', taskData);
 
+  let logicLog: string[] = [];
+  logicLog.push(`TaskData: ${JSON.stringify(taskData).substring(0, 200)}`);
+
   try {
     // Parse the incoming notification string
     const notif = JSON.parse(taskData.notification);
     console.log('Parsed notification object:', notif);
+    logicLog.push(`App: ${notif.app}, Title: ${notif.title}, Text: ${notif.text}`);
 
     // Filter: Only process allowed packages
     if (!ALLOWED_PACKAGES.includes(notif.app)) {
       console.log('Notification from non-financial app, ignoring:', notif.app);
+      logicLog.push(`IGNORED: Not in ALLOWED_PACKAGES`);
       return;
     }
 
     console.log('Processing notification from allowed app:', notif.app);
+    logicLog.push(`Processing from allowed app`);
 
     // Combine title and text into a single string
     const combinedText = `${notif.title || ''} ${notif.text || ''}`.trim();
@@ -569,6 +587,28 @@ export default async (taskData: any) => {
     if (isSpamMessage(combinedText)) {
       console.log('⚠️ Notification identified as spam/promo - skipping parse');
       console.log('Spam notification text:', combinedText.substring(0, 100));
+      logicLog.push(`IGNORED: isSpamMessage returned true`);
+      return; // Skip processing
+    }
+    
+    // NON-TRANSACTION FILTER: Catch reminder/due-date notifications that aren't real transactions
+    // These are app notifications (Paytm, GPay etc.) that mention amounts but are just reminders
+    const NON_TRANSACTION_PATTERNS = [
+      /emi\s+of\s+(?:INR|Rs\.?|₹)\s*[0-9,]+.*(?:is\s+)?due/i,         // "EMI of ₹18,037.82 ... is due"
+      /(?:INR|Rs\.?|₹)\s*[0-9,]+.*(?:is\s+)?due\s+on/i,               // "₹X is due on 21st May"
+      /(?:loan|emi|bill|payment)\s+due/i,                              // "Loan EMI Due!"
+      /due\s+on\s+\d{1,2}(?:st|nd|rd|th)?\s+\w+/i,                    // "due on 21st May"
+      /pay\s+now\s+with\s+(?:INR|Rs\.?|₹)\s*0/i,                      // "Pay now with ₹0 fees"
+      /(?:upcoming|pending|scheduled)\s+(?:emi|payment|bill)/i,         // "upcoming EMI"
+      /(?:autopay|auto-pay|auto\s+debit|mandate)\s+(?:for|of|on)/i,    // "autopay for EMI"
+      /(?:renew|recharge|subscribe)\s+(?:now|before|by)/i,              // "renew now"
+      /(?:avoid|prevent)\s+(?:late|penalty|interest)/i,                 // "avoid late fee"
+    ];
+    
+    if (NON_TRANSACTION_PATTERNS.some(pattern => pattern.test(combinedText))) {
+      console.log('⚠️ Notification is a reminder/due-date alert, NOT a real transaction - skipping');
+      console.log('Reminder notification text:', combinedText.substring(0, 120));
+      logicLog.push(`IGNORED: Matches NON_TRANSACTION_PATTERNS`);
       return; // Skip processing
     }
     
@@ -605,22 +645,28 @@ export default async (taskData: any) => {
     // SENDER FILTER 1: Block test/system messages
     if (isBlockedSender(sender)) {
       console.log('⛔ Blocked sender detected - skipping:', sender);
+      logicLog.push(`IGNORED: isBlockedSender returned true (${sender})`);
       return; // Skip entirely, no parse, no notification
     }
 
     // SENDER FILTER 2: Only process legitimate financial senders
     if (!isLegitimateFinancialSender(sender)) {
       console.log('⛔ Non-financial sender detected - skipping:', sender);
+      logicLog.push(`IGNORED: isLegitimateFinancialSender returned false (${sender})`);
       return; // Skip silently, no notification
     }
 
     // Parse the notification using the same logic as SMS
     const parsed = parseNotification(combinedText, sender);
+    logicLog.push(`Parsed result: ${JSON.stringify(parsed)}`);
     
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
       console.log('Combined text was:', combinedText);
       console.log('Sender was:', sender);
+      
+      // Also show failed notification if we couldn't parse it but it came from a legit source
+      await showSmsFailedNotification(combinedText, sender, logicLog.join('\n'));
       return;
     }
 
@@ -942,6 +988,7 @@ export default async (taskData: any) => {
 
     if (duplicate) {
       console.log('Duplicate transaction found, ignoring notification');
+      logicLog.push(`IGNORED: Duplicate transaction found (ID: ${duplicate.id})`);
       return;
     }
 
@@ -958,9 +1005,10 @@ export default async (taskData: any) => {
     // If merchant is null, "Unknown", or empty after parsing
     if (!finalMerchant || finalMerchant.trim() === '' || finalMerchant.toLowerCase() === 'unknown') {
       console.log('Merchant is null or Unknown - firing notification failed notification');
+      logicLog.push(`FAILED: Merchant is missing or unknown`);
       
       // Fire notification instead of silent insert
-      await showSmsFailedNotification(combinedText, sender);
+      await showSmsFailedNotification(combinedText, sender, logicLog.join('\n'));
       return; // Do not insert transaction
     }
     
@@ -979,7 +1027,7 @@ export default async (taskData: any) => {
       note: additionalNotes ? `${finalNote}\n${additionalNotes}` : finalNote,
       reference_number: parsed.reference,
       balance: parsed.balance,
-      sms_source: parsed.source,
+      sms_source: ['com.google.android.gm', 'com.yahoo.mobile.client.android.mail', 'com.microsoft.office.outlook'].includes(parsed.rawSender) ? 'mail' : 'notification',
       sms_sender: parsed.rawSender,
       raw_sms: combinedText,
       account_last4: parsed.accountLast4,
@@ -1009,12 +1057,15 @@ export default async (taskData: any) => {
       // Show confirmation notification
       if (insertData && insertData[0]) {
         const transaction = insertData[0];
+        logicLog.push(`SUCCESS: Transaction inserted with ID ${transaction.id}`);
         await showTransactionConfirmation(
           transaction.id,
           transaction.type,
           finalNote,
           parsed.amount,
-          currentAccount ? `${currentAccount.bank_name} ••${currentAccount.account_last4}` : undefined
+          currentAccount ? `${currentAccount.bank_name} ••${currentAccount.account_last4}` : undefined,
+          combinedText,
+          logicLog.join('\n')
         );
       }
       

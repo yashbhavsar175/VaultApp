@@ -7,6 +7,7 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
+  InteractionManager,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import {
@@ -40,7 +41,10 @@ export default function CreditCardsList() {
 
   useFocusEffect(
     useCallback(() => {
-      loadCards();
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadCards();
+      });
+      return () => task.cancel();
     }, [])
   );
 

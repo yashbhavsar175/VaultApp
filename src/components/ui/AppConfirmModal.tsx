@@ -27,7 +27,7 @@ export default function AppConfirmModal({
   const { colors, typography, spacing, borderRadius } = useTheme();
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
+    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onCancel}>
       <View style={[styles.modalOverlay, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
         <View style={[
           styles.modalContent,
@@ -84,11 +84,11 @@ const styles = StyleSheet.create({
   },
   buttonRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
+    justifyContent: 'center',
+    gap: 16,
   },
   button: {
-    minWidth: 90,
-    paddingVertical: 12,
+    flex: 1,
+    paddingVertical: 14,
   }
 });

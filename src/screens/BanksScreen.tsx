@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  InteractionManager,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -55,8 +56,11 @@ export default function BanksScreen() {
   }, []);
 
   useFocusEffect(
-    React.useCallback(() => {
-      loadData();
+    useCallback(() => {
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadData();
+      });
+      return () => task.cancel();
     }, [])
   );
 

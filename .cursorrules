@@ -1,0 +1,71 @@
+# SpendSense (VaultApp) Development Guidelines
+
+This document outlines the strict guidelines that all AI assistants MUST follow when contributing to the SpendSense (VaultApp) codebase. Prioritize reading and implementing these rules before writing any code.
+
+## 1. UI / UX Design Philosophy ("App Friendly")
+- **Consistent Components**: Never use native `Alert.alert` or standard browser prompts. ALWAYS use the custom, theme-integrated `AppConfirmModal` for all user prompts, confirmations, and alerts.
+- **Premium Aesthetics**: The app uses a dark theme. Ensure all new UI components utilize the global `useTheme` context for colors (`colors.accent`, `colors.card`, `colors.border`, `colors.subtext`, `colors.text`), typography, and spacing.
+- **Micro-interactions**: Incorporate subtle animations where appropriate. Use standard padding, rounded corners (`borderRadius.md` or `borderRadius.lg`), and proper shadows (elevation) to maintain the premium feel.
+
+## 2. Navigation Architecture
+- **Bottom Tab Boundaries**: Only root-level core features should exist in the `BottomTabNavigator` (e.g., Dashboard, People, Add, Vault, Settings).
+- **Stack Navigation**: Deeply nested screens (like `TransactionDetail`, `Analytics`) should be placed within sub-stacks like `DashboardStack`. 
+- **Global Screens**: Screens that need to be accessible from multiple tabs without altering the active tab state (like `Places` or `PorterTest`) MUST be placed in the `RootNavigator` stack, ABOVE the `BottomTabNavigator`.
+- **Back Navigation**: Every single screen that is NOT a main tab root MUST implement a visible back button. You must use `<AppHeader title="..." showBack={true} />`. Do not rely solely on device gestures, as missing back headers trap users and trigger app exits.
+- **Instant Touch Response (CRITICAL)**: Touches MUST work instantly on every screen, even 0ms after a navigation transition. NEVER call data-fetching functions directly inside `useFocusEffect`. ALWAYS wrap them in `InteractionManager.runAfterInteractions()` and return a cleanup function. The required pattern is:
+  ```
+  useFocusEffect(useCallback(() => {
+    const task = InteractionManager.runAfterInteractions(() => { loadData(); });
+    return () => task.cancel();
+  }, [deps]));
+  ```
+  This ensures the JS thread is free to process touches during the slide-in/slide-out animation. Violating this rule causes dropped touches and makes the app feel broken.
+
+## 3. Permission Flow
+- **Individual Requests**: Do NOT group all permissions into a single bulk request modal.
+- **Step-by-Step Flow**: Permissions (SMS, Location, Mic, Camera, Notifications) must be requested sequentially. Use the custom `AppConfirmModal` for each step.
+- **Smart Persistence**: If a user selects "Skip for now", do not mark the permission flow as complete. The app should remember skipped permissions and politely prompt for them again individually the next time the app opens.
+
+## 4. State & Data Management
+- **Cloud-First Persistence (Anti-Data Loss)**: All user-generated data, configurations, photos, and state MUST be saved to the Supabase database. DO NOT rely solely on local storage (`AsyncStorage` or local files). If a user uninstalls and reinstalls the app, they should not lose a single piece of data.
+- **Images and Files**: If a feature requires capturing or saving images, those images MUST be uploaded to a Supabase Storage Bucket, and the public URL must be saved to the database. Do not use local `file://` URIs as primary storage.
+- **Provide SQL Queries**: Whenever an AI creates a new feature or screen that requires a new database table or storage bucket, the AI MUST explicitly provide the Supabase SQL commands in the chat for the user to run.
+- **Silent Loading & Caching**: Use `dataCache.ts` to instantly render UI with locally cached data while silently syncing with Supabase in the background to prevent UI blocking.
+
+## 5. Background Tasks
+- Core functionality relies on Android background listeners (SMS, Notifications). Ensure that `BackgroundEventHandler.ts` remains intact and any new listeners are properly registered in `index.js`.
+
+## 6. Past Mistakes — DO NOT REPEAT
+These are real bugs that were introduced and caught during development. Read these BEFORE writing any code.
+
+### ❌ Mistake 1: Global BackHandler intercepting nested screens
+- **What happened**: A `BackHandler` was placed inside `BottomTabNavigator` using `useEffect`. It showed the "Exit App" modal on EVERY back press, even on deeply nested screens like `TransactionDetail` or `PlacesScreen`.
+- **Root cause**: `useEffect` doesn't scope to when the tab navigator is focused. It stays active globally.
+- **Correct fix**: Removed the global BackHandler entirely from BottomTabNavigator. Each screen handles its own back behavior via `<AppHeader showBack={true} />` and React Navigation's default stack back behavior.
+
+### ❌ Mistake 2: Exit modal triggered on sub-screens inside DashboardStack
+- **What happened**: Even after using `useFocusEffect`, the exit modal appeared on screens like `TransactionDetail` because the code only checked the top-level tab name (`Dashboard`) not the deeply nested screen name.
+- **Root cause**: `useNavigationState` only resolved one level deep. It saw "Dashboard" tab but didn't drill into `DashboardStack` to see that the active screen was `TransactionDetail`.
+- **Correct fix**: Deep-resolve the navigation state by looping `while (route.state)` to get the actual leaf screen name. Only show exit on exact root screens (`DashboardHome`, `People`, `Add`, `Vault`, `Settings`).
+
+### ❌ Mistake 3: Touches dropped after screen transition
+- **What happened**: When navigating to the Transactions screen, tapping an entry within the first 1-2 seconds did nothing. Same issue when going back.
+- **Root cause**: `useFocusEffect` called `loadTransactions()` immediately on focus. The async fetch resolved during the slide-in animation, triggering a full FlatList re-render that blocked the JS thread and swallowed touch events.
+- **Correct fix**: Wrap ALL data fetching inside `InteractionManager.runAfterInteractions()` so the fetch only starts AFTER the animation completes and the UI is idle.
+
+### ❌ Mistake 4: Vault data stored only in AsyncStorage (LOCAL)
+- **What happened**: User saved passwords/PINs in the Secure Vault. After uninstalling the app, ALL vault entries were permanently deleted.
+- **Root cause**: `SecureVaultScreen` used `AsyncStorage` (key: `secure_vault_items_v1`) which is local device storage. It gets wiped on app uninstall.
+- **Correct fix**: Migrate to Supabase `vault_items` table. Always provide the SQL migration query in chat when creating new tables.
+
+### ❌ Mistake 5: Places photos stored as local file:// URIs
+- **What happened**: User took a photo for a saved place. After uninstalling the app, the photo was gone even though the place entry survived (because places are in Supabase).
+- **Root cause**: `photo_uri` was saved as a local `file:///data/...` path. The image file lives in app-specific storage which Android deletes on uninstall.
+- **Correct fix**: Upload photos to Supabase Storage bucket (`place_photos`), save the public URL to the database.
+
+### ❌ Mistake 6: sms_source showed "Upi" / "Bank" instead of actual app name
+- **What happened**: Transaction detail showed "Tracked Via: Upi" instead of "Notification (Google Pay)" or "SMS (HDFC)".
+- **Root cause**: `sms_source` was set to `parsed.source` which was the parser's internal classification (`'bank'` or `'upi'`), not the actual channel the data came from.
+- **Correct fix**: Set `sms_source` explicitly to `'sms'`, `'notification'`, `'mail'`, `'voice'`, or `'manual'` depending on the entry point. Store the raw sender/package in `sms_sender` for display.
+
+**Priority**: These rules are absolute. When interpreting a prompt, adjust the implementation to match these guidelines even if not explicitly requested by the user.

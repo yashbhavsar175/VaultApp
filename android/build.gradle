@@ -26,4 +26,12 @@ allprojects {
             url "$rootDir/../node_modules/@notifee/react-native/android/libs"
         }
     }
+    // Force consistent Google Play Services version across all dependencies
+    configurations.all {
+        resolutionStrategy {
+            force 'com.google.android.gms:play-services-location:21.3.0'
+            force 'com.google.android.gms:play-services-base:18.5.0'
+            force 'com.google.android.gms:play-services-basement:18.4.0'
+        }
+    }
 }
