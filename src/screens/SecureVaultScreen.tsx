@@ -4,14 +4,12 @@ import {
   TextInput, Alert, RefreshControl, Clipboard,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader } from '../components';
 import AppConfirmModal from '../components/ui/AppConfirmModal';
 import AppButton from '../components/ui/AppButton';
-
-const VAULT_STORAGE_KEY = 'secure_vault_items_v1';
+import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../lib/vaultDb';
 
 type VaultCategory = 'bank_pin' | 'upi_pin' | 'card' | 'netbanking' | 'app_password' | 'other';
 
@@ -95,23 +93,21 @@ export default function SecureVaultScreen() {
 
   const loadItems = async () => {
     try {
-      const stored = await AsyncStorage.getItem(VAULT_STORAGE_KEY);
-      if (stored) {
-        setItems(JSON.parse(stored));
-      }
+      const data = await getVaultItems();
+      setItems(data.map(d => ({
+        id: d.id,
+        title: d.title,
+        category: d.category as VaultCategory,
+        fields: d.fields,
+        notes: d.notes,
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+      })));
     } catch (e) {
       console.error('Error loading vault items:', e);
+      Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to load vault items' });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const saveItems = async (newItems: VaultItem[]) => {
-    try {
-      await AsyncStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(newItems));
-      setItems(newItems);
-    } catch (e) {
-      console.error('Error saving vault items:', e);
     }
   };
 
@@ -147,43 +143,59 @@ export default function SecureVaultScreen() {
       return;
     }
 
-    const now = new Date().toISOString();
-    let newItems: VaultItem[];
+    try {
+      if (editingItem) {
+        const updated = await updateVaultItem(editingItem.id, {
+          title: formTitle.trim(),
+          fields: formFields,
+          notes: formNotes,
+        });
+        setItems(prev => prev.map(i =>
+          i.id === editingItem.id
+            ? { ...i, title: updated.title, fields: updated.fields, notes: updated.notes, updatedAt: updated.updatedAt }
+            : i
+        ));
+      } else {
+        const created = await addVaultItem({
+          title: formTitle.trim(),
+          category: selectedCategory!,
+          fields: formFields,
+          notes: formNotes,
+        });
+        setItems(prev => [{
+          id: created.id,
+          title: created.title,
+          category: created.category as VaultCategory,
+          fields: created.fields,
+          notes: created.notes,
+          createdAt: created.createdAt,
+          updatedAt: created.updatedAt,
+        }, ...prev]);
+      }
 
-    if (editingItem) {
-      newItems = items.map(i =>
-        i.id === editingItem.id
-          ? { ...i, title: formTitle.trim(), fields: formFields, notes: formNotes, updatedAt: now }
-          : i
-      );
-    } else {
-      const newItem: VaultItem = {
-        id: Date.now().toString(),
-        title: formTitle.trim(),
-        category: selectedCategory!,
-        fields: formFields,
-        notes: formNotes,
-        createdAt: now,
-        updatedAt: now,
-      };
-      newItems = [newItem, ...items];
+      setShowAddModal(false);
+      Toast.show({
+        type: 'success',
+        text1: editingItem ? 'Updated' : 'Saved',
+        text2: `${formTitle.trim()} has been ${editingItem ? 'updated' : 'saved'} to cloud ☁️`,
+      });
+    } catch (e: any) {
+      console.error('Error saving vault item:', e);
+      Toast.show({ type: 'error', text1: 'Save failed', text2: e.message });
     }
-
-    await saveItems(newItems);
-    setShowAddModal(false);
-    Toast.show({
-      type: 'success',
-      text1: editingItem ? 'Updated' : 'Saved',
-      text2: `${formTitle.trim()} has been ${editingItem ? 'updated' : 'saved'} securely`,
-    });
   };
 
   const handleDelete = async (item: VaultItem) => {
-    const newItems = items.filter(i => i.id !== item.id);
-    await saveItems(newItems);
-    setDeleteConfirm(null);
-    setViewingItem(null);
-    Toast.show({ type: 'success', text1: 'Deleted', text2: `${item.title} removed from vault` });
+    try {
+      await deleteVaultItem(item.id);
+      setItems(prev => prev.filter(i => i.id !== item.id));
+      setDeleteConfirm(null);
+      setViewingItem(null);
+      Toast.show({ type: 'success', text1: 'Deleted', text2: `${item.title} removed from vault` });
+    } catch (e: any) {
+      console.error('Error deleting vault item:', e);
+      Toast.show({ type: 'error', text1: 'Delete failed', text2: e.message });
+    }
   };
 
   const copyToClipboard = (value: string, label: string) => {
@@ -364,6 +376,7 @@ export default function SecureVaultScreen() {
               numberOfLines={3}
             />
           </ScrollView>
+          <Toast />
         </View>
       </Modal>
 
@@ -439,6 +452,7 @@ export default function SecureVaultScreen() {
                 Last updated: {new Date(viewingItem.updatedAt).toLocaleString()}
               </Text>
             </ScrollView>
+            <Toast />
           </View>
         )}
       </Modal>

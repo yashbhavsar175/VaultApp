@@ -24,7 +24,7 @@ import { ScreenWrapper, AppHeader } from '../components';
 import AppConfirmModal from '../components/ui/AppConfirmModal';
 import MapPickerModal from '../components/ui/MapPickerModal';
 import { Place, PlaceCategory } from '../types';
-import { getPlaces, addPlace, updatePlace, deletePlace } from '../lib/placesDb';
+import { getPlaces, addPlace, updatePlace, deletePlace, uploadPlacePhoto } from '../lib/placesDb';
 import { getCached, setCache, CACHE_KEYS } from '../lib/dataCache';
 
 const CATEGORY_MAP: Record<PlaceCategory, { label: string; icon: string; color: string }> = {
@@ -64,6 +64,7 @@ export default function PlacesScreen() {
   const [longitude, setLongitude] = useState<number | null>(null);
   const [address, setAddress] = useState('');
   const [photoUri, setPhotoUri] = useState<string | undefined>(undefined);
+  const [photoBase64, setPhotoBase64] = useState<string | undefined>(undefined);
   const [showMapPicker, setShowMapPicker] = useState(false);
 
   const loadPlaces = useCallback(async () => {
@@ -161,9 +162,10 @@ export default function PlacesScreen() {
           return;
         }
       }
-      const result = await launchCamera({ mediaType: 'photo', quality: 0.7, maxWidth: 1200, maxHeight: 1200 });
+      const result = await launchCamera({ mediaType: 'photo', quality: 0.7, maxWidth: 1200, maxHeight: 1200, includeBase64: true });
       if (result.assets && result.assets[0]?.uri) {
         setPhotoUri(result.assets[0].uri);
+        setPhotoBase64(result.assets[0].base64 || undefined);
         Toast.show({ type: 'success', text1: 'Photo captured! 📸' });
       }
     } catch (e: any) {
@@ -179,12 +181,21 @@ export default function PlacesScreen() {
 
     setSaving(true);
     try {
+      let finalPhotoUri = photoUri;
+      if (photoBase64) {
+        Toast.show({ type: 'info', text1: 'Uploading photo...' });
+        finalPhotoUri = await uploadPlacePhoto(photoBase64);
+      } else if (photoUri && (photoUri.startsWith('file://') || photoUri.startsWith('content://'))) {
+        Toast.show({ type: 'info', text1: 'Uploading photo...' });
+        finalPhotoUri = await uploadPlacePhoto(undefined, photoUri);
+      }
+
       const placeData = {
         name: name.trim(),
         category,
         note: note.trim(),
         location: latitude && longitude ? { latitude, longitude, address: address || undefined } : undefined,
-        photo_uri: photoUri,
+        photo_uri: finalPhotoUri,
       };
 
       if (isEditing) {
@@ -236,6 +247,7 @@ export default function PlacesScreen() {
       setLongitude(place.location?.longitude ?? null);
       setAddress(place.location?.address ?? '');
       setPhotoUri(place.photo_uri);
+      setPhotoBase64(undefined);
     } else {
       setIsEditing(false);
       setEditId('');
@@ -246,6 +258,7 @@ export default function PlacesScreen() {
       setLongitude(null);
       setAddress('');
       setPhotoUri(undefined);
+      setPhotoBase64(undefined);
     }
     setModalVisible(true);
   };
@@ -485,7 +498,7 @@ export default function PlacesScreen() {
                 <View style={{ borderRadius: borderRadius.md, overflow: 'hidden', marginBottom: 4 }}>
                   <Image source={{ uri: photoUri }} style={{ width: '100%', height: 160, borderRadius: borderRadius.md }} resizeMode="cover" />
                   <TouchableOpacity
-                    onPress={() => setPhotoUri(undefined)}
+                    onPress={() => { setPhotoUri(undefined); setPhotoBase64(undefined); }}
                     style={{ position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 14, width: 28, height: 28, justifyContent: 'center', alignItems: 'center' }}
                   >
                     <MaterialCommunityIcons name="close" size={16} color="#fff" />
@@ -534,6 +547,7 @@ export default function PlacesScreen() {
               </TouchableOpacity>
             </ScrollView>
           </KeyboardAvoidingView>
+          <Toast />
         </View>
       </Modal>
 

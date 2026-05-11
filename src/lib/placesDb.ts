@@ -1,6 +1,9 @@
 import { supabase } from './supabase';
 import { Place } from '../types';
 
+// atob is available globally in React Native (Hermes), but TS doesn't know about it
+declare function atob(data: string): string;
+
 export async function getPlaces(): Promise<Place[]> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
@@ -56,6 +59,58 @@ export async function addPlace(
 
   if (error) throw new Error(error.message);
   return mapRowToPlace(data);
+}
+
+export async function uploadPlacePhoto(base64Data?: string, localUri?: string): Promise<string> {
+  console.log('📸 [Upload] Starting photo upload, hasBase64:', !!base64Data, 'URI:', localUri);
+  
+  // If we have a remote URL already (editing an existing place), just return it
+  if (localUri && !localUri.startsWith('file://') && !localUri.startsWith('content://')) {
+    console.log('📸 [Upload] Already a remote URL, skipping upload');
+    return localUri;
+  }
+
+  // Must have base64 data to upload
+  if (!base64Data) {
+    throw new Error('No photo data available for upload');
+  }
+  
+  console.log('📸 [Upload] Step 1: Getting user...');
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('User not authenticated');
+  console.log('📸 [Upload] Step 1 ✅ User ID:', user.id);
+
+  const fileName = `${user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
+  
+  console.log('📸 [Upload] Step 2: Converting base64 to Uint8Array...');
+  // Decode base64 to binary
+  const binaryString = atob(base64Data);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  console.log('📸 [Upload] Step 2 ✅ Uint8Array size:', bytes.length);
+
+  console.log('📸 [Upload] Step 3: Uploading to Supabase storage, fileName:', fileName);
+  const { data, error } = await supabase.storage
+    .from('place-photos')
+    .upload(fileName, bytes, {
+      contentType: 'image/jpeg',
+    });
+    
+  if (error) {
+    console.error('📸 [Upload] Step 3 ❌ Supabase upload error:', error.message, error);
+    throw new Error(`Upload failed: ${error.message}`);
+  }
+  console.log('📸 [Upload] Step 3 ✅ Upload success, path:', data.path);
+  
+  // Get public URL
+  const { data: publicData } = supabase.storage
+    .from('place-photos')
+    .getPublicUrl(data.path);
+  
+  console.log('📸 [Upload] Step 4 ✅ Public URL:', publicData.publicUrl);
+  return publicData.publicUrl;
 }
 
 export async function updatePlace(

@@ -12,14 +12,26 @@ This document outlines the strict guidelines that all AI assistants MUST follow 
 - **Stack Navigation**: Deeply nested screens (like `TransactionDetail`, `Analytics`) should be placed within sub-stacks like `DashboardStack`. 
 - **Global Screens**: Screens that need to be accessible from multiple tabs without altering the active tab state (like `Places` or `PorterTest`) MUST be placed in the `RootNavigator` stack, ABOVE the `BottomTabNavigator`.
 - **Back Navigation**: Every single screen that is NOT a main tab root MUST implement a visible back button. You must use `<AppHeader title="..." showBack={true} />`. Do not rely solely on device gestures, as missing back headers trap users and trigger app exits.
-- **Instant Touch Response (CRITICAL)**: Touches MUST work instantly on every screen, even 0ms after a navigation transition. NEVER call data-fetching functions directly inside `useFocusEffect`. ALWAYS wrap them in `InteractionManager.runAfterInteractions()` and return a cleanup function. The required pattern is:
+- **Instant Touch Response (CRITICAL)**: Touches MUST work instantly on every screen, even 0ms after a navigation transition. Two mandatory patterns:
+  1. **InteractionManager**: NEVER call data-fetching directly inside `useFocusEffect`. ALWAYS wrap in `InteractionManager.runAfterInteractions()`:
   ```
   useFocusEffect(useCallback(() => {
     const task = InteractionManager.runAfterInteractions(() => { loadData(); });
     return () => task.cancel();
   }, [deps]));
   ```
-  This ensures the JS thread is free to process touches during the slide-in/slide-out animation. Violating this rule causes dropped touches and makes the app feel broken.
+  2. **Deep Equality Check**: Inside every `loadData()` function, compare stringified new data with a `useRef` before calling `setState`. If data is identical, `return` early to prevent a useless re-render that freezes the JS thread:
+  ```
+  const lastDataStringRef = useRef<string | null>(null);
+  const loadData = async () => {
+    const data = await fetchFromSupabase();
+    const dataStr = JSON.stringify(data);
+    if (lastDataStringRef.current === dataStr) return; // Skip!
+    lastDataStringRef.current = dataStr;
+    setState(data);
+  };
+  ```
+  Both patterns are REQUIRED together. InteractionManager alone is not enough — the re-render after setState still freezes the thread if data hasn't changed.
 
 ## 3. Permission Flow
 - **Individual Requests**: Do NOT group all permissions into a single bulk request modal.
@@ -80,5 +92,25 @@ These are real bugs that were introduced and caught during development. Read the
 - **What happened**: A Google Maps API key (or other secret) was hardcoded directly in `AndroidManifest.xml` via a `<meta-data>` tag, causing a severe secret leak detected by GitGuardian.
 - **Root cause**: The developer placed the plain-text string directly into the tracked source code instead of loading it securely from a local environment file.
 - **Correct fix**: Define the key in `android/local.properties` (which is ignored by Git). Use a Gradle script (`build.gradle`) to load the property and inject it into `AndroidManifest.xml` using `manifestPlaceholders`. For example: `android:value="${GOOGLE_MAPS_API_KEY}"`. NEVER commit API keys or secrets to the repository.
+### ❌ Mistake 8: Toast notifications rendering behind React Native Modals
+- **What happened**: When a user triggered a save/error inside a `<Modal>`, the Toast notification appeared behind the modal (in the background), invisible to the user. They could only see it after dismissing the modal.
+- **Root cause**: React Native's `<Modal>` creates a separate native window layer. The root `<Toast />` component in `App.tsx` renders at the root level, which is BELOW the modal's native window.
+- **Correct fix**: Add a `<Toast />` component INSIDE every `<Modal>` that triggers `Toast.show()`. Place it as the last child inside the modal's outermost `<View>`, right before `</Modal>`. This ensures the toast renders on top of the modal content. Example:
+  ```
+  <Modal visible={showModal}>
+    <View style={{ flex: 1 }}>
+      {/* modal content */}
+    </View>
+    <Toast />
+  </Modal>
+  ```
+
+## 7. Debugging Protocol — Log Before Guessing
+- **MANDATORY**: When a bug's root cause is unclear, DO NOT blindly attempt multiple fixes. Instead:
+  1. **Add step-by-step `console.log`** at every stage of the failing flow (label them with emojis + step numbers like `📸 [Upload] Step 1:`, `Step 2 ✅`, `Step 3 ❌`).
+  2. **Ask the user to reproduce** and share the logs.
+  3. **Read the logs** to identify the EXACT failure point.
+  4. **Fix only the confirmed broken step.**
+- This prevents wasting time with trial-and-error fixes that may introduce new bugs. Logs are cheap; wrong fixes are expensive.
 
 **Priority**: These rules are absolute. When interpreting a prompt, adjust the implementation to match these guidelines even if not explicitly requested by the user.

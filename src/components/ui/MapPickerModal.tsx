@@ -122,7 +122,7 @@ export default function MapPickerModal({
           showsUserLocation
           showsMyLocationButton={false}
           showsCompass
-          showsPointsOfInterest={true}
+          showsPointsOfInterests={true}
           showsBuildings={true}
           onPress={handleMapPress}
           onMapReady={() => setMapReady(true)}
