@@ -86,25 +86,12 @@ export async function deleteBankAccount(id: string): Promise<void> {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user found');
 
-    // First, delete all transactions associated with this bank account
-    // This handles the foreign key constraint from transactions table
-    const { error: deleteTransactionsError } = await supabase
-      .from('transactions')
-      .delete()
-      .eq('user_id', user.id)
-      .or(`from_account_id.eq.${id},to_account_id.eq.${id},account_id.eq.${id}`);
-
-    if (deleteTransactionsError) {
-      console.error('Error deleting related transactions:', deleteTransactionsError);
-      throw deleteTransactionsError;
-    }
-
-    // Now delete the bank account
-    const { error } = await supabase
-      .from('bank_accounts')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', user.id);
+    // Use atomic database function to ensure both account and transactions
+    // are deleted together (all or nothing) to prevent partial state
+    const { error } = await supabase.rpc('delete_bank_account_cascade', {
+      p_account_id: id,
+      p_user_id: user.id,
+    });
 
     if (error) throw error;
   } catch (error) {
@@ -179,10 +166,14 @@ export async function getCreditCards(): Promise<CreditCard[]> {
 
 // Get single credit card
 export async function getCreditCard(cardId: string): Promise<CreditCard | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { data, error } = await supabase
     .from('credit_cards')
     .select('*')
     .eq('id', cardId)
+    .eq('user_id', userData.user.id)
     .single();
 
   if (error) throw error;
@@ -213,10 +204,14 @@ export async function updateCreditCard(
   cardId: string,
   updates: Partial<AddCardData>
 ): Promise<CreditCard> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { data, error } = await supabase
     .from('credit_cards')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', cardId)
+    .eq('user_id', userData.user.id)
     .select()
     .single();
 
@@ -226,20 +221,28 @@ export async function updateCreditCard(
 
 // Delete credit card
 export async function deleteCreditCard(cardId: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { error } = await supabase
     .from('credit_cards')
     .delete()
-    .eq('id', cardId);
+    .eq('id', cardId)
+    .eq('user_id', userData.user.id);
 
   if (error) throw error;
 }
 
 // Get transactions for a card
 export async function getCardTransactions(cardId: string): Promise<CCTransaction[]> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { data, error } = await supabase
     .from('cc_transactions')
     .select('*')
     .eq('card_id', cardId)
+    .eq('user_id', userData.user.id)
     .order('transaction_date', { ascending: false });
 
   if (error) throw error;
@@ -419,10 +422,14 @@ export async function getLoans(): Promise<Loan[]> {
 
 // Get single loan
 export async function getLoan(loanId: string): Promise<Loan | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { data, error } = await supabase
     .from('loans')
     .select('*')
     .eq('id', loanId)
+    .eq('user_id', userData.user.id)
     .single();
 
   if (error) throw error;
@@ -454,6 +461,9 @@ export async function updateLoan(
   loanId: string,
   updates: Partial<AddLoanData>
 ): Promise<Loan> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const updateData: any = { ...updates, updated_at: new Date().toISOString() };
   
   if (updates.start_date) {
@@ -464,6 +474,7 @@ export async function updateLoan(
     .from('loans')
     .update(updateData)
     .eq('id', loanId)
+    .eq('user_id', userData.user.id)
     .select()
     .single();
 
@@ -473,20 +484,28 @@ export async function updateLoan(
 
 // Delete loan
 export async function deleteLoan(loanId: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { error } = await supabase
     .from('loans')
     .delete()
-    .eq('id', loanId);
+    .eq('id', loanId)
+    .eq('user_id', userData.user.id);
 
   if (error) throw error;
 }
 
 // Get EMI payments for a loan
 export async function getEMIPayments(loanId: string): Promise<EMIPayment[]> {
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData?.user) throw new Error('Not authenticated');
+
   const { data, error } = await supabase
     .from('emi_payments')
     .select('*')
     .eq('loan_id', loanId)
+    .eq('user_id', userData.user.id)
     .order('payment_date', { ascending: false });
 
   if (error) throw error;

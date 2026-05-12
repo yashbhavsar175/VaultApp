@@ -89,6 +89,21 @@ export async function addPayment(
   notes?: string,
   paidDate?: string
 ): Promise<PeopleLedgerPayment> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  // Verify ownership before inserting payment
+  const { data: ledger, error: ownershipError } = await supabase
+    .from('people_ledger')
+    .select('id')
+    .eq('id', ledgerId)
+    .eq('user_id', user.id)
+    .single();
+
+  if (ownershipError || !ledger) {
+    throw new Error('Ledger entry not found or unauthorized');
+  }
+
   const { data: payment, error } = await supabase
     .from('people_ledger_payments')
     .insert({
@@ -108,6 +123,21 @@ export async function addPayment(
  * Get all payments for a ledger entry
  */
 export async function getPayments(ledgerId: string): Promise<PeopleLedgerPayment[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  // Verify ownership before fetching payments
+  const { data: ledger, error: ownershipError } = await supabase
+    .from('people_ledger')
+    .select('id')
+    .eq('id', ledgerId)
+    .eq('user_id', user.id)
+    .single();
+
+  if (ownershipError || !ledger) {
+    throw new Error('Ledger entry not found or unauthorized');
+  }
+
   const { data, error } = await supabase
     .from('people_ledger_payments')
     .select('*')
@@ -156,6 +186,7 @@ export async function deleteLedgerEntry(ledgerId: string): Promise<void> {
 /**
  * Calculate expected payment by today for installment type
  * Excludes Sundays or custom excluded days
+ * Uses optimized math-based calculation instead of day-by-day iteration
  */
 export function calculateExpectedByToday(entry: PeopleLedger): number {
   if (entry.repayment_type !== 'installment' || !entry.start_date || !entry.installment_amount) {
@@ -172,7 +203,7 @@ export function calculateExpectedByToday(entry: PeopleLedger): number {
   }
 
   const installmentDays = entry.installment_days || ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-  const dayMap: { [key: string]: number } = {
+  const dayMap: Record<string, number> = {
     sun: 0,
     mon: 1,
     tue: 2,
@@ -182,17 +213,25 @@ export function calculateExpectedByToday(entry: PeopleLedger): number {
     sat: 6,
   };
 
-  const includedDayNumbers = installmentDays.map(day => dayMap[day.toLowerCase()]);
+  const includedDays = new Set(installmentDays.map(d => dayMap[d.toLowerCase()]));
 
-  let count = 0;
-  const currentDate = new Date(startDate);
+  // Calculate total days between start and today (inclusive)
+  const totalDays = Math.floor((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+  
+  // Calculate full weeks and remainder days
+  const fullWeeks = Math.floor(totalDays / 7);
+  const remainder = totalDays % 7;
 
-  while (currentDate <= today) {
-    const dayOfWeek = currentDate.getDay();
-    if (includedDayNumbers.includes(dayOfWeek)) {
+  // Count installment days in full weeks
+  let count = fullWeeks * includedDays.size;
+
+  // Count installment days in remaining days
+  for (let i = 0; i < remainder; i++) {
+    const d = new Date(startDate);
+    d.setDate(startDate.getDate() + fullWeeks * 7 + i);
+    if (includedDays.has(d.getDay())) {
       count++;
     }
-    currentDate.setDate(currentDate.getDate() + 1);
   }
 
   return count * entry.installment_amount;
@@ -200,12 +239,14 @@ export function calculateExpectedByToday(entry: PeopleLedger): number {
 
 /**
  * Get summary statistics
+ * @param entries - Optional pre-fetched entries to avoid redundant API calls
  */
-export async function getLedgerSummary() {
-  const entries = await getPeopleLedger(false);
+export async function getLedgerSummary(entries?: PeopleLedger[]) {
+  // Use provided entries or fetch fresh data
+  const ledgerEntries = entries || await getPeopleLedger(false);
 
-  const lentEntries = entries.filter(e => e.type === 'lent');
-  const borrowedEntries = entries.filter(e => e.type === 'borrowed');
+  const lentEntries = ledgerEntries.filter(e => e.type === 'lent');
+  const borrowedEntries = ledgerEntries.filter(e => e.type === 'borrowed');
 
   return {
     totalLent: lentEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0),
@@ -264,6 +305,19 @@ export function getDaysUntilDue(entry: PeopleLedger): number | null {
 // PLACES
 // ═══════════════════════════════════════════════════════════════════════════════
 
+interface PlaceDBRow {
+  id: string;
+  user_id: string;
+  name: string;
+  category: string; // Will be cast to PlaceCategory
+  note: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  address: string | null;
+  photo_uri: string | null;
+  created_at: string;
+}
+
 export async function getPlaces(): Promise<Place[]> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
@@ -280,12 +334,12 @@ export async function getPlaces(): Promise<Place[]> {
 }
 
 // Helper to map DB row to frontend Place type
-function mapRowToPlace(row: any): Place {
+function mapRowToPlace(row: PlaceDBRow): Place {
   return {
     id: row.id,
     name: row.name,
-    category: row.category,
-    note: row.note,
+    category: row.category as Place['category'], // Type assertion for PlaceCategory
+    note: row.note || '',
     location: row.latitude && row.longitude ? {
       latitude: row.latitude,
       longitude: row.longitude,
@@ -322,11 +376,16 @@ export async function addPlace(
 }
 
 export async function uploadPlacePhoto(base64Data?: string, localUri?: string): Promise<string> {
-  console.log('📸 [Upload] Starting photo upload, hasBase64:', !!base64Data, 'URI:', localUri);
+  // Development-only logging helper
+  const log = (...args: any[]) => {
+    if (__DEV__) console.log(...args);
+  };
+
+  log('📸 [Upload] Starting photo upload, hasBase64:', !!base64Data, 'hasLocalUri:', !!localUri);
   
   // If we have a remote URL already (editing an existing place), just return it
   if (localUri && !localUri.startsWith('file://') && !localUri.startsWith('content://')) {
-    console.log('📸 [Upload] Already a remote URL, skipping upload');
+    log('📸 [Upload] Already a remote URL, skipping upload');
     return localUri;
   }
 
@@ -335,23 +394,23 @@ export async function uploadPlacePhoto(base64Data?: string, localUri?: string): 
     throw new Error('No photo data available for upload');
   }
   
-  console.log('📸 [Upload] Step 1: Getting user...');
+  log('📸 [Upload] Step 1: Getting user...');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
-  console.log('📸 [Upload] Step 1 ✅ User ID:', user.id);
+  log('📸 [Upload] Step 1 ✅ User authenticated');
 
   const fileName = `${user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
   
-  console.log('📸 [Upload] Step 2: Converting base64 to Uint8Array...');
+  log('📸 [Upload] Step 2: Converting base64 to Uint8Array...');
   // Decode base64 to binary
   const binaryString = atob(base64Data);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
-  console.log('📸 [Upload] Step 2 ✅ Uint8Array size:', bytes.length);
+  log('📸 [Upload] Step 2 ✅ Uint8Array size:', bytes.length);
 
-  console.log('📸 [Upload] Step 3: Uploading to Supabase storage, fileName:', fileName);
+  log('📸 [Upload] Step 3: Uploading to Supabase storage...');
   const { data, error } = await supabase.storage
     .from('place-photos')
     .upload(fileName, bytes, {
@@ -359,17 +418,17 @@ export async function uploadPlacePhoto(base64Data?: string, localUri?: string): 
     });
     
   if (error) {
-    console.error('📸 [Upload] Step 3 ❌ Supabase upload error:', error.message, error);
+    console.error('📸 [Upload] Step 3 ❌ Supabase upload error:', error.message);
     throw new Error(`Upload failed: ${error.message}`);
   }
-  console.log('📸 [Upload] Step 3 ✅ Upload success, path:', data.path);
+  log('📸 [Upload] Step 3 ✅ Upload success');
   
   // Get public URL
   const { data: publicData } = supabase.storage
     .from('place-photos')
     .getPublicUrl(data.path);
   
-  console.log('📸 [Upload] Step 4 ✅ Public URL:', publicData.publicUrl);
+  log('📸 [Upload] Step 4 ✅ Public URL generated');
   return publicData.publicUrl;
 }
 

@@ -43,7 +43,13 @@ export const parseTransaction = (text: string): ParsedTransaction => {
   
   // Extract amount
   const amountMatch = text.match(/₹?\s*(\d+(?:\.\d+)?)/);
-  const amount = amountMatch ? parseFloat(amountMatch[1]) : 0;
+  
+  // Validate amount
+  if (!amountMatch || parseFloat(amountMatch[1]) <= 0) {
+    throw new Error('Valid amount not found. Please include an amount, e.g. "500 lunch"');
+  }
+  
+  const amount = parseFloat(amountMatch[1]);
   
   // Detect type
   let type: TransactionType = 'expense';
@@ -79,7 +85,10 @@ export const configureGoogleSignIn = () => {
 export const signInWithGoogle = async () => {
   try {
     await GoogleSignin.hasPlayServices();
-    await new Promise(resolve => setTimeout(() => resolve(undefined), 300));
+    
+    // Note: If you encounter "Current activity is null" errors on some devices,
+    // it may indicate the Google Sign-In UI is being triggered before the activity
+    // is fully ready. Consider adding error handling or user feedback instead of delays.
     
     const userInfo = await GoogleSignin.signIn();
     
@@ -161,13 +170,26 @@ export async function addTransaction(
     throw new Error('User not authenticated');
   }
 
+  // Validate transaction data
+  if (!tx.amount || tx.amount <= 0) {
+    throw new Error('Valid amount required');
+  }
+  
+  if (!tx.type) {
+    throw new Error('Transaction type required');
+  }
+  
+  if (!tx.note?.trim()) {
+    throw new Error('Note required');
+  }
+
   const { data, error } = await supabase
     .from('transactions')
     .insert({
       user_id: user.id,
       amount: tx.amount,
       type: tx.type,
-      note: tx.note,
+      note: tx.note.trim(),
       category: tx.category,
     })
     .select()
@@ -222,6 +244,8 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
 
   const CHUNK_SIZE = 100;
+  const errors: string[] = [];
+  
   for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
     const chunk = ids.slice(i, i + CHUNK_SIZE);
     const { error } = await supabase
@@ -231,8 +255,12 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
       .eq('user_id', user.id);
 
     if (error) {
-      throw new Error(error.message);
+      errors.push(`Chunk ${i + 1}-${i + chunk.length}: ${error.message}`);
     }
+  }
+  
+  if (errors.length > 0) {
+    throw new Error(`Some transactions could not be deleted:\n${errors.join('\n')}`);
   }
 }
 

@@ -21,6 +21,7 @@
     "@supabase/supabase-js": "^2.99.2",
     "react": "19.2.3",
     "react-native": "0.84.1",
+    "react-native-aes-crypto": "^3.3.0",
     "react-native-android-notification-listener": "^5.0.1",
     "react-native-config": "^1.6.1",
     "react-native-geolocation-service": "^5.3.1",

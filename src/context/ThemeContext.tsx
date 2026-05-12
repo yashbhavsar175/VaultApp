@@ -191,6 +191,25 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 const THEME_STORAGE_KEY = 'theme_preference';
 
+// Default theme value for loading state to prevent blank screen flash
+const getDefaultThemeValue = (systemColorScheme: 'light' | 'dark' | 'unspecified' | null | undefined): ThemeContextType => {
+  // Handle 'unspecified' or null/undefined by defaulting to 'light'
+  const activeTheme: ActiveTheme = systemColorScheme === 'dark' ? 'dark' : 'light';
+  const colors = activeTheme === 'dark' ? darkColors : lightColors;
+  const shadows = getShadows(colors.shadow);
+  
+  return {
+    theme: activeTheme,
+    themeMode: 'system',
+    colors,
+    typography,
+    spacing,
+    borderRadius,
+    shadows,
+    setThemeMode: async () => {}, // No-op during loading
+  };
+};
+
 export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const systemColorScheme = useColorScheme();
   const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
@@ -239,7 +258,13 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   };
 
   if (isLoading) {
-    return null; // Or a loading screen
+    // Return default theme during loading to prevent blank screen flash
+    const defaultThemeValue = getDefaultThemeValue(systemColorScheme);
+    return (
+      <ThemeContext.Provider value={defaultThemeValue}>
+        {children}
+      </ThemeContext.Provider>
+    );
   }
 
   return (

@@ -135,9 +135,13 @@ export const getBankEmoji = (bankName: string): string => {
 export const getBankSuggestions = (query: string): string[] => {
   if (!query || query.length < 1) return [];
   
-  const lower = query.toLowerCase();
+  // Sanitize input to prevent issues with special characters
+  const sanitized = query.replace(/[^a-zA-Z\s]/g, '').toLowerCase();
+  
+  if (!sanitized) return [];
+  
   const suggestions = Object.keys(BANK_DOMAINS)
-    .filter(key => key.toLowerCase().includes(lower))
+    .filter(key => key.toLowerCase().includes(sanitized))
     .map(key => {
       // Capitalize first letter of each word
       return key.split(' ').map(word => 

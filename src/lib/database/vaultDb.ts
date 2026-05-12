@@ -1,7 +1,11 @@
 import { supabase } from '../core';
+import { encryptVaultFields, decryptVaultFields } from '../../utils/encryption';
 
 /**
- * Vault Items — Cloud-First Persistence (Supabase)
+ * Vault Items — Cloud-First Persistence (Supabase) with Client-Side Encryption
+ * 
+ * SECURITY: Secret fields (isSecret: true) are encrypted client-side before
+ * storing in Supabase using AES-256-CBC encryption.
  * 
  * SQL to run in Supabase SQL Editor:
  * 
@@ -34,13 +38,18 @@ export interface VaultItemDB {
   updatedAt: string;
 }
 
-// Map DB row → frontend VaultItem
-function mapRow(row: any): VaultItemDB {
+// Map DB row → frontend VaultItem (with decryption)
+async function mapRow(row: any): Promise<VaultItemDB> {
+  const fields = typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields;
+  
+  // Decrypt secret fields
+  const decryptedFields = await decryptVaultFields(fields);
+  
   return {
     id: row.id,
     title: row.title,
     category: row.category,
-    fields: typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields,
+    fields: decryptedFields,
     notes: row.notes || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -58,7 +67,10 @@ export async function getVaultItems(): Promise<VaultItemDB[]> {
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
-  return (data || []).map(mapRow);
+  
+  // Decrypt all items
+  const decryptedItems = await Promise.all((data || []).map(mapRow));
+  return decryptedItems;
 }
 
 export async function addVaultItem(
@@ -67,20 +79,23 @@ export async function addVaultItem(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
+  // Encrypt secret fields before storing
+  const encryptedFields = await encryptVaultFields(item.fields);
+
   const { data, error } = await supabase
     .from('vault_items')
     .insert({
       user_id: user.id,
       title: item.title,
       category: item.category,
-      fields: item.fields,
+      fields: encryptedFields,
       notes: item.notes,
     })
     .select()
     .single();
 
   if (error) throw new Error(error.message);
-  return mapRow(data);
+  return await mapRow(data);
 }
 
 export async function updateVaultItem(
@@ -93,8 +108,12 @@ export async function updateVaultItem(
   const updatePayload: any = { updated_at: new Date().toISOString() };
   if (updates.title !== undefined) updatePayload.title = updates.title;
   if (updates.category !== undefined) updatePayload.category = updates.category;
-  if (updates.fields !== undefined) updatePayload.fields = updates.fields;
   if (updates.notes !== undefined) updatePayload.notes = updates.notes;
+  
+  // Encrypt secret fields before updating
+  if (updates.fields !== undefined) {
+    updatePayload.fields = await encryptVaultFields(updates.fields);
+  }
 
   const { data, error } = await supabase
     .from('vault_items')
@@ -105,7 +124,7 @@ export async function updateVaultItem(
     .single();
 
   if (error) throw new Error(error.message);
-  return mapRow(data);
+  return await mapRow(data);
 }
 
 export async function deleteVaultItem(id: string): Promise<void> {
