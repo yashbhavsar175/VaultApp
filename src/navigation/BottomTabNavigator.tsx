@@ -7,10 +7,10 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useTheme } from '../context/ThemeContext';
 
 import DashboardStack from './DashboardStack';
-import PeopleScreen from '../screens/PeopleScreen';
-import Add from '../screens/Add';
-import SecureVaultScreen from '../screens/SecureVaultScreen';
-import Settings from '../screens/Settings';
+import PeopleScreen from '../screens/people/PeopleScreen';
+import Add from '../screens/transactions/Add';
+import SecureVaultScreen from '../screens/vault/SecureVaultScreen';
+import Settings from '../screens/user/Settings';
 
 const Tab = createBottomTabNavigator();
 
@@ -45,7 +45,7 @@ export default function BottomTabNavigator() {
             const cleanProps = Object.fromEntries(
               Object.entries(props).map(([k, v]) => [k, v === null ? undefined : v])
             );
-            return <TouchableOpacity {...cleanProps as any} activeOpacity={1} />;
+            return <TouchableOpacity {...cleanProps as any} activeOpacity={0.6} />;
           },
         }}>
         <Tab.Screen

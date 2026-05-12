@@ -1,16 +1,11 @@
-// Layout Components
-export { default as ScreenWrapper } from './layout/ScreenWrapper';
-export { default as AppHeader } from './layout/AppHeader';
+// Layout
+export { default as ScreenWrapper } from './ScreenWrapper';
+export { default as AppHeader } from './AppHeader';
 
-// UI Components
-export { default as Card } from './ui/Card';
-export { default as AppButton } from './ui/AppButton';
-export { default as AppInput } from './ui/AppInput';
-export { default as Badge } from './ui/Badge';
+// UI Elements
+export { default as Card } from './Card';
+export { default as AppButton } from './AppButton';
+export { default as AppInput } from './AppInput';
 
-// Common Components
-export { default as TransactionItem } from './common/TransactionItem';
-export { default as SectionHeader } from './common/SectionHeader';
-
-// Permission Components
+// Permission
 export { default as PermissionPrompt } from './PermissionPrompt';

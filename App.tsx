@@ -7,16 +7,14 @@ import { Session } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast, { BaseToast, ErrorToast, InfoToast } from 'react-native-toast-message';
 import RootNavigator from './src/navigation/RootNavigator';
-import LoginScreen from './src/screens/LoginScreen';
-import SignupScreen from './src/screens/SignupScreen';
-import ProfileScreen from './src/screens/ProfileScreen';
-import { supabase } from './src/lib/supabase';
-import { ThemeProvider } from './src/context/ThemeContext';
-import { configureGoogleSignIn } from './src/lib/googleAuth';
-import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/BackgroundEventHandler';
-import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/PorterDistanceCalculator';
+import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
+import ProfileScreen from './src/screens/user/ProfileScreen';
+import { supabase, configureGoogleSignIn } from './src/lib/core';
+import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/notifications';
+import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/porter';
 import PermissionPrompt from './src/components/PermissionPrompt';
-import { prefetchAllData } from './src/lib/prefetch';
+import { prefetchAllData } from './src/lib/cache';
+import { ThemeProvider } from './src/context/ThemeContext';
 
 const toastConfig = {
   success: (props: any) => (

@@ -1,0 +1,144 @@
+/**
+ * Configuration Module
+ * Consolidated: env.ts + constants/bankLogos.ts
+ * 
+ * Contains:
+ * - Environment configuration (Supabase, API keys)
+ * - Bank information (colors, emojis, domains)
+ * - App configuration and feature flags
+ */
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENVIRONMENT CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * IMPORTANT: This file contains sensitive API keys and URLs.
+ * DO NOT share this file or commit it to version control.
+ * Add this file to .gitignore
+ * 
+ * For production, use environment variables or secure key management.
+ */
+
+// Supabase Configuration
+export const SUPABASE_URL = 'https://zwszhrmxntqfjvontcfw.supabase.co';
+export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp3c3pocm14bnRxZmp2b250Y2Z3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0OTI3OTUsImV4cCI6MjA4OTA2ODc5NX0.2n9bv8l_ehOm26CSezVV8-Cwh5iqWfE9exPVjpuq9U8';
+
+// AI Configuration
+export const GEMINI_API_KEY = 'AIzaSyALymy6YOmp90d8aCOxYwPNUOZ3BcDC36Y';
+export const OPENAI_API_KEY = 'YOUR_OPENAI_API_KEY'; // Not currently used
+
+// App Configuration
+export const APP_NAME = 'SpendSense';
+export const APP_VERSION = '1.0.0';
+
+// Feature Flags
+export const FEATURES = {
+  AI_PARSING: true,
+  SMS_AUTO_CAPTURE: false, // Not yet implemented
+  GOOGLE_SIGNIN: true,
+};
+
+// AI Provider Selection
+export const AI_PROVIDER: 'openai' | 'gemini' = 'gemini';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BANK INFORMATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export const BANK_INFO: Record<string, { color: string; emoji: string }> = {
+  'sbi': { color: '#1B4F9B', emoji: '🏦' },
+  'state bank': { color: '#1B4F9B', emoji: '🏦' },
+  'hdfc': { color: '#004C8F', emoji: '🏦' },
+  'icici': { color: '#F58220', emoji: '🏦' },
+  'axis': { color: '#800000', emoji: '🏦' },
+  'kotak': { color: '#EF3E33', emoji: '🏦' },
+  'yes bank': { color: '#0033A0', emoji: '🏦' },
+  'pnb': { color: '#1B3A6B', emoji: '🏦' },
+  'punjab national': { color: '#1B3A6B', emoji: '🏦' },
+  'bank of baroda': { color: '#F68B1F', emoji: '🏦' },
+  'bob': { color: '#F68B1F', emoji: '🏦' },
+  'canara': { color: '#F7941D', emoji: '🏦' },
+  'union bank': { color: '#005DAA', emoji: '🏦' },
+  'idfc': { color: '#97144D', emoji: '🏦' },
+  'idbi': { color: '#1B4F9B', emoji: '🏦' },
+  'indusind': { color: '#98272A', emoji: '🏦' },
+  'federal': { color: '#005DAA', emoji: '🏦' },
+  'rbl': { color: '#003087', emoji: '🏦' },
+  'bandhan': { color: '#D32F2F', emoji: '🏦' },
+  'paytm': { color: '#00BAF2', emoji: '💳' },
+  'phonepe': { color: '#5F259F', emoji: '📱' },
+  'gpay': { color: '#4285F4', emoji: '📱' },
+  'google pay': { color: '#4285F4', emoji: '📱' },
+  'slice': { color: '#FF4D6D', emoji: '💳' },
+  'fi': { color: '#00D09C', emoji: '💚' },
+  'jupiter': { color: '#6C5CE7', emoji: '🪐' },
+  'niyo': { color: '#00C9A7', emoji: '💳' },
+  'cash': { color: '#10b981', emoji: '💵' },
+};
+
+// Keep BANK_DOMAINS for autocomplete suggestions
+export const BANK_DOMAINS: Record<string, string | null> = {
+  'sbi': 'sbi.co.in',
+  'state bank': 'sbi.co.in',
+  'hdfc': 'hdfcbank.com',
+  'icici': 'icicibank.com',
+  'axis': 'axisbank.com',
+  'kotak': 'kotak.com',
+  'yes bank': 'yesbank.in',
+  'pnb': 'pnbindia.in',
+  'punjab national': 'pnbindia.in',
+  'bank of baroda': 'bankofbaroda.in',
+  'bob': 'bankofbaroda.in',
+  'canara': 'canarabank.com',
+  'union bank': 'unionbankofindia.co.in',
+  'idfc': 'idfcfirstbank.com',
+  'idbi': 'idbi.com',
+  'indusind': 'indusind.com',
+  'federal': 'federalbank.co.in',
+  'rbl': 'rblbank.com',
+  'bandhan': 'bandhanbank.com',
+  'paytm': 'paytm.com',
+  'phonepe': 'phonepe.com',
+  'gpay': 'pay.google.com',
+  'google pay': 'pay.google.com',
+  'slice': 'sliceit.com',
+  'fi': 'fi.money',
+  'jupiter': 'jupitermoney.com',
+  'niyo': 'niyoglobal.com',
+  'cash': null,
+};
+
+export const getBankColor = (bankName: string): string => {
+  const lower = bankName.toLowerCase();
+  for (const [key, info] of Object.entries(BANK_INFO)) {
+    if (lower.includes(key)) return info.color;
+  }
+  return '#7c3aed'; // default purple
+};
+
+export const getBankEmoji = (bankName: string): string => {
+  const lower = bankName.toLowerCase();
+  for (const [key, info] of Object.entries(BANK_INFO)) {
+    if (lower.includes(key)) return info.emoji;
+  }
+  return '🏦'; // default
+};
+
+export const getBankSuggestions = (query: string): string[] => {
+  if (!query || query.length < 1) return [];
+  
+  const lower = query.toLowerCase();
+  const suggestions = Object.keys(BANK_DOMAINS)
+    .filter(key => key.toLowerCase().includes(lower))
+    .map(key => {
+      // Capitalize first letter of each word
+      return key.split(' ').map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1)
+      ).join(' ');
+    })
+    .filter((value, index, self) => self.indexOf(value) === index) // Remove duplicates
+    .slice(0, 5);
+  
+  return suggestions;
+};

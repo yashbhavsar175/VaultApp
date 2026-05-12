@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase } from './core';
 
 /**
  * Vault Items — Cloud-First Persistence (Supabase)

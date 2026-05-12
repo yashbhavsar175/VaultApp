@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { PermissionsAndroid, Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import notifee from '@notifee/react-native';
-import { checkNotificationPermission, requestNotificationPermission } from '../utils/notificationPermissions';
-import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../lib/PorterModule';
+import { checkNotificationPermission, requestNotificationPermission } from '../utils/permissions';
+import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../lib/porter';
 import Toast from 'react-native-toast-message';
-import AppConfirmModal from './ui/AppConfirmModal';
+import AppConfirmModal from './AppConfirmModal';
 
 const PERMISSION_CHECK_KEY = 'permissions_granted_v3';
 

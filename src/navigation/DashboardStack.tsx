@@ -1,10 +1,9 @@
 import React from 'react';
 import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
 import Dashboard from '../screens/Dashboard';
-import BanksScreen from '../screens/BanksScreen';
-import Transactions from '../screens/Transactions';
-import AnalyticsScreen from '../screens/AnalyticsScreen';
-import TransactionDetail from '../screens/TransactionDetail';
+import { BanksScreen, AnalyticsScreen } from '../screens/financial/FinancialScreens';
+import Transactions from '../screens/transactions/Transactions';
+import TransactionDetail from '../screens/transactions/TransactionDetail';
 
 export type DashboardStackParamList = {
   DashboardHome: undefined;
@@ -23,9 +22,10 @@ export default function DashboardStack() {
         headerShown: false,
         cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
         gestureEnabled: true,
+        detachPreviousScreen: true,
         transitionSpec: {
-          open: { animation: 'spring', config: { stiffness: 1000, damping: 500, mass: 3, overshootClamping: true } },
-          close: { animation: 'spring', config: { stiffness: 1000, damping: 500, mass: 3, overshootClamping: true } },
+          open: { animation: 'timing', config: { duration: 200 } },
+          close: { animation: 'timing', config: { duration: 180 } },
         },
       }}>
       <Stack.Screen name="DashboardHome" component={Dashboard} />

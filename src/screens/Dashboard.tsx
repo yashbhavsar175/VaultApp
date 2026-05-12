@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager } from 'react-native';
+import { formatCurrency as formatAmount } from '../utils/format';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import { getTransactions } from '../lib/db';
+import { getTransactions } from '../lib/core';
 import { Transaction, PeopleLedger } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader } from '../components';
-import { getPeopleLedger } from '../lib/peopleLedger';
-import { getCached, setCache, CACHE_KEYS } from '../lib/dataCache';
-import QuickAddModal from '../components/ui/QuickAddModal';
+import { getPeopleLedger } from '../lib/database/userdata';
+import { getCached, setCache, CACHE_KEYS } from '../lib/cache';
+import QuickAddModal from '../components/QuickAddModal';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -235,13 +236,6 @@ export default function Dashboard() {
   
   const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
 
-  const formatAmount = (amount: number) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 0,
-    }).format(amount);
-  };
 
   if (loading) {
     // Skeleton loader that mimics the actual Dashboard layout
