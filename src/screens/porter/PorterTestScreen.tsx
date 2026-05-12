@@ -16,7 +16,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import Geolocation from 'react-native-geolocation-service';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card } from '../../components';
-import { showToastOverlay } from '../../lib/porter';
+import { showToastOverlay } from '../../lib/services/porter';
 
 const { PorterModule } = NativeModules;
 

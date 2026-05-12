@@ -5,11 +5,10 @@ import Toast from 'react-native-toast-message';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../lib/core';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../../components';
-import AppConfirmModal from '../../components/AppConfirmModal';
+import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { useNavigation } from '@react-navigation/native';
 import { runAllNotificationTests } from '../../utils/testUtils';
-import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../../lib/porter';
+import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../../lib/services/porter';
 
 export default function Settings() {
   const navigation = useNavigation();

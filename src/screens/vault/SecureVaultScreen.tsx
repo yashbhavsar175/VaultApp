@@ -6,11 +6,9 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, Card, AppHeader } from '../../components';
-import AppConfirmModal from '../../components/AppConfirmModal';
-import AppButton from '../../components/AppButton';
-import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../../lib/vaultDb';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/cache';
+import { ScreenWrapper, Card, AppHeader, AppConfirmModal, AppButton } from '../../components';
+import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../../lib/database/vaultDb';
+import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 
 type VaultCategory = 'bank_pin' | 'upi_pin' | 'card' | 'netbanking' | 'app_password' | 'other';
 

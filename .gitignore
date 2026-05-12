@@ -79,6 +79,10 @@ yarn-error.log
 # API Keys and Secrets
 src/lib/config.ts
 src/config/env.ts
+.env
+.env.local
+.env.*.local
 
 # Keep example files
 !src/config/env.example.ts
+!.env.example

@@ -4,13 +4,13 @@
 // Handles both SMS and App Notification processing for financial transactions
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { supabase } from './core';
+import { supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { 
   isSpamMessage, 
   showSmsFailedNotification, 
   showTransactionConfirmation 
-} from './notifications';
+} from '../services/notifications';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES

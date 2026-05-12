@@ -105,7 +105,7 @@ export default function Add() {
       // Load from database instead of AsyncStorage for consistency
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const categories = await getUniqueCategories(user.id);
+        const categories = await getUniqueCategories();
         setSavedCategories(categories);
       }
     } catch (error) {

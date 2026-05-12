@@ -11,12 +11,7 @@ import {
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useTheme } from '../../context/ThemeContext';
-import ScreenWrapper from '../../components/ScreenWrapper';
-import AppHeader from '../../components/AppHeader';
-import Card from '../../components/Card';
-import AppButton from '../../components/AppButton';
-import AppInput from '../../components/AppInput';
-import AppConfirmModal from '../../components/AppConfirmModal';
+import { ScreenWrapper, AppHeader, Card, AppButton, AppInput, AppConfirmModal } from '../../components';
 import {
   getPeopleLedger,
   getLedgerSummary,
@@ -32,7 +27,7 @@ import {
   getPayments,
 } from '../../lib/database/userdata';
 import { PeopleLedger, PeopleLedgerPayment } from '../../types';
-import { scheduleLedgerNotifications } from '../../lib/scheduledNotifications';
+import { scheduleLedgerNotifications } from '../../lib/services/scheduledNotifications';
 
 type FilterType = 'active' | 'settled';
 

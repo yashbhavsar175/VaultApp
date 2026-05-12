@@ -10,10 +10,10 @@ import RootNavigator from './src/navigation/RootNavigator';
 import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
 import ProfileScreen from './src/screens/user/ProfileScreen';
 import { supabase, configureGoogleSignIn } from './src/lib/core';
-import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/notifications';
-import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/porter';
-import PermissionPrompt from './src/components/PermissionPrompt';
-import { prefetchAllData } from './src/lib/cache';
+import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/services/notifications';
+import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/services/porter';
+import PermissionPrompt from './src/components/modals/PermissionPrompt';
+import { prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
 
 const toastConfig = {

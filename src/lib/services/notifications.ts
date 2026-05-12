@@ -11,7 +11,7 @@
 
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
-import { supabase } from './core';
+import { supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ═══════════════════════════════════════════════════════════════════════════════

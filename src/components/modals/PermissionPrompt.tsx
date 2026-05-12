@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { PermissionsAndroid, Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import notifee from '@notifee/react-native';
-import { checkNotificationPermission, requestNotificationPermission } from '../utils/permissions';
-import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../lib/porter';
+import { checkNotificationPermission, requestNotificationPermission } from '../../utils/permissions';
+import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../../lib/services/porter';
 import Toast from 'react-native-toast-message';
 import AppConfirmModal from './AppConfirmModal';
 

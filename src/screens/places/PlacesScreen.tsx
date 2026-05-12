@@ -20,12 +20,10 @@ import Toast from 'react-native-toast-message';
 import Geolocation from 'react-native-geolocation-service';
 import { launchCamera } from 'react-native-image-picker';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, AppHeader } from '../../components';
-import AppConfirmModal from '../../components/AppConfirmModal';
-import MapPickerModal from '../../components/MapPickerModal';
+import { ScreenWrapper, AppHeader, AppConfirmModal, MapPickerModal } from '../../components';
 import { Place, PlaceCategory } from '../../types';
 import { getPlaces, addPlace, updatePlace, deletePlace, uploadPlacePhoto } from '../../lib/database/userdata';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/cache';
+import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 
 const CATEGORY_MAP: Record<PlaceCategory, { label: string; icon: string; color: string }> = {
   shop: { label: 'Shop', icon: 'shopping', color: '#3b82f6' },

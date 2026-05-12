@@ -7,7 +7,7 @@ import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
 import { Transaction, TransactionType } from '../types';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -71,7 +71,7 @@ export const parseTransaction = (text: string): ParsedTransaction => {
 
 export const configureGoogleSignIn = () => {
   GoogleSignin.configure({
-    webClientId: '1067695067282-vuh6jki8rl2ao8k4vnjo3t2v2hlm003p.apps.googleusercontent.com',
+    webClientId: GOOGLE_WEB_CLIENT_ID,
     offlineAccess: false,
   });
 };
@@ -119,12 +119,8 @@ export const signInWithGoogle = async () => {
       }
     }
 
-    if (data.session) {
-      await AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-        access_token: data.session.access_token,
-        refresh_token: data.session.refresh_token,
-      }));
-    }
+    // Supabase automatically stores session in AsyncStorage (configured in auth.storage)
+    // No need to manually store tokens - it handles refresh automatically
 
     return { data, error: null };
   } catch (error) {
@@ -262,11 +258,17 @@ export async function updateTransaction(
   return data;
 }
 
-export async function getUniqueCategories(userId: string): Promise<string[]> {
+export async function getUniqueCategories(): Promise<string[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    throw new Error('User not authenticated');
+  }
+
   const { data, error } = await supabase
     .from('transactions')
     .select('category')
-    .eq('user_id', userId)
+    .eq('user_id', user.id)
     .not('category', 'is', null)
     .order('category');
 

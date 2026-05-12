@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, MapType } from 'react-native-maps';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import { useTheme } from '../context/ThemeContext';
+import { useTheme } from '../../context/ThemeContext';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 

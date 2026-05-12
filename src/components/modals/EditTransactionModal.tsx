@@ -13,9 +13,9 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import { Transaction, TransactionType } from '../types';
-import { useTheme } from '../context/ThemeContext';
-import { getUniqueCategories, supabase } from '../lib/core';
+import { Transaction, TransactionType } from '../../types';
+import { useTheme } from '../../context/ThemeContext';
+import { getUniqueCategories, supabase } from '../../lib/core';
 
 interface EditTransactionModalProps {
   visible: boolean;
@@ -100,7 +100,7 @@ export default function EditTransactionModal({
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const categories = await getUniqueCategories(user.id);
+        const categories = await getUniqueCategories();
         setAllCategories(categories);
       }
     } catch (error) {

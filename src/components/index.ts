@@ -1,11 +1,20 @@
-// Layout
-export { default as ScreenWrapper } from './ScreenWrapper';
-export { default as AppHeader } from './AppHeader';
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPONENTS MODULE - ORGANIZED STRUCTURE
+// All components organized into logical folders
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// UI Elements
-export { default as Card } from './Card';
-export { default as AppButton } from './AppButton';
-export { default as AppInput } from './AppInput';
+// Common components
+export { default as ScreenWrapper } from './common/ScreenWrapper';
+export { default as Card } from './common/Card';
+export { default as AppHeader } from './common/AppHeader';
 
-// Permission
-export { default as PermissionPrompt } from './PermissionPrompt';
+// Form components
+export { default as AppButton } from './forms/AppButton';
+export { default as AppInput } from './forms/AppInput';
+
+// Modal components
+export { default as AppConfirmModal } from './modals/AppConfirmModal';
+export { default as EditTransactionModal } from './modals/EditTransactionModal';
+export { default as MapPickerModal } from './modals/MapPickerModal';
+export { default as PermissionPrompt } from './modals/PermissionPrompt';
+export { default as QuickAddModal } from './modals/QuickAddModal';

@@ -6,9 +6,9 @@
  */
 
 import notifee, { TriggerType, RepeatFrequency, AndroidImportance, TimestampTrigger } from '@notifee/react-native';
-import { PeopleLedger } from '../types';
-import { isOverdue, isDueToday, getDaysUntilDue } from './database/userdata';
-import { CreditCard, getCCDaysUntilDue } from './database/financial';
+import { PeopleLedger } from '../../types';
+import { isOverdue, isDueToday, getDaysUntilDue } from '../database/userdata';
+import { CreditCard, getCCDaysUntilDue } from '../database/financial';
 
 // ─── Channels ───────────────────────────────────────────────────────────────────
 

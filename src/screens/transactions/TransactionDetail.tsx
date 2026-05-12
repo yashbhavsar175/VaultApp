@@ -7,9 +7,7 @@ import Toast from 'react-native-toast-message';
 import { supabase, deleteTransaction, updateTransaction } from '../../lib/core';
 import { Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, Card, AppHeader, AppButton } from '../../components';
-import EditTransactionModal from '../../components/EditTransactionModal';
-import AppConfirmModal from '../../components/AppConfirmModal';
+import { ScreenWrapper, Card, AppHeader, AppButton, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import { getTransactionIcon, getTransactionColor, formatTransactionDateTime } from '../../utils/transactionHelpers';
 

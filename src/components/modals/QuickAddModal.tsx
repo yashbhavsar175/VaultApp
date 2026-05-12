@@ -14,12 +14,12 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import Voice, { SpeechResultsEvent, SpeechErrorEvent } from '@react-native-voice/voice';
-import { useTheme } from '../context/ThemeContext';
-import { parseNaturalLanguageTxn, ParsedTransaction } from '../utils/nlpParser';
-import { addTransaction } from '../lib/core';
-import { getCached, setCache, CACHE_KEYS } from '../lib/cache';
-import { Transaction } from '../types';
-import { GEMINI_API_KEY } from '../lib/cache';
+import { useTheme } from '../../context/ThemeContext';
+import { parseNaturalLanguageTxn, ParsedTransaction } from '../../utils/nlpParser';
+import { addTransaction } from '../../lib/core';
+import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { Transaction } from '../../types';
+import { GEMINI_API_KEY } from '../../lib/services/cache';
 
 interface QuickAddModalProps {
   visible: boolean;

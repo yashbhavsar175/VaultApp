@@ -7,9 +7,9 @@ import { AppRegistry } from 'react-native';
 import App from './App';
 import { name as appName } from './app.json';
 import { RNAndroidNotificationListenerHeadlessJsName } from 'react-native-android-notification-listener';
-import { processSms, processNotification } from './src/lib/TransactionProcessors';
+import { processSms, processNotification } from './src/lib/processors/TransactionProcessors';
 import notifee from '@notifee/react-native';
-import { onBackgroundEvent } from './src/lib/notifications';
+import { onBackgroundEvent } from './src/lib/services/notifications';
 
 console.log('📱 [Index] Registering app components...');
 

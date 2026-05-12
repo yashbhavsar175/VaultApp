@@ -8,29 +8,36 @@
  * - App configuration and feature flags
  */
 
+import Config from 'react-native-config';
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * IMPORTANT: This file contains sensitive API keys and URLs.
- * DO NOT share this file or commit it to version control.
- * Add this file to .gitignore
+ * Environment variables are now loaded from .env file using react-native-config
+ * This keeps sensitive API keys out of version control.
  * 
- * For production, use environment variables or secure key management.
+ * Setup:
+ * 1. Copy .env.example to .env
+ * 2. Fill in your actual API keys in .env
+ * 3. Never commit .env to git (it's in .gitignore)
  */
 
 // Supabase Configuration
-export const SUPABASE_URL = 'https://zwszhrmxntqfjvontcfw.supabase.co';
-export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp3c3pocm14bnRxZmp2b250Y2Z3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0OTI3OTUsImV4cCI6MjA4OTA2ODc5NX0.2n9bv8l_ehOm26CSezVV8-Cwh5iqWfE9exPVjpuq9U8';
+export const SUPABASE_URL = Config.SUPABASE_URL || '';
+export const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY || '';
 
 // AI Configuration
-export const GEMINI_API_KEY = 'AIzaSyALymy6YOmp90d8aCOxYwPNUOZ3BcDC36Y';
-export const OPENAI_API_KEY = 'YOUR_OPENAI_API_KEY'; // Not currently used
+export const GEMINI_API_KEY = Config.GEMINI_API_KEY || '';
+export const OPENAI_API_KEY = Config.OPENAI_API_KEY || ''; // Not currently used
+
+// Google Sign-In Configuration
+export const GOOGLE_WEB_CLIENT_ID = Config.GOOGLE_WEB_CLIENT_ID || '';
 
 // App Configuration
-export const APP_NAME = 'SpendSense';
-export const APP_VERSION = '1.0.0';
+export const APP_NAME = Config.APP_NAME || 'SpendSense';
+export const APP_VERSION = Config.APP_VERSION || '1.0.0';
 
 // Feature Flags
 export const FEATURES = {

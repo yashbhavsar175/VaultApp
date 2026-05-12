@@ -30,13 +30,12 @@ import {
   addCreditCard,
 } from '../../lib/database/financial';
 import { getTransactions } from '../../lib/core';
-import { scheduleDueReminders } from '../../lib/scheduledNotifications';
+import { scheduleDueReminders } from '../../lib/services/scheduledNotifications';
 import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, Card, AppButton, AppInput, AppHeader } from '../../components';
-import AppConfirmModal from '../../components/AppConfirmModal';
+import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { getBankColor, getBankSuggestions } from '../../config';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/cache';
+import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { formatCurrency as formatAmount } from '../../utils/format';
 
 // ═══════════════════════════════════════════════════════════════════════════════

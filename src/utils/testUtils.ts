@@ -6,7 +6,7 @@
  */
 
 import notifee, { AndroidImportance, AuthorizationStatus } from '@notifee/react-native';
-import { showTransactionConfirmation, showSmsFailedNotification, isSpamMessage } from '../lib/notifications';
+import { showTransactionConfirmation, showSmsFailedNotification, isSpamMessage } from '../lib/services/notifications';
 
 // ─── Permission Helper ─────────────────────────────────────────────────────────
 

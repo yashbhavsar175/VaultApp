@@ -6,10 +6,9 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { getTransactions } from '../lib/core';
 import { Transaction, PeopleLedger } from '../types';
 import { useTheme } from '../context/ThemeContext';
-import { ScreenWrapper, Card, AppHeader } from '../components';
+import { ScreenWrapper, Card, AppHeader, QuickAddModal } from '../components';
 import { getPeopleLedger } from '../lib/database/userdata';
-import { getCached, setCache, CACHE_KEYS } from '../lib/cache';
-import QuickAddModal from '../components/QuickAddModal';
+import { getCached, setCache, CACHE_KEYS } from '../lib/services/cache';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {

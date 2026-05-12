@@ -10,11 +10,11 @@
 
 import { Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getBankAccounts } from './database/financial';
-import { getVaultItems } from './vaultDb';
-import { getPlaces } from './database/userdata';
-import { supabase } from './core';
-import { GEMINI_API_KEY as GEMINI_KEY, OPENAI_API_KEY as OPENAI_KEY } from '../config';
+import { getBankAccounts } from '../database/financial';
+import { getVaultItems } from '../database/vaultDb';
+import { getPlaces } from '../database/userdata';
+import { supabase } from '../core';
+import { GEMINI_API_KEY as GEMINI_KEY, OPENAI_API_KEY as OPENAI_KEY } from '../../config';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // AI CONFIGURATION

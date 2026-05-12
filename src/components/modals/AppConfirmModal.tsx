@@ -1,7 +1,7 @@
 import React from 'react';
 import { Modal, View, Text, StyleSheet } from 'react-native';
-import { useTheme } from '../context/ThemeContext';
-import AppButton from './AppButton';
+import { useTheme } from '../../context/ThemeContext';
+import AppButton from '../forms/AppButton';
 
 interface AppConfirmModalProps {
   visible: boolean;

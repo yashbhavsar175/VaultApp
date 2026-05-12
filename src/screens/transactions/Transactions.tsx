@@ -23,12 +23,10 @@ import type { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { getTransactions, deleteTransaction, updateTransaction, bulkDeleteTransactions } from '../../lib/core';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/cache';
+import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, AppHeader } from '../../components';
-import EditTransactionModal from '../../components/EditTransactionModal';
-import AppConfirmModal from '../../components/AppConfirmModal';
+import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import { getTransactionIcon, getTransactionColor, formatTransactionDate } from '../../utils/transactionHelpers';
 
