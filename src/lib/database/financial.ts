@@ -581,15 +581,12 @@ export async function getTotalLoanOutstanding(): Promise<number> {
 }
 
 // Get total EMI due this month
+// Returns ALL active loans' EMI amounts for this month.
+// Paid/unpaid filtering should be handled separately in the UI if needed.
 export async function getTotalEMIDueThisMonth(): Promise<number> {
   const loans = await getLoans();
-  const today = new Date();
-  const currentDay = today.getDate();
-
-  // Sum EMIs for loans with due date >= today
-  return loans
-    .filter(loan => loan.emi_due_date >= currentDay)
-    .reduce((sum, loan) => sum + loan.emi_amount, 0);
+  // Count ALL loans' EMIs — a 10th-due EMI on the 25th is still this month's EMI
+  return loans.reduce((sum, loan) => sum + loan.emi_amount, 0);
 }
 
 // Calculate days until next EMI

@@ -5,11 +5,12 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ActivityIndicator, View, StyleSheet, AppState, Alert, Text, Animated, Easing } from 'react-native';
 import { Session } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import Toast, { BaseToast, ErrorToast, InfoToast } from 'react-native-toast-message';
 import RootNavigator from './src/navigation/RootNavigator';
 import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
 import ProfileScreen from './src/screens/user/ProfileScreen';
-import { supabase, configureGoogleSignIn } from './src/lib/core';
+import { supabase, configureGoogleSignIn, syncOfflineTransactions } from './src/lib/core';
 import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/services/notifications';
 import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/services/porter';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
@@ -120,13 +121,30 @@ function App() {
         initializeBackgroundListeners().catch(error => {
           console.error('❌ [App] Failed to re-initialize background listeners:', error);
         });
+        // Sync offline queue when app comes to foreground
+        syncOfflineTransactions()
+          .then(() => console.log('✅ [OfflineSync] Foreground sync complete'))
+          .catch(e => console.error('❌ [OfflineSync] Foreground sync error:', e));
       }
     });
 
     return () => {
       subscription.remove();
-      stopPorterDistanceCalculator();
+      // Note: Not stopping PorterDistanceCalculator here to allow it to continue
+      // running in background scenarios where the app process remains active
     };
+  }, []);
+
+  // Offline sync: trigger whenever network reconnects
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      if (state.isConnected) {
+        syncOfflineTransactions()
+          .then(() => console.log('✅ [OfflineSync] Network reconnect sync complete'))
+          .catch(e => console.error('❌ [OfflineSync] Network reconnect sync error:', e));
+      }
+    });
+    return () => unsubscribe();
   }, []);
 
   // Initialize foreground listener for notifee events

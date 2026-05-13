@@ -69,9 +69,12 @@ export default function PlacesScreen() {
     try {
       // Show cached data instantly
       const cached = await getCached<Place[]>(CACHE_KEYS.PLACES);
-      if (cached && cached.length > 0) {
-        setPlaces(cached);
+      if (cached?.data && cached.data.length > 0) {
+        setPlaces(cached.data);
         setLoading(false);
+        
+        // Skip network call if cache is fresh
+        if (!cached.isStale) return;
       }
 
       // Then fetch from cloud

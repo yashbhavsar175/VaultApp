@@ -25,15 +25,15 @@ import Config from 'react-native-config';
  */
 
 // Supabase Configuration
-export const SUPABASE_URL = Config.SUPABASE_URL || '';
-export const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY || '';
+export const SUPABASE_URL = Config.SUPABASE_URL!;
+export const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY!;
 
 // AI Configuration
-export const GEMINI_API_KEY = Config.GEMINI_API_KEY || '';
-export const OPENAI_API_KEY = Config.OPENAI_API_KEY || ''; // Not currently used
+export const GEMINI_API_KEY = Config.GEMINI_API_KEY!;
+export const OPENAI_API_KEY = Config.OPENAI_API_KEY!; // Not currently used
 
 // Google Sign-In Configuration
-export const GOOGLE_WEB_CLIENT_ID = Config.GOOGLE_WEB_CLIENT_ID || '';
+export const GOOGLE_WEB_CLIENT_ID = Config.GOOGLE_WEB_CLIENT_ID!;
 
 // App Configuration
 export const APP_NAME = Config.APP_NAME || 'SpendSense';

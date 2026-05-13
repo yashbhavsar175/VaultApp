@@ -1,10 +1,14 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView,
   TextInput, Alert, RefreshControl, Clipboard, ActivityIndicator,
+  AppState, AppStateStatus,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
+import HapticFeedback from 'react-native-haptic-feedback';
+import ReactNativeBiometrics from 'react-native-biometrics';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, AppConfirmModal, AppButton } from '../../components';
 import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../../lib/database/vaultDb';
@@ -70,6 +74,84 @@ const TEMPLATES: Record<VaultCategory, { label: string; isSecret: boolean }[]> =
 
 export default function SecureVaultScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
+
+  // ── SECURITY: Vault Lock State ─────────────────────────────────────────────
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const isUnlockedRef = useRef(isUnlocked);
+  useEffect(() => { isUnlockedRef.current = isUnlocked; }, [isUnlocked]);
+
+  // Auto-lock when app goes to background
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState !== 'active' && isUnlockedRef.current) {
+        setIsUnlocked(false);
+        setRevealedFields(new Set()); // Hide any revealed secrets instantly
+        setViewingItem(null);         // Close any open detail modal
+      }
+    };
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
+
+  // Lock vault when navigating away from screen
+  useFocusEffect(
+    useCallback(() => {
+      // When screen comes into focus, lock and require auth
+      setIsUnlocked(false);
+      setRevealedFields(new Set());
+      setViewingItem(null);
+      authenticateUser();
+
+      // Cleanup when leaving screen
+      return () => {
+        setIsUnlocked(false);
+        setRevealedFields(new Set());
+        setViewingItem(null);
+      };
+    }, [])
+  );
+
+  const authenticateUser = async () => {
+    if (isAuthenticating) return;
+    setIsAuthenticating(true);
+    try {
+      const rnBiometrics = new ReactNativeBiometrics();
+      const { available } = await rnBiometrics.isSensorAvailable();
+
+      if (!available) {
+        // Emulator or device with no biometrics enrolled — allow access directly
+        setIsUnlocked(true);
+        loadItems();
+        return;
+      }
+
+      const { success } = await rnBiometrics.simplePrompt({
+        promptMessage: 'Unlock Secure Vault',
+        cancelButtonText: 'Cancel',
+      });
+
+      if (success) {
+        HapticFeedback.trigger('notificationSuccess');
+        setIsUnlocked(true);
+        loadItems();
+      } else {
+        HapticFeedback.trigger('notificationError');
+        Toast.show({ type: 'error', text1: 'Authentication Failed', text2: 'Please try again' });
+      }
+    } catch (e: any) {
+      // User cancelled — don't show error toast for deliberate cancels
+      const msg: string = e?.message || '';
+      if (!msg.includes('cancel') && !msg.includes('Cancel')) {
+        console.error('Biometric auth error:', e);
+        Toast.show({ type: 'error', text1: 'Auth Error', text2: 'Could not verify identity' });
+      }
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+  // ───────────────────────────────────────────────────────────────────────────
+
   const [items, setItems] = useState<VaultItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -88,10 +170,6 @@ export default function SecureVaultScreen() {
   const [formFields, setFormFields] = useState<{ label: string; value: string; isSecret: boolean }[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
-  useEffect(() => {
-    loadItems();
-  }, []);
-
   const mapToVaultItem = (d: any): VaultItem => ({
     id: d.id,
     title: d.title,
@@ -106,9 +184,12 @@ export default function SecureVaultScreen() {
     try {
       // Show cached data instantly
       const cached = await getCached<VaultItem[]>(CACHE_KEYS.VAULT_ITEMS);
-      if (cached && cached.length > 0) {
-        setItems(cached);
+      if (cached?.data && cached.data.length > 0) {
+        setItems(cached.data);
         setLoading(false);
+        
+        // Skip network call if cache is fresh
+        if (!cached.isStale) return;
       }
 
       // Then fetch fresh from cloud
@@ -227,11 +308,13 @@ export default function SecureVaultScreen() {
   };
 
   const copyToClipboard = (value: string, label: string) => {
+    HapticFeedback.trigger('selection');
     Clipboard.setString(value);
     Toast.show({ type: 'info', text1: 'Copied', text2: `${label} copied to clipboard` });
   };
 
   const toggleReveal = (index: number) => {
+    HapticFeedback.trigger('impactLight');
     setRevealedFields(prev => {
       const next = new Set(prev);
       if (next.has(index)) next.delete(index);
@@ -245,6 +328,49 @@ export default function SecureVaultScreen() {
     acc[item.category].push(item);
     return acc;
   }, {} as Record<VaultCategory, VaultItem[]>);
+
+  // ── LOCKED SCREEN ──────────────────────────────────────────────────────────
+  if (!isUnlocked) {
+    return (
+      <ScreenWrapper>
+        <AppHeader title="Secure Vault" />
+        <View style={styles.lockedContainer}>
+          {/* Animated lock icon */}
+          <View style={[styles.lockIconBg, { backgroundColor: colors.accent + '15' }]}>
+            <MaterialCommunityIcons
+              name={isAuthenticating ? 'fingerprint' : 'shield-lock'}
+              size={72}
+              color={colors.accent}
+            />
+          </View>
+
+          <Text style={[typography.h2, { color: colors.text, textAlign: 'center', marginTop: spacing.xl }]}>
+            Vault is Locked
+          </Text>
+          <Text style={[typography.body, { color: colors.subtext, textAlign: 'center', marginTop: spacing.sm, marginBottom: spacing.xl, lineHeight: 22 }]}>
+            Verify your identity to access your{`\n`}saved PINs, passwords, and secrets.
+          </Text>
+
+          <AppButton
+            title={isAuthenticating ? 'Verifying...' : 'Unlock with Biometrics'}
+            onPress={authenticateUser}
+            disabled={isAuthenticating}
+            fullWidth
+            style={{ marginBottom: spacing.md }}
+          />
+
+          {isAuthenticating && (
+            <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: spacing.md }} />
+          )}
+
+          <Text style={[typography.caption, { color: colors.subtext, textAlign: 'center', marginTop: spacing.lg }]}>
+            🔒 Auto-locked for your protection
+          </Text>
+        </View>
+      </ScreenWrapper>
+    );
+  }
+  // ───────────────────────────────────────────────────────────────────────────
 
   return (
     <ScreenWrapper>
@@ -553,5 +679,19 @@ const styles = StyleSheet.create({
   deleteBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     paddingVertical: 14, marginTop: 24, borderWidth: 1,
+  },
+  lockedContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    paddingBottom: 48,
+  },
+  lockIconBg: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

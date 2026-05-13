@@ -17,11 +17,13 @@ import Geolocation from 'react-native-geolocation-service';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card } from '../../components';
 import { showToastOverlay } from '../../lib/services/porter';
+import Config from 'react-native-config';
 
 const { PorterModule } = NativeModules;
 
-// Google Maps API key — set to 'YOUR_GOOGLE_MAPS_API_KEY' to use free Haversine fallback
-const GOOGLE_MAPS_API_KEY: string = 'AIzaSyBjw5hkphW59klyy4DO1lj5u5WJaCF_fFo';
+// SECURITY: API key sourced from .env via react-native-config — never hardcoded
+// Set GOOGLE_MAPS_API_KEY in .env. If missing, falls back to Haversine estimation.
+const GOOGLE_MAPS_API_KEY: string = Config.GOOGLE_MAPS_API_KEY || '';
 
 const MOCK_TRIPS = [
   {
@@ -81,8 +83,10 @@ async function getDistancesKm(
   pickup: string,
   drop: string
 ): Promise<DistanceResult> {
-  if (GOOGLE_MAPS_API_KEY !== 'YOUR_GOOGLE_MAPS_API_KEY') {
-    // Use Google Maps Distance Matrix API if key is set
+  if (!GOOGLE_MAPS_API_KEY) {
+    // API Key missing — log warning and fall through to Haversine fallback
+    console.warn('[PorterTestScreen] GOOGLE_MAPS_API_KEY not found in .env. Using Haversine fallback.');
+  } else {
     try {
       const origin = `${currentLat},${currentLng}`;
       const [toPickupResp, tripResp] = await Promise.all([
@@ -201,7 +205,11 @@ export default function PorterTestScreen() {
           setLocationStatus('ready');
         },
         () => setLocationStatus('denied'),
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,       // Reduced: fail fast, don't drain battery waiting for GPS
+          maximumAge: 60000,   // Prefer cached location up to 60s old — significant battery saving
+        }
       );
     } catch {
       setLocationStatus('denied');
@@ -446,6 +454,25 @@ export default function PorterTestScreen() {
           </View>
           
           <Card style={{ borderColor: colors.accent + '40', borderWidth: 1 }}>
+            {/* API Key Status Warning */}
+            {!GOOGLE_MAPS_API_KEY && (
+              <View style={{
+                backgroundColor: '#f59e0b20',
+                borderRadius: 8,
+                padding: 10,
+                marginBottom: spacing.sm,
+                flexDirection: 'row',
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: '#f59e0b60',
+              }}>
+                <Text style={{ fontSize: 16, marginRight: 8 }}>⚠️</Text>
+                <Text style={[typography.caption, { color: '#f59e0b', flex: 1, fontWeight: '600' }]}>
+                  API Key Missing — GOOGLE_MAPS_API_KEY not found in .env.{'\n'}
+                  Using free Haversine estimation (less accurate).
+                </Text>
+              </View>
+            )}
             <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>LAST EVENT TIME</Text>
             <Text style={[typography.bodyBold, { color: colors.text, marginBottom: spacing.sm }]}>{debugLogs.time ? new Date(debugLogs.time).toLocaleString() : 'Never'}</Text>
 

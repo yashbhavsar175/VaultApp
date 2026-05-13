@@ -270,8 +270,8 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
 
       // Update local cache for instant UI feedback
       const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
-      if (cached) {
-        await setCache(CACHE_KEYS.TRANSACTIONS, [savedTx, ...cached]);
+      if (cached?.data) {
+        await setCache(CACHE_KEYS.TRANSACTIONS, [savedTx, ...cached.data]);
       }
 
       Toast.show({

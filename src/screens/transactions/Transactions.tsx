@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
   TouchableOpacity,
   RefreshControl,
   ScrollView,
@@ -18,6 +17,8 @@ import {
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+import { FlashList } from '@shopify/flash-list';
+import HapticFeedback from 'react-native-haptic-feedback';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -60,7 +61,7 @@ const TransactionRow = React.memo(({
   isSelected: boolean;
   selectMode: boolean;
   onPress: (item: Transaction) => void;
-  onLongPress: (id: string) => void;
+  onLongPress: (item: Transaction) => void;
   colors: any;
   typography: any;
   spacing: any;
@@ -82,7 +83,7 @@ const TransactionRow = React.memo(({
   return (
     <Pressable
       onPress={() => onPress(item)}
-      onLongPress={() => onLongPress(item.id)}
+      onLongPress={() => onLongPress(item)}
       delayLongPress={250}
       android_ripple={{ color: colors.accent + '20', borderless: false }}
       style={({ pressed }) => [
@@ -226,14 +227,14 @@ export default function Transactions() {
   // Initial load: cache first, then network
   useEffect(() => {
     const initLoad = async () => {
-      // Try cache for instant display
+      // Try cache for instant display (getCached returns { data, isStale } | null)
       const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
-      if (cached && cached.length > 0) {
-        setTransactions(cached);
-        applyFilter(cached, filter);
+      if (cached?.data && cached.data.length > 0) {
+        setTransactions(cached.data);
+        applyFilter(cached.data, filter);
         setLoading(false);
-        // Background refresh
-        loadTransactions();
+        // Background refresh only if stale (> 5 min old)
+        if (cached.isStale) loadTransactions();
       } else {
         loadTransactions();
       }
@@ -275,6 +276,7 @@ export default function Transactions() {
   }, []);
 
   const handleFilterChange = useCallback((filterType: FilterType) => {
+    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setFilter(filterType);
     applyFilter(transactions, filterType);
   }, [transactions, applyFilter]);
@@ -315,13 +317,20 @@ export default function Transactions() {
     });
   }, [loadTransactions]);
 
+  // Single delete via swipe — shortcut wrapper for swipe-list delete action
+  const handleSingleDelete = useCallback((item: Transaction) => {
+    handleDeleteTransaction(item.id, item.note);
+  }, [handleDeleteTransaction]);
+
   // Select mode functions — instant updates with object spread
   const enterSelectMode = useCallback((id: string) => {
+    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setSelectMode(true);
     setSelectedMap({ [id]: true });
   }, []);
 
   const exitSelectMode = useCallback(() => {
+    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setSelectMode(false);
     setSelectedMap({});
   }, []);
@@ -449,13 +458,14 @@ export default function Transactions() {
     navigation.navigate('TransactionDetail', { transactionId: item.id });
   }, [selectMode, toggleSelection, navigation]);
 
-  const handleItemLongPress = useCallback((id: string) => {
+  const handleItemLongPress = useCallback((item: Transaction) => {
     if (!selectMode) {
-      enterSelectMode(id);
+      HapticFeedback.trigger('impactMedium', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+      enterSelectMode(item.id);
     }
   }, [selectMode, enterSelectMode]);
 
-  // Memoized renderItem — returns a stable function
+  // Memoized renderItem for FlashList
   const renderTransaction = useCallback(({ item }: { item: Transaction }) => {
     return (
       <TransactionRow
@@ -626,15 +636,13 @@ export default function Transactions() {
         </TouchableOpacity>
       </ScrollView>
 
-      <FlatList
+      {/* Transaction List - Long press to select and delete */}
+      <FlashList
         data={filteredTransactions}
         renderItem={renderTransaction}
         keyExtractor={keyExtractor}
         extraData={selectedMap}
-        maxToRenderPerBatch={10}
-        windowSize={5}
-        initialNumToRender={10}
-        contentContainerStyle={listContentStyle}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: selectMode ? 100 : 16 }}
         ListEmptyComponent={renderEmptyState}
         refreshControl={
           <RefreshControl

@@ -7,11 +7,9 @@
  * - Places (saved locations, photos, categories)
  */
 
+import { Buffer } from 'buffer';
 import { supabase } from '../core';
 import { PeopleLedger, PeopleLedgerPayment, Place } from '../../types';
-
-// atob is available globally in React Native (Hermes), but TS doesn't know about it
-declare function atob(data: string): string;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PEOPLE LEDGER
@@ -401,14 +399,10 @@ export async function uploadPlacePhoto(base64Data?: string, localUri?: string): 
 
   const fileName = `${user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
   
-  log('📸 [Upload] Step 2: Converting base64 to Uint8Array...');
-  // Decode base64 to binary
-  const binaryString = atob(base64Data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  log('📸 [Upload] Step 2 ✅ Uint8Array size:', bytes.length);
+  log('📸 [Upload] Step 2: Converting base64 to Buffer...');
+  // Buffer.from uses native C++ bindings — no JS-thread blocking unlike atob + for-loop
+  const bytes = Buffer.from(base64Data, 'base64');
+  log('📸 [Upload] Step 2 ✅ Buffer size:', bytes.length);
 
   log('📸 [Upload] Step 3: Uploading to Supabase storage...');
   const { data, error } = await supabase.storage

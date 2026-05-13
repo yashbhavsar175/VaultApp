@@ -12,13 +12,39 @@
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Config from 'react-native-config';
 
 const { PorterModule } = NativeModules;
-const GOOGLE_MAPS_API_KEY: string = 'AIzaSyBjw5hkphW59klyy4DO1lj5u5WJaCF_fFo';
+// SECURITY: Key loaded from .env via react-native-config — never hardcode in source
+const GOOGLE_MAPS_API_KEY: string = Config.GOOGLE_MAPS_API_KEY || '';
 const eventEmitter = new NativeEventEmitter(PorterModule);
 
 let subscription: any = null;
 let lastProcessedHash = 0;
+
+// ─── Location Cache ─────────────────────────────────────────────────────────────
+// Avoids GPS call on every accessibility event — reuse if < 60 seconds old
+let cachedLocation: { lat: number; lng: number; ts: number } | null = null;
+const LOCATION_CACHE_TTL_MS = 60_000; // 60 seconds
+
+function getCachedOrFreshLocation(): Promise<{ lat: number; lng: number }> {
+  return new Promise((resolve, reject) => {
+    const now = Date.now();
+    if (cachedLocation && now - cachedLocation.ts < LOCATION_CACHE_TTL_MS) {
+      // Reuse cached coordinates — no GPS radio wake-up
+      resolve({ lat: cachedLocation.lat, lng: cachedLocation.lng });
+      return;
+    }
+    Geolocation.getCurrentPosition(
+      (pos) => {
+        cachedLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude, ts: Date.now() };
+        resolve({ lat: cachedLocation.lat, lng: cachedLocation.lng });
+      },
+      (err) => reject(err),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BASIC PORTER MODULE FUNCTIONS
@@ -61,10 +87,17 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 }
 
 // Geocode a location string using free OpenStreetMap Nominatim API
+// Includes 8-second timeout to prevent hanging when rate-limited
 async function geocode(location: string): Promise<{ lat: number; lng: number } | null> {
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'SpendSense/1.0' } });
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'SpendSense/1.0' },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
     const data = await res.json();
     if (data.length > 0) return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
     return null;
@@ -73,8 +106,20 @@ async function geocode(location: string): Promise<{ lat: number; lng: number } |
   }
 }
 
+// Strict regex: address must be min 5 chars, contain at least one letter, not be just digits/symbols
+const VALID_ADDRESS_RE = /[a-zA-Z]{3,}/;
+function isValidAddressString(s: string): boolean {
+  return typeof s === 'string' && s.trim().length >= 5 && VALID_ADDRESS_RE.test(s);
+}
+
 async function getDistancesKm(currentLat: number, currentLng: number, pickup: string, drop: string) {
-  if (GOOGLE_MAPS_API_KEY !== 'YOUR_GOOGLE_MAPS_API_KEY') {
+  // API QUOTA PROTECTION: Reject clearly invalid addresses before making network calls
+  if (!isValidAddressString(pickup) || !isValidAddressString(drop)) {
+    console.warn('[Porter] Invalid address strings — skipping API call:', { pickup, drop });
+    return { toPickup: 'Invalid Address', tripDistance: 'Invalid Address' };
+  }
+
+  if (GOOGLE_MAPS_API_KEY) {
     try {
       const origin = `${currentLat},${currentLng}`;
       const [toPickupResp, tripResp] = await Promise.all([
@@ -299,30 +344,26 @@ export const initPorterDistanceCalculator = () => {
         return;
       }
 
-      await AsyncStorage.setItem('debug_porter_status', 
+      await AsyncStorage.setItem('debug_porter_status',
         `Extracted:\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`);
 
-      Geolocation.getCurrentPosition(
-        async (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          const distances = await getDistancesKm(lat, lng, addresses.pickup, addresses.drop);
-          
-          await AsyncStorage.setItem('debug_porter_result', JSON.stringify(distances));
+      // BATTERY OPTIMIZATION: use cached GPS coordinates (re-fetched only if > 60s old)
+      try {
+        const { lat, lng } = await getCachedOrFreshLocation();
+        const distances = await getDistancesKm(lat, lng, addresses.pickup, addresses.drop);
 
-          if (distances.toPickup !== 'N/A' && Platform.OS === 'android') {
-            PorterModule.showToastOverlay(`📍 You -> Pickup: ${distances.toPickup}\n🛣️ Pickup -> Drop: ${distances.tripDistance}`);
-            await AsyncStorage.setItem('debug_porter_status', 'Success: Overlay shown');
-          } else {
-            await AsyncStorage.setItem('debug_porter_status', `Failed: Distance calc returned N/A\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`);
-          }
-        },
-        async (error) => {
-          console.log('Geolocation error in Porter calculator:', error);
-          await AsyncStorage.setItem('debug_porter_status', `Geo Error: ${error.message}`);
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
-      );
+        await AsyncStorage.setItem('debug_porter_result', JSON.stringify(distances));
+
+        if (distances.toPickup !== 'N/A' && distances.toPickup !== 'Invalid Address' && Platform.OS === 'android') {
+          PorterModule.showToastOverlay(`📍 You -> Pickup: ${distances.toPickup}\n🛣️ Pickup -> Drop: ${distances.tripDistance}`);
+          await AsyncStorage.setItem('debug_porter_status', 'Success: Overlay shown');
+        } else {
+          await AsyncStorage.setItem('debug_porter_status', `Failed: Distance calc returned N/A or invalid address\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`);
+        }
+      } catch (geoError: any) {
+        console.log('Geolocation error in Porter calculator:', geoError);
+        await AsyncStorage.setItem('debug_porter_status', `Geo Error: ${geoError.message}`);
+      }
     } catch (e: any) {
       console.error('Error in Porter distance calculation:', e);
       AsyncStorage.setItem('debug_porter_status', `Critical Error: ${e.message}`);

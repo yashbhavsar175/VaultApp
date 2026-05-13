@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,8 +8,12 @@ import {
   Modal,
   ScrollView,
   Alert,
+  Linking,
+  Animated,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import HapticFeedback from 'react-native-haptic-feedback';
+import Toast from 'react-native-toast-message';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card, AppButton, AppInput, AppConfirmModal } from '../../components';
 import {
@@ -43,6 +47,8 @@ export default function PeopleScreen() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState<PeopleLedger | null>(null);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const confettiAnim = useRef(new Animated.Value(0)).current;
   const [confirmDialog, setConfirmDialog] = useState<{
     visible: boolean;
     title: string;
@@ -53,7 +59,7 @@ export default function PeopleScreen() {
   } | null>(null);
 
   useEffect(() => {
-    loadData();
+    loadData(true); // Initial load: reschedule notifications
     // Don't request notification permission here - user should enable it from Settings
   }, []);
 
@@ -61,7 +67,7 @@ export default function PeopleScreen() {
     applyFilter();
   }, [filter, ledgerEntries]);
 
-  const loadData = async () => {
+  const loadData = async (rescheduleNotifications = false) => {
     try {
       setLoading(true);
       const [entries, summaryData] = await Promise.all([
@@ -71,9 +77,12 @@ export default function PeopleScreen() {
       setLedgerEntries(entries);
       setSummary(summaryData);
 
-      // Schedule notifications for active entries
-      const activeEntries = entries.filter(e => !e.is_settled);
-      await scheduleLedgerNotifications(activeEntries);
+      // Only reschedule notifications when needed (initial load or after add/settle)
+      // Not on every pull-to-refresh — avoids cancelling/re-adding 50+ notifications
+      if (rescheduleNotifications) {
+        const activeEntries = entries.filter(e => !e.is_settled);
+        await scheduleLedgerNotifications(activeEntries);
+      }
     } catch (error) {
       console.error('Error loading ledger:', error);
       Alert.alert('Error', 'Failed to load people ledger');
@@ -108,27 +117,29 @@ export default function PeopleScreen() {
       confirmText: 'Settle',
       isDestructive: false,
       onConfirm: async () => {
-        // Dismiss dialog instantly for a faster feel
         setConfirmDialog(null);
-
-        // Optimistic UI Update: Move to settled instantly
         setLedgerEntries(prev => prev.map(e => e.id === entry.id ? { ...e, is_settled: true } : e));
-        setFilteredEntries(prev => prev.filter(e => e.id !== entry.id)); // Assuming we are on active tab
-
+        setFilteredEntries(prev => prev.filter(e => e.id !== entry.id));
         try {
           await markAsSettled(entry.id);
-          // Background sync
-          await loadData();
+          HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+          // Confetti burst
+          setShowConfetti(true);
+          confettiAnim.setValue(0);
+          Animated.timing(confettiAnim, { toValue: 1, duration: 1800, useNativeDriver: true }).start(() => {
+            setShowConfetti(false);
+          });
+          Toast.show({ type: 'success', text1: '🎉 Settled!', text2: `${entry.person_name} has been settled.` });
         } catch (error) {
-          // Revert optimistic update on failure
           await loadData();
           Alert.alert('Error', 'Failed to settle entry');
         }
       }
     });
-  }, [loadData]);
+  }, [loadData, confettiAnim]);
 
   const handleDelete = useCallback(async (entry: PeopleLedger) => {
+    HapticFeedback.trigger('notificationWarning', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setConfirmDialog({
       visible: true,
       title: 'Delete Entry',
@@ -136,19 +147,13 @@ export default function PeopleScreen() {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
-        // Dismiss dialog instantly for a faster feel
         setConfirmDialog(null);
-
-        // Optimistic UI Update: Remove from list instantly
         setLedgerEntries(prev => prev.filter(e => e.id !== entry.id));
         setFilteredEntries(prev => prev.filter(e => e.id !== entry.id));
-
         try {
           await deleteLedgerEntry(entry.id);
-          // Background sync
           await loadData();
         } catch (error) {
-          // Revert optimistic update on failure
           await loadData();
           Alert.alert('Error', 'Failed to delete entry');
         }
@@ -158,6 +163,18 @@ export default function PeopleScreen() {
 
   const getPersonInitial = useCallback((name: string) => {
     return name.charAt(0).toUpperCase();
+  }, []);
+
+  // WhatsApp Remind deep link
+  const handleWhatsAppRemind = useCallback((entry: PeopleLedger) => {
+    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+    const remaining = Number(entry.remaining_amount).toFixed(0);
+    const msg = encodeURIComponent(
+      `Hi ${entry.person_name} 👋, just a friendly reminder — you have an outstanding amount of ₹${remaining} pending. Please settle at your earliest convenience. Thank you! 🙏`
+    );
+    Linking.openURL(`whatsapp://send?text=${msg}`).catch(() =>
+      Alert.alert('WhatsApp Not Found', 'WhatsApp is not installed on this device.')
+    );
   }, []);
 
   const getAvatarColor = useCallback((name: string) => {
@@ -195,11 +212,12 @@ export default function PeopleScreen() {
         onSettle={handleSettle}
         onDelete={handleDelete}
         onViewHistory={openPaymentHistory}
+        onRemind={handleWhatsAppRemind}
         getAvatarColor={getAvatarColor}
         getPersonInitial={getPersonInitial}
       />
     );
-  }, [colors, typography, spacing, borderRadius, handleAddPayment, handleSettle, handleDelete, openPaymentHistory, getAvatarColor, getPersonInitial]);
+  }, [colors, typography, spacing, borderRadius, handleAddPayment, handleSettle, handleDelete, openPaymentHistory, handleWhatsAppRemind, getAvatarColor, getPersonInitial]);
 
   return (
     <ScreenWrapper>
@@ -244,6 +262,39 @@ export default function PeopleScreen() {
               {summary.lentCount} people
             </Text>
           </Card>
+
+          {summary.totalBorrowed > 0 && (
+            <Card style={[styles.summaryCard, {
+              borderLeftWidth: 4,
+              borderLeftColor: colors.danger,
+              minHeight: 120,
+              padding: 24,
+              position: 'relative',
+              overflow: 'hidden',
+            }]}>
+              <MaterialCommunityIcons
+                name="account-arrow-left"
+                size={48}
+                color={colors.danger}
+                style={{
+                  position: 'absolute',
+                  right: 20,
+                  top: '50%',
+                  marginTop: -24,
+                  opacity: 0.2
+                }}
+              />
+              <Text style={[typography.caption, { color: colors.subtext, fontSize: 16 }]}>
+                You Borrowed
+              </Text>
+              <Text style={[typography.h2, { color: colors.danger, fontSize: 36, fontWeight: '800', marginTop: 4 }]}>
+                ₹{summary.totalBorrowed.toFixed(0)}
+              </Text>
+              <Text style={[typography.caption, { color: colors.subtext, fontSize: 14, marginTop: 6 }]}>
+                {summary.borrowedCount} people
+              </Text>
+            </Card>
+          )}
         </View>
 
         {/* Filter Tabs */}
@@ -253,7 +304,10 @@ export default function PeopleScreen() {
             return (
               <TouchableOpacity
                 key={f}
-                onPress={() => setFilter(f)}
+                onPress={() => {
+                  HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+                  setFilter(f);
+                }}
                 style={[
                   styles.filterTab,
                   {
@@ -354,6 +408,24 @@ export default function PeopleScreen() {
         onConfirm={() => confirmDialog?.onConfirm()}
         onCancel={() => setConfirmDialog(null)}
       />
+
+      {/* Confetti celebration overlay */}
+      {showConfetti && (
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            top: 0, left: 0, right: 0, bottom: 0,
+            justifyContent: 'center',
+            alignItems: 'center',
+            opacity: confettiAnim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 1, 0] }),
+            transform: [{ scale: confettiAnim.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.5, 1.2, 1] }) }],
+          }}
+        >
+          <Text style={{ fontSize: 80 }}>🎉</Text>
+          <Text style={{ fontSize: 22, fontWeight: '800', color: '#EAB308', marginTop: 12 }}>All Settled!</Text>
+        </Animated.View>
+      )}
     </ScreenWrapper>
   );
 }
@@ -415,6 +487,7 @@ const LedgerCard = React.memo(({
   onSettle,
   onDelete,
   onViewHistory,
+  onRemind,
   getAvatarColor,
   getPersonInitial
 }: any) => {
@@ -423,6 +496,16 @@ const LedgerCard = React.memo(({
   const dueToday = isDueToday(item);
   const daysUntilDue = getDaysUntilDue(item);
   const expectedByToday = calculateExpectedByToday(item);
+
+  // Animated progress bar: fills from 0 → progress on mount / when paid_amount changes
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(progressAnim, {
+      toValue: isNaN(progress) ? 0 : Math.min(progress, 1),
+      duration: 800,
+      useNativeDriver: false, // width cannot use native driver
+    }).start();
+  }, [item.paid_amount, item.total_amount]);
 
   return (
     <Card style={{ marginBottom: spacing.md }}>
@@ -484,8 +567,20 @@ const LedgerCard = React.memo(({
         </View>
       </View>
 
+      {/* Animated progress bar */}
       <View style={[styles.progressBar, { backgroundColor: colors.border, marginTop: spacing.md }]}>
-        <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: colors.success }]} />
+        <Animated.View
+          style={[
+            styles.progressFill,
+            {
+              backgroundColor: colors.success,
+              width: progressAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['0%', '100%'],
+              }),
+            },
+          ]}
+        />
       </View>
 
       {item.repayment_type === 'one_time' && item.due_date && (
@@ -530,14 +625,26 @@ const LedgerCard = React.memo(({
               title="Settle"
               onPress={() => onSettle(item)}
               variant="secondary"
-              style={{ flex: 1, paddingVertical: spacing.sm }}
+              style={{ flex: 1, marginRight: spacing.xs, paddingVertical: spacing.sm }}
             />
+            {/* WhatsApp Remind button */}
+            <TouchableOpacity
+              onPress={() => onRemind(item)}
+              style={{
+                padding: spacing.sm,
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: '#25D36620',
+                borderRadius: 8,
+                marginRight: spacing.xs,
+              }}>
+              <MaterialCommunityIcons name="whatsapp" size={22} color="#25D366" />
+            </TouchableOpacity>
           </>
         )}
         <TouchableOpacity
           onPress={() => onDelete(item)}
           style={{
-            marginLeft: spacing.xs,
             padding: spacing.sm,
             justifyContent: 'center',
             alignItems: 'center',
@@ -560,8 +667,12 @@ function AddEntryModal({ visible, onClose, onSuccess }: { visible: boolean; onCl
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
-    if (!formData.person_name || !formData.total_amount) {
-      Alert.alert('Error', 'Please fill all required fields');
+    if (!formData.person_name?.trim()) {
+      Alert.alert('Error', 'Person name is required');
+      return;
+    }
+    if (!formData.total_amount || formData.total_amount <= 0) {
+      Alert.alert('Error', 'Amount must be greater than 0');
       return;
     }
 
@@ -579,13 +690,19 @@ function AddEntryModal({ visible, onClose, onSuccess }: { visible: boolean; onCl
     }
   };
 
+  const handleClose = () => {
+    // Reset form on close so stale data doesn't show on next open
+    setFormData({ type: 'lent', repayment_type: 'one_time', installment_days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'] });
+    onClose();
+  };
+
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={[styles.modalOverlay, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
         <View style={[styles.modalContent, { backgroundColor: colors.background, borderRadius: borderRadius.lg }]}>
           <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
             <Text style={[typography.h3, { color: colors.text }]}>Add Entry</Text>
-            <TouchableOpacity onPress={onClose}>
+            <TouchableOpacity onPress={handleClose}>
               <MaterialCommunityIcons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -692,9 +809,19 @@ function PaymentModal({ visible, entry, onClose, onSuccess }: { visible: boolean
       return;
     }
 
+    const payAmount = parseFloat(amount);
+    if (isNaN(payAmount) || payAmount <= 0) {
+      Alert.alert('Error', 'Amount must be greater than 0');
+      return;
+    }
+    if (payAmount > Number(entry.remaining_amount)) {
+      Alert.alert('Error', `Amount cannot exceed remaining ₹${Number(entry.remaining_amount).toFixed(0)}`);
+      return;
+    }
+
     try {
       setLoading(true);
-      await addPayment(entry.id, parseFloat(amount), notes);
+      await addPayment(entry.id, payAmount, notes);
       Alert.alert('Success', 'Payment added successfully');
       onClose();
       onSuccess();

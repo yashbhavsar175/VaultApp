@@ -18,6 +18,7 @@ import {
   TextInput,
   ScrollView,
   Dimensions,
+  Animated,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -37,6 +38,7 @@ import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } 
 import { getBankColor, getBankSuggestions } from '../../config';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { formatCurrency as formatAmount } from '../../utils/format';
+import { BarChart, PieChart } from 'react-native-gifted-charts';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANKS SCREEN
@@ -91,13 +93,16 @@ export function BanksScreen() {
     try {
       // Show cached data instantly
       const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
-      if (cached && cached.length > 0) {
-        const cachedStr = JSON.stringify(cached);
+      if (cached?.data && cached.data.length > 0) {
+        const cachedStr = JSON.stringify(cached.data);
         if (lastDataStringRef.current !== cachedStr) {
           lastDataStringRef.current = cachedStr;
-          setBanks(cached);
+          setBanks(cached.data);
         }
         setLoading(false);
+        
+        // Skip network call if cache is fresh
+        if (!cached.isStale) return;
       }
 
       // Then fetch fresh from cloud
@@ -915,6 +920,18 @@ export function AnalyticsScreen() {
   const [loading, setLoading] = useState(true);
   const lastDataStringRef = useRef<string | null>(null);
 
+  // Fade animation: plays every time timeRange changes
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const fadeIn = () => {
+    fadeAnim.setValue(0);
+    Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+  };
+
+  const handleTimeRangeChange = (range: TimeRange) => {
+    setTimeRange(range);
+    fadeIn();
+  };
+
   useFocusEffect(
     React.useCallback(() => {
       const task = InteractionManager.runAfterInteractions(() => {
@@ -1003,15 +1020,15 @@ export function AnalyticsScreen() {
       percentage: totalSpent > 0 ? (amount / totalSpent) * 100 : 0,
     }));
 
-  // Top categories
-  const topCategories = Object.entries(categoryData)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5)
-    .map(([name, amount]) => ({
-      name,
-      amount,
-      percentage: totalSpent > 0 ? (amount / totalSpent) * 100 : 0,
-    }));
+  // Smart Insights: dynamic text-based insight about spending
+  const getSmartInsight = (): string => {
+    if (transactions.length === 0) return 'Add some transactions to see your spending insights.';
+    if (categoryChartData.length === 0) return 'No expense data for this period. You\'re doing great! 🎉';
+    const top = categoryChartData[0];
+    const savingsRate = totalIncome > 0 ? ((netSavings / totalIncome) * 100).toFixed(0) : '0';
+    const savingsEmoji = netSavings >= 0 ? '📈' : '⚠️';
+    return `Your highest spending is in **${top.name}**, representing ${top.percentage.toFixed(0)}% of expenses (${formatAmount(top.amount)}). ${savingsEmoji} Savings rate: ${savingsRate}% this period.`;
+  };
 
   // Daily spending data for bar chart
   const getDailyData = () => {
@@ -1041,7 +1058,41 @@ export function AnalyticsScreen() {
     };
   };
 
+  // Top categories (kept for list)
+  const topCategories = Object.entries(categoryData)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([name, amount]) => ({
+      name,
+      amount,
+      percentage: totalSpent > 0 ? (amount / totalSpent) * 100 : 0,
+    }));
+
   const barData = getDailyData();
+
+  // gifted-charts BarChart data (depends on barData)
+  const barChartData = barData.labels.flatMap((label, i) => ([
+    {
+      value: barData.expense[i],
+      label,
+      frontColor: '#EAB308',
+      labelTextStyle: { color: colors.subtext as string, fontSize: 9 },
+    },
+    {
+      value: barData.income[i],
+      frontColor: '#64748B',
+      labelTextStyle: { color: colors.subtext as string, fontSize: 9 },
+    },
+  ]));
+
+  const screenWidth = Dimensions.get('window').width - spacing.lg * 2 - 32;
+
+  // gifted-charts PieChart data
+  const pieData = categoryChartData.map((item) => ({
+    value: item.percentage,
+    color: item.color,
+    text: item.percentage > 8 ? `${item.percentage.toFixed(0)}%` : '',
+  }));
 
   return (
     <ScreenWrapper scrollable>
@@ -1057,15 +1108,15 @@ export function AnalyticsScreen() {
                 style={[
                   styles.timeRangeButton,
                   { borderRadius: borderRadius.sm },
-                  timeRange === range && { backgroundColor: colors.accent },
+                  timeRange === range && { backgroundColor: '#EAB308' }, // vivid yellow active
                 ]}
-                onPress={() => setTimeRange(range)}
+                onPress={() => handleTimeRangeChange(range)}
               >
                 <Text
                   style={[
                     typography.caption,
                     { color: colors.subtext },
-                    timeRange === range && { color: '#fff', fontWeight: '600' },
+                    timeRange === range && { color: '#1a1a1a', fontWeight: '700' },
                   ]}
                 >
                   {range === '3months' ? '3 Months' : range.charAt(0).toUpperCase() + range.slice(1)}
@@ -1073,6 +1124,27 @@ export function AnalyticsScreen() {
               </TouchableOpacity>
             ))}
           </View>
+        </Card>
+
+        <Animated.View style={{ opacity: fadeAnim }}>
+
+        {/* Smart Insights Card */}
+        <Card style={{
+          padding: spacing.lg,
+          marginBottom: spacing.lg,
+          borderLeftWidth: 4,
+          borderLeftColor: '#EAB308',
+          backgroundColor: colors.card,
+        }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
+            <MaterialCommunityIcons name="lightbulb-on" size={20} color="#EAB308" />
+            <Text style={[typography.bodyBold, { color: '#EAB308', marginLeft: 6, fontSize: 13 }]}>
+              Smart Insight
+            </Text>
+          </View>
+          <Text style={[typography.body, { color: colors.text, lineHeight: 22, fontSize: 14 }]}>
+            {getSmartInsight()}
+          </Text>
         </Card>
 
         {/* Summary Cards */}
@@ -1086,68 +1158,55 @@ export function AnalyticsScreen() {
             </Text>
           </Card>
 
-          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#10b981' }]}>
+          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#64748B' }]}>
             <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.xs }]}>
               Total Income
             </Text>
-            <Text style={[typography.h3, { color: '#10b981', fontSize: 18 }]}>
+            <Text style={[typography.h3, { color: '#64748B', fontSize: 18 }]}>
               {formatAmount(totalIncome)}
             </Text>
           </Card>
 
-          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#8b5cf6' }]}>
+          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#EAB308' }]}>
             <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.xs }]}>
               Net Savings
             </Text>
-            <Text style={[typography.h3, { color: netSavings >= 0 ? '#10b981' : '#ef4444', fontSize: 18 }]}>
+            <Text style={[typography.h3, { color: netSavings >= 0 ? '#EAB308' : '#ef4444', fontSize: 18 }]}>
               {formatAmount(netSavings)}
             </Text>
           </Card>
         </View>
 
-        {/* Horizontal Bar Chart - Spending by Category */}
+        {/* Donut Chart - Spending by Category (gifted-charts PieChart) */}
         {categoryChartData.length > 0 ? (
-          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
-            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>
+          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
+            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md, alignSelf: 'flex-start' }]}>
               Where your money goes
             </Text>
-            
-            {/* Horizontal segmented bar */}
-            <View style={{ 
-              flexDirection: 'row', 
-              height: 40, 
-              borderRadius: borderRadius.md, 
-              overflow: 'hidden',
-              marginBottom: spacing.lg,
-            }}>
-              {categoryChartData.map((item, index) => (
-                <View
-                  key={index}
-                  style={{
-                    flex: item.percentage,
-                    backgroundColor: item.color,
-                  }}
-                />
-              ))}
-            </View>
-
-            {/* Center total */}
-            <View style={{ alignItems: 'center', marginBottom: spacing.lg }}>
-              <Text style={[typography.caption, { color: colors.subtext }]}>Total Expenses</Text>
-              <Text style={[typography.h2, { color: colors.text }]}>{formatAmount(totalSpent)}</Text>
-            </View>
-
+            <PieChart
+              donut
+              data={pieData}
+              radius={90}
+              innerRadius={56}
+              innerCircleColor={colors.card}
+              centerLabelComponent={() => (
+                <View style={{ alignItems: 'center' }}>
+                  <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>Total</Text>
+                  <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]}>
+                    {formatAmount(totalSpent)}
+                  </Text>
+                </View>
+              )}
+            />
             {/* Legend */}
-            <View>
+            <View style={{ marginTop: spacing.md, width: '100%' }}>
               {categoryChartData.map((item, index) => (
                 <View key={index} style={styles.legendRow}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
                     <View style={[styles.legendDot, { backgroundColor: item.color }]} />
                     <Text style={[typography.body, { color: colors.text }]}>{item.name}</Text>
                   </View>
-                  <Text style={[typography.body, { color: colors.text }]}>
-                    {formatAmount(item.amount)}
-                  </Text>
+                  <Text style={[typography.body, { color: colors.text }]}>{formatAmount(item.amount)}</Text>
                   <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm, minWidth: 40, textAlign: 'right' }]}>
                     {item.percentage.toFixed(0)}%
                   </Text>
@@ -1164,71 +1223,38 @@ export function AnalyticsScreen() {
           </Card>
         )}
 
-        {/* Custom Bar Chart - Daily Spending */}
-        {barData.labels.length > 0 ? (
+        {/* Bar Chart - Daily Spending (gifted-charts BarChart) */}
+        {barChartData.length > 0 ? (
           <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
             <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>
               Daily spending trend
             </Text>
-            
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <View style={{ paddingVertical: spacing.md }}>
-                <View style={{ flexDirection: 'row', height: 200, alignItems: 'flex-end', gap: 16 }}>
-                  {barData.labels.map((label, index) => {
-                    const expenseHeight = (barData.expense[index] / barData.maxAmount) * 180;
-                    const incomeHeight = (barData.income[index] / barData.maxAmount) * 180;
-                    
-                    return (
-                      <View key={index} style={{ alignItems: 'center', gap: 4 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 4, height: 180 }}>
-                          {/* Expense bar */}
-                          <View style={{ width: 20, alignItems: 'center', justifyContent: 'flex-end' }}>
-                            {barData.expense[index] > 0 && (
-                              <View
-                                style={{
-                                  width: 20,
-                                  height: expenseHeight,
-                                  backgroundColor: '#ef4444',
-                                  borderRadius: 4,
-                                }}
-                              />
-                            )}
-                          </View>
-                          
-                          {/* Income bar */}
-                          <View style={{ width: 20, alignItems: 'center', justifyContent: 'flex-end' }}>
-                            {barData.income[index] > 0 && (
-                              <View
-                                style={{
-                                  width: 20,
-                                  height: incomeHeight,
-                                  backgroundColor: '#10b981',
-                                  borderRadius: 4,
-                                }}
-                              />
-                            )}
-                          </View>
-                        </View>
-                        
-                        {/* Label */}
-                        <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
-                          {label}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              </View>
+              <BarChart
+                data={barChartData}
+                barWidth={16}
+                spacing={4}
+                roundedTop
+                hideRules
+                xAxisColor={colors.border}
+                yAxisColor={colors.border}
+                yAxisTextStyle={{ color: colors.subtext, fontSize: 9 }}
+                noOfSections={4}
+                maxValue={barData.maxAmount}
+                isAnimated
+                animationDuration={500}
+                barBorderRadius={3}
+                width={Math.max(screenWidth, barChartData.length * 22)}
+              />
             </ScrollView>
-
             {/* Legend */}
             <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: spacing.md, gap: 16 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#EAB308' }]} />
                 <Text style={[typography.caption, { color: colors.text }]}>Expense</Text>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#64748B' }]} />
                 <Text style={[typography.caption, { color: colors.text }]}>Income</Text>
               </View>
             </View>
@@ -1284,6 +1310,7 @@ export function AnalyticsScreen() {
             ))}
           </Card>
         )}
+        </Animated.View>
       </View>
     </ScreenWrapper>
   );

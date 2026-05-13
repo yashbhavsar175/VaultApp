@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
+import HapticFeedback from 'react-native-haptic-feedback';
 import { supabase, deleteTransaction, updateTransaction } from '../../lib/core';
 import { Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -27,6 +28,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const { transactionId } = route.params || {};
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [transaction, setTransaction] = useState<Transaction | null>(null);
+  const [bankName, setBankName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -38,22 +40,46 @@ export default function TransactionDetail({ route, navigation }: Props) {
     onConfirm: () => void;
   } | null>(null);
 
+  // Track mount state to prevent setState on unmounted component
+  const isMountedRef = useRef(true);
   useEffect(() => {
+    isMountedRef.current = true;
     loadTransaction();
+    return () => { isMountedRef.current = false; };
   }, [transactionId]);
 
   const loadTransaction = async () => {
     try {
       setLoading(true);
+      // SECURITY: Always verify user_id — navigation params can be tampered
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
       const { data, error } = await supabase
         .from('transactions')
         .select('*')
         .eq('id', transactionId)
+        .eq('user_id', user.id)  // Must verify ownership
         .single();
 
       if (error) throw error;
+      if (!isMountedRef.current) return; // BUG FIX: prevent state update after unmount
       setTransaction(data);
+
+      // Fetch bank account name if account_id exists
+      if (data.account_id) {
+        const { data: bankData } = await supabase
+          .from('bank_accounts')
+          .select('bank_name, account_last4')
+          .eq('id', data.account_id)
+          .single();
+        
+        if (bankData && isMountedRef.current) {
+          setBankName(`${bankData.bank_name} (${bankData.account_last4})`);
+        }
+      }
     } catch (error) {
+      if (!isMountedRef.current) return;
       console.error('Error loading transaction:', error);
       Toast.show({
         type: 'error',
@@ -61,12 +87,13 @@ export default function TransactionDetail({ route, navigation }: Props) {
         text2: 'Failed to load transaction details',
       });
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   };
 
   const handleDelete = () => {
     if (!transaction) return;
+    HapticFeedback.trigger('notificationWarning', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setConfirmDialog({
       visible: true,
       title: 'Delete Transaction',
@@ -74,17 +101,18 @@ export default function TransactionDetail({ route, navigation }: Props) {
       confirmText: 'Delete',
       isDestructive: true,
       onConfirm: async () => {
-        // Dismiss dialog and navigate back immediately for a faster feel
         setConfirmDialog(null);
-        navigation.goBack();
         try {
           await deleteTransaction(transaction.id);
+          HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
           Toast.show({
             type: 'success',
             text1: 'Deleted',
             text2: 'Transaction deleted successfully',
           });
+          navigation.goBack();
         } catch (error) {
+          HapticFeedback.trigger('notificationError', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
           Toast.show({
             type: 'error',
             text1: 'Error',
@@ -232,8 +260,21 @@ export default function TransactionDetail({ route, navigation }: Props) {
             colors={colors}
             typography={typography}
             spacing={spacing}
-            isLast
           />
+          {bankName && (
+            <DetailRow
+              icon="bank"
+              label="Bank Account"
+              value={bankName}
+              colors={colors}
+              typography={typography}
+              spacing={spacing}
+              isLast
+            />
+          )}
+          {!bankName && (
+            <View style={{ height: 0 }} />
+          )}
         </Card>
 
         {/* Delete Button */}
@@ -266,7 +307,17 @@ export default function TransactionDetail({ route, navigation }: Props) {
   );
 }
 
-function DetailRow({ icon, label, value, colors, typography, spacing, isLast = false }: any) {
+interface DetailRowProps {
+  icon: string;
+  label: string;
+  value: string;
+  colors: ReturnType<typeof import('../../context/ThemeContext').useTheme>['colors'];
+  typography: ReturnType<typeof import('../../context/ThemeContext').useTheme>['typography'];
+  spacing: ReturnType<typeof import('../../context/ThemeContext').useTheme>['spacing'];
+  isLast?: boolean;
+}
+
+function DetailRow({ icon, label, value, colors, typography, spacing, isLast = false }: DetailRowProps) {
   return (
     <View style={[
       styles.detailRow,

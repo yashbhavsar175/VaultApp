@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager, AppState, AppStateStatus, Animated } from 'react-native';
 import { formatCurrency as formatAmount } from '../utils/format';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import HapticFeedback from 'react-native-haptic-feedback';
 import { getTransactions } from '../lib/core';
 import { Transaction, PeopleLedger } from '../types';
 import { useTheme } from '../context/ThemeContext';
@@ -25,6 +26,34 @@ export default function Dashboard() {
   const [peopleSummary, setPeopleSummary] = useState({ totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+
+  // SECURITY: Privacy screen when app goes to background
+  const [isPrivacyMode, setIsPrivacyMode] = useState(false);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      setIsPrivacyMode(next !== 'active');
+    });
+    return () => sub.remove();
+  }, []);
+
+  // UX: Shimmer animation for skeleton loader
+  const shimmerAnim = useRef(new Animated.Value(0.4)).current;
+  useEffect(() => {
+    if (!loading) return;
+    const shimmer = Animated.loop(
+      Animated.sequence([
+        Animated.timing(shimmerAnim, { toValue: 1, duration: 750, useNativeDriver: true }),
+        Animated.timing(shimmerAnim, { toValue: 0.4, duration: 750, useNativeDriver: true }),
+      ])
+    );
+    shimmer.start();
+    return () => shimmer.stop();
+  }, [loading, shimmerAnim]);
+
+  // UX: Haptic feedback helper
+  const triggerHaptic = useCallback(() => {
+    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+  }, []);
   
   // Month selector state
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -37,6 +66,7 @@ export default function Dashboard() {
   });
 
   const toggleSection = (section: keyof typeof openSections) => {
+    triggerHaptic();
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setOpenSections(prev => ({
       ...prev,
@@ -49,6 +79,7 @@ export default function Dashboard() {
   };
 
   const navigateMonth = (direction: 'prev' | 'next') => {
+    triggerHaptic();
     const newDate = new Date(selectedDate);
     if (direction === 'prev') {
       newDate.setMonth(newDate.getMonth() - 1);
@@ -67,12 +98,11 @@ export default function Dashboard() {
   const filterTransactionsByMonth = (txns: Transaction[]) => {
     const year = selectedDate.getFullYear();
     const month = selectedDate.getMonth();
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0, 23, 59, 59);
-
+    // Use year/month comparison to avoid UTC vs local timezone issues
+    // new Date(ISO string) converts UTC to local time automatically
     return txns.filter(t => {
       const txDate = new Date(t.created_at);
-      return txDate >= firstDay && txDate <= lastDay;
+      return txDate.getFullYear() === year && txDate.getMonth() === month;
     });
   };
 
@@ -98,17 +128,19 @@ export default function Dashboard() {
         getCached<PeopleLedger[]>(CACHE_KEYS.PEOPLE_LEDGER),
       ]);
 
-      if (cachedTxns && cachedTxns.length > 0) {
+      if (cachedTxns?.data && cachedTxns.data.length > 0) {
         // Cache hit! Show data instantly — no skeleton needed
-        setTransactions(cachedTxns);
-        if (cachedLedger) {
-          setPeopleLedger(cachedLedger);
-          setPeopleSummary(computePeopleSummary(cachedLedger));
+        setTransactions(cachedTxns.data);
+        if (cachedLedger?.data) {
+          setPeopleLedger(cachedLedger.data);
+          setPeopleSummary(computePeopleSummary(cachedLedger.data));
         }
         setLoading(false); // Skip skeleton entirely!
 
-        // Step 2: Silently refresh in background
-        loadDataSilently();
+        // Step 2: Silently refresh in background if stale
+        if (cachedTxns.isStale || cachedLedger?.isStale) {
+          loadDataSilently();
+        }
         return;
       }
 
@@ -161,6 +193,10 @@ export default function Dashboard() {
     }
   };
 
+  // Keep ref always pointing to the latest loadDataSilently — prevents stale closure in debounce
+  const loadDataSilentlyRef = useRef(loadDataSilently);
+  useEffect(() => { loadDataSilentlyRef.current = loadDataSilently; });
+
   // Debounce ref — prevents rapid back-to-back loads during bulk operations
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -171,7 +207,7 @@ export default function Dashboard() {
     }
     // Wait 500ms before actually loading — if another trigger comes, reset
     loadTimerRef.current = setTimeout(() => {
-      loadDataSilently();
+      loadDataSilentlyRef.current(); // Always uses the latest version
     }, 500);
   }, []);
 
@@ -207,6 +243,7 @@ export default function Dashboard() {
   }, []);
 
   const onRefresh = async () => {
+    triggerHaptic();
     setRefreshing(true);
     await loadDataSilently();
     setRefreshing(false);
@@ -236,12 +273,23 @@ export default function Dashboard() {
   const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
 
 
+  // SECURITY: Blank privacy screen when app is in background
+  if (isPrivacyMode) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <MaterialCommunityIcons name="shield-lock-outline" size={64} color={colors.accent} />
+        <Text style={[typography.h3, { color: colors.text, marginTop: 16 }]}>SpendSense is locked</Text>
+      </View>
+    );
+  }
+
   if (loading) {
     // Skeleton loader that mimics the actual Dashboard layout
     return (
       <ScreenWrapper>
         <AppHeader title="SpendSense" />
         <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+          <Animated.View style={{ opacity: shimmerAnim }}>
           {/* Month selector skeleton */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg }}>
             <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: colors.border }} />
@@ -280,6 +328,7 @@ export default function Dashboard() {
               </View>
             </Card>
           ))}
+          </Animated.View>
         </ScrollView>
       </ScreenWrapper>
     );
@@ -392,7 +441,7 @@ export default function Dashboard() {
               <View>
                 <View style={{ flexDirection: 'row', gap: 12, marginBottom: spacing.md }}>
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                    <MaterialCommunityIcons name="arrow-down-circle" size={24} color="#10b981" />
+                    <MaterialCommunityIcons name="arrow-down-circle" size={24} color={colors.income} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                       Income
                     </Text>
@@ -402,7 +451,7 @@ export default function Dashboard() {
                   </Card>
 
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                    <MaterialCommunityIcons name="arrow-up-circle" size={24} color="#ef4444" />
+                    <MaterialCommunityIcons name="arrow-up-circle" size={24} color={colors.expense} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                       Expense
                     </Text>
@@ -451,14 +500,14 @@ export default function Dashboard() {
                   <Card style={{ 
                     ...styles.lentSummaryCard,
                     borderLeftWidth: 4, 
-                    borderLeftColor: '#10b981',
+                    borderLeftColor: colors.income,
                     padding: 16,
                     marginBottom: spacing.md,
                   }}>
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 12 }]}>
                       You Lent
                     </Text>
-                    <Text style={[typography.h1, { color: '#10b981', fontSize: 24, fontWeight: 'bold', marginTop: 4 }]}>
+                    <Text style={[typography.h1, { color: colors.income, fontSize: 24, fontWeight: 'bold', marginTop: 4 }]}>
                       {formatAmount(peopleSummary.totalLent)}
                     </Text>
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 12, marginTop: 4 }]}>
@@ -467,7 +516,7 @@ export default function Dashboard() {
                   </Card>
 
                   {peopleLedger.filter(e => e.type === 'lent').slice(0, 3).map((entry) => {
-                    const personColor = '#10b981';
+                    const personColor = colors.income;
                     
                     return (
                       <Card key={entry.id} style={{ marginBottom: spacing.sm }}>
@@ -526,7 +575,7 @@ export default function Dashboard() {
             {openSections.investedEmi && (
               <View style={{ flexDirection: 'row', gap: 12 }}>
                 <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                  <MaterialCommunityIcons name="chart-line" size={24} color="#7c3aed" />
+                  <MaterialCommunityIcons name="chart-line" size={24} color={colors.investment} />
                   <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                     Invested
                   </Text>
@@ -536,7 +585,7 @@ export default function Dashboard() {
                 </Card>
 
                 <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                  <MaterialCommunityIcons name="credit-card" size={24} color="#f59e0b" />
+                  <MaterialCommunityIcons name="credit-card" size={24} color={colors.emi} />
                   <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                     EMI / Loans
                   </Text>

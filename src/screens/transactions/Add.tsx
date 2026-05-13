@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,10 +13,13 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
   InteractionManager,
+  Animated,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import Toast from 'react-native-toast-message';
+import HapticFeedback from 'react-native-haptic-feedback';
 import { addTransaction, getUniqueCategories, parseTransactionWithAI, supabase } from '../../lib/core';
 import { TransactionType, BankAccount } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -113,6 +116,17 @@ export default function Add() {
     }
   };
 
+  // Amount formatting: converts raw number string to comma-separated (50000 → 50,000)
+  const formatAmountInput = (raw: string): string => {
+    const digits = raw.replace(/[^0-9.]/g, '');
+    const parts = digits.split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return parts.slice(0, 2).join('.');
+  };
+
+  const getRawAmount = (formatted: string): string =>
+    formatted.replace(/,/g, '');
+
   const handleCategoryChange = (text: string) => {
     setCategory(text);
     
@@ -130,6 +144,7 @@ export default function Add() {
   };
 
   const selectCategory = (cat: string) => {
+    HapticFeedback.trigger('selection', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setCategory(cat);
     setShowSuggestions(false);
     Keyboard.dismiss();
@@ -189,7 +204,7 @@ export default function Add() {
       const result = await parseTransactionWithAI(aiInput);
       
       // Auto-fill the manual form with parsed data
-      setAmount(result.amount.toString());
+      setAmount(formatAmountInput(result.amount.toString()));
       setNote(result.note);
       setType(result.type);
       setSelectedType(result.type);
@@ -198,7 +213,7 @@ export default function Add() {
       // Switch to manual mode for review and account selection
       setMode('manual');
       setAiInput('');
-      
+      HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
       Toast.show({
         type: 'success',
         text1: 'Parsed Successfully',
@@ -207,7 +222,7 @@ export default function Add() {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const isConfigError = errorMessage.includes('not configured');
-      
+      HapticFeedback.trigger('notificationError', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
       Toast.show({
         type: 'error',
         text1: isConfigError ? 'API Key Missing' : 'Parsing Failed',
@@ -227,7 +242,8 @@ export default function Add() {
     setErrors({});
     
     // Validate amount
-    if (!amount || amount === '0' || amount === '') {
+    const rawAmount = getRawAmount(amount);
+    if (!rawAmount || rawAmount === '0' || rawAmount === '') {
       setErrors({ amount: true });
       Toast.show({
         type: 'error',
@@ -237,7 +253,7 @@ export default function Add() {
       return;
     }
     
-    if (parseFloat(amount) <= 0) {
+    if (parseFloat(rawAmount) <= 0) {
       setErrors({ amount: true });
       Toast.show({
         type: 'error',
@@ -282,9 +298,36 @@ export default function Add() {
 
     setSaving(true);
     try {
-      const transactionAmount = parseFloat(amount);
+      const transactionAmount = parseFloat(getRawAmount(amount));
+
+      // OFFLINE-FIRST: Check connectivity before attempting to save
+      const netState = await NetInfo.fetch();
+      if (!netState.isConnected) {
+        // Queue transaction for later sync
+        const existing = await AsyncStorage.getItem('offline_tx_queue');
+        const queue = existing ? JSON.parse(existing) : [];
+        queue.push({
+          amount: transactionAmount,
+          note,
+          type: selectedType,
+          category: category || (selectedType === 'lent' ? 'Unknown' : 'general'),
+          sms_source: 'manual',
+          queued_at: new Date().toISOString(),
+        });
+        await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+        HapticFeedback.trigger('notificationWarning', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        Toast.show({
+          type: 'info',
+          text1: 'Saved to Offline Queue',
+          text2: 'Will sync when internet is restored',
+        });
+        navigation.navigate('Dashboard' as never);
+        resetForm();
+        setSaving(false);
+        return;
+      }
       
-      // Save transaction
+      // Online: save normally
       await addTransaction({
         amount: transactionAmount,
         note,
@@ -377,14 +420,14 @@ export default function Add() {
         <View style={styles.modeToggle}>
           <TouchableOpacity
             style={[styles.modeButton, { borderRadius: borderRadius.sm }, mode === 'ai' && { backgroundColor: colors.accent }]}
-            onPress={() => setMode('ai')}>
+            onPress={() => { HapticFeedback.trigger('selection', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false }); setMode('ai'); }}>
             <Text style={[typography.caption, { color: colors.subtext }, mode === 'ai' && { color: '#fff' }]}>
               AI Mode
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.modeButton, { borderRadius: borderRadius.sm }, mode === 'manual' && { backgroundColor: colors.accent }]}
-            onPress={() => setMode('manual')}>
+            onPress={() => { HapticFeedback.trigger('selection', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false }); setMode('manual'); }}>
             <Text style={[typography.caption, { color: colors.subtext }, mode === 'manual' && { color: '#fff' }]}>
               Manual Mode
             </Text>
@@ -445,7 +488,8 @@ export default function Add() {
             placeholderTextColor={colors.subtext}
             value={amount}
             onChangeText={(text) => {
-              setAmount(text);
+              // Format with commas as user types
+              setAmount(formatAmountInput(text));
               if (errors.amount) {
                 setErrors({ ...errors, amount: false });
               }

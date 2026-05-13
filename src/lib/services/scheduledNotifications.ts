@@ -6,6 +6,7 @@
  */
 
 import notifee, { TriggerType, RepeatFrequency, AndroidImportance, TimestampTrigger } from '@notifee/react-native';
+import { Platform } from 'react-native';
 import { PeopleLedger } from '../../types';
 import { isOverdue, isDueToday, getDaysUntilDue } from '../database/userdata';
 import { CreditCard, getCCDaysUntilDue } from '../database/financial';
@@ -34,6 +35,16 @@ async function ensureCreditCardChannel(): Promise<string> {
 
 export async function requestNotificationPermission() {
   await notifee.requestPermission();
+  // Android 12+: Request SCHEDULE_EXACT_ALARM permission so
+  // TimestampTrigger fires precisely even in Doze mode
+  if (Platform.OS === 'android') {
+    try {
+      // @ts-ignore: The 'alarm' property is Android-specific and not in TypeScript definitions
+      await notifee.requestPermission({ alarm: true });
+    } catch (e) {
+      console.warn('[Notifee] Exact alarm permission request failed (may not be supported on this Android version):', e);
+    }
+  }
 }
 
 // ─── People Ledger Notifications ────────────────────────────────────────────────
@@ -65,32 +76,47 @@ export async function scheduleLedgerNotifications(entries: PeopleLedger[]) {
 
       if (dueDate >= now) {
         const daysUntil = getDaysUntilDue(entry);
-        
+
         // Notification on due date
-        await notifee.createTriggerNotification(
-          {
-            id: `${entry.id}-due`,
-            title: '⚠️ Payment Due Today',
-            body: `${entry.person_name} needs to ${entry.type === 'lent' ? 'return' : 'receive'} ₹${Number(entry.remaining_amount).toFixed(0)} today!`,
-            android: { channelId: 'people-ledger', importance: AndroidImportance.HIGH },
-          },
-          { type: TriggerType.TIMESTAMP, timestamp: dueDate.getTime() }
-        );
+        try {
+          await notifee.createTriggerNotification(
+            {
+              id: `${entry.id}-due`,
+              title: '⚠️ Payment Due Today',
+              body: `${entry.person_name} needs to ${entry.type === 'lent' ? 'return' : 'receive'} ₹${Number(entry.remaining_amount).toFixed(0)} today!`,
+              android: { channelId: 'people-ledger', importance: AndroidImportance.HIGH },
+            },
+            {
+              type: TriggerType.TIMESTAMP,
+              timestamp: dueDate.getTime(),
+              alarmManager: { allowWhileIdle: true }, // Fires in Doze mode (Android 12+)
+            } as TimestampTrigger
+          );
+        } catch (e) {
+          console.warn(`[Notifee] Could not schedule due notification for ${entry.id}:`, e);
+        }
 
         // Reminder 1 day before
         if (daysUntil && daysUntil > 1) {
           const reminderDate = new Date(dueDate);
           reminderDate.setDate(reminderDate.getDate() - 1);
-
-          await notifee.createTriggerNotification(
-            {
-              id: `${entry.id}-reminder`,
-              title: '📅 Payment Due Tomorrow',
-              body: `${entry.person_name} - ₹${Number(entry.remaining_amount).toFixed(0)} due tomorrow`,
-              android: { channelId: 'people-ledger', importance: AndroidImportance.DEFAULT },
-            },
-            { type: TriggerType.TIMESTAMP, timestamp: reminderDate.getTime() }
-          );
+          try {
+            await notifee.createTriggerNotification(
+              {
+                id: `${entry.id}-reminder`,
+                title: '📅 Payment Due Tomorrow',
+                body: `${entry.person_name} - ₹${Number(entry.remaining_amount).toFixed(0)} due tomorrow`,
+                android: { channelId: 'people-ledger', importance: AndroidImportance.DEFAULT },
+              },
+              {
+                type: TriggerType.TIMESTAMP,
+                timestamp: reminderDate.getTime(),
+                alarmManager: { allowWhileIdle: true },
+              } as TimestampTrigger
+            );
+          } catch (e) {
+            console.warn(`[Notifee] Could not schedule reminder for ${entry.id}:`, e);
+          }
         }
       }
     }
@@ -104,41 +130,49 @@ export async function scheduleLedgerNotifications(entries: PeopleLedger[]) {
 
       const todayDay = now.getDay();
       const todayDayName = Object.keys(dayMap).find(key => dayMap[key] === todayDay);
-      
+
       if (todayDayName && installmentDays.includes(todayDayName)) {
-        await notifee.createTriggerNotification(
-          {
-            id: `${entry.id}-installment`,
-            title: '💰 Daily Installment Reminder',
-            body: `${entry.person_name}'s daily ₹${entry.installment_amount} — ₹${Number(entry.remaining_amount).toFixed(0)} remaining`,
-            android: { channelId: 'people-ledger', importance: AndroidImportance.DEFAULT },
-          },
-          {
-            type: TriggerType.TIMESTAMP,
-            timestamp: scheduledTime.getTime(),
-            repeatFrequency: RepeatFrequency.DAILY,
-          }
-        );
+        try {
+          await notifee.createTriggerNotification(
+            {
+              id: `${entry.id}-installment`,
+              title: '💰 Daily Installment Reminder',
+              body: `${entry.person_name}'s daily ₹${entry.installment_amount} — ₹${Number(entry.remaining_amount).toFixed(0)} remaining`,
+              android: { channelId: 'people-ledger', importance: AndroidImportance.DEFAULT },
+            },
+            {
+              type: TriggerType.TIMESTAMP,
+              timestamp: scheduledTime.getTime(),
+              alarmManager: { allowWhileIdle: true },
+            } as TimestampTrigger
+          );
+        } catch (e) {
+          console.warn(`[Notifee] Could not schedule installment reminder for ${entry.id}:`, e);
+        }
       }
     }
 
     // Overdue notifications
     if (isOverdue(entry)) {
       const daysOverdue = Math.abs(getDaysUntilDue(entry) || 0);
-      
-      await notifee.createTriggerNotification(
-        {
-          id: `${entry.id}-overdue`,
-          title: '🔴 Payment Overdue',
-          body: `${entry.person_name} payment overdue by ${daysOverdue} days! ₹${Number(entry.remaining_amount).toFixed(0)} pending`,
-          android: { channelId: 'people-ledger', importance: AndroidImportance.HIGH },
-        },
-        {
-          type: TriggerType.TIMESTAMP,
-          timestamp: scheduledTime.getTime(),
-          repeatFrequency: RepeatFrequency.DAILY,
-        }
-      );
+      try {
+        await notifee.createTriggerNotification(
+          {
+            id: `${entry.id}-overdue`,
+            title: '🔴 Payment Overdue',
+            body: `${entry.person_name} payment overdue by ${daysOverdue} days! ₹${Number(entry.remaining_amount).toFixed(0)} pending`,
+            android: { channelId: 'people-ledger', importance: AndroidImportance.HIGH },
+          },
+          {
+            type: TriggerType.TIMESTAMP,
+            timestamp: scheduledTime.getTime(),
+            repeatFrequency: RepeatFrequency.DAILY,
+            alarmManager: { allowWhileIdle: true },
+          } as TimestampTrigger
+        );
+      } catch (e) {
+        console.warn(`[Notifee] Could not schedule overdue notification for ${entry.id}:`, e);
+      }
     }
   }
 }
@@ -201,22 +235,27 @@ export async function scheduleDueReminders(card: CreditCard): Promise<void> {
         const trigger: TimestampTrigger = {
           type: TriggerType.TIMESTAMP,
           timestamp: triggerDate.getTime(),
+          alarmManager: { allowWhileIdle: true }, // Fires in Doze mode (Android 12+)
         };
 
-        await notifee.createTriggerNotification(
-          {
-            id: `cc-reminder-${card.id}-${notif.days}`,
-            title: notif.title,
-            body: `${card.bank_name} •••• ${card.last_4_digits}\nOutstanding: ₹${card.current_outstanding.toFixed(0)}`,
-            android: {
-              channelId,
-              importance: notif.priority === 'urgent' ? AndroidImportance.HIGH : AndroidImportance.DEFAULT,
-              pressAction: { id: 'default' },
-              smallIcon: 'ic_launcher',
+        try {
+          await notifee.createTriggerNotification(
+            {
+              id: `cc-reminder-${card.id}-${notif.days}`,
+              title: notif.title,
+              body: `${card.bank_name} •••• ${card.last_4_digits}\nOutstanding: ₹${card.current_outstanding.toFixed(0)}`,
+              android: {
+                channelId,
+                importance: notif.priority === 'urgent' ? AndroidImportance.HIGH : AndroidImportance.DEFAULT,
+                pressAction: { id: 'default' },
+                smallIcon: 'ic_launcher',
+              },
             },
-          },
-          trigger
-        );
+            trigger
+          );
+        } catch (e) {
+          console.warn(`[Notifee] Could not schedule CC reminder for card ${card.id} (${notif.days}d):`, e);
+        }
       }
     }
   } catch (error) {

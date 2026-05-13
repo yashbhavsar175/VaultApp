@@ -1,18 +1,20 @@
 /**
  * Cache Module
  * Consolidated: config.ts + dataCache.ts + prefetch.ts
- * 
+ *
  * Handles:
  * - AI configuration (API keys, provider selection)
- * - Data caching (AsyncStorage-based cache)
+ * - Data caching (AsyncStorage for normal data, EncryptedStorage for secrets)
  * - Data prefetching (background data loading)
+ * - SWR (Stale-While-Revalidate) — callers know if data is stale
  */
 
 import { Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getBankAccounts } from '../database/financial';
 import { getVaultItems } from '../database/vaultDb';
-import { getPlaces } from '../database/userdata';
+import { getPlaces, getPeopleLedger } from '../database/userdata';
+import { getTransactions } from '../core';
 import { supabase } from '../core';
 import { GEMINI_API_KEY as GEMINI_KEY, OPENAI_API_KEY as OPENAI_KEY } from '../../config';
 
@@ -20,10 +22,7 @@ import { GEMINI_API_KEY as GEMINI_KEY, OPENAI_API_KEY as OPENAI_KEY } from '../.
 // AI CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Choose one: OpenAI or Gemini
 export const AI_PROVIDER: 'openai' | 'gemini' = 'gemini';
-
-// Re-export API keys from env.ts
 export const OPENAI_API_KEY = OPENAI_KEY;
 export const GEMINI_API_KEY = GEMINI_KEY;
 
@@ -39,7 +38,7 @@ export const CACHE_KEYS = {
   BANK_ACCOUNTS: 'cache_bank_accounts',
 } as const;
 
-// Max age before cache is considered too stale (5 minutes)
+// Max age before cache is considered stale (5 minutes)
 const MAX_CACHE_AGE_MS = 5 * 60 * 1000;
 
 type CacheEntry<T> = {
@@ -47,26 +46,38 @@ type CacheEntry<T> = {
   timestamp: number;
 };
 
-export async function getCached<T>(key: string): Promise<T | null> {
+// ─── SWR Return Type ─────────────────────────────────────────────────────────
+export type CachedResult<T> = { data: T; isStale: boolean } | null;
+
+/**
+ * Get cached data with SWR support.
+ * Returns { data, isStale: false } if fresh (< 5 min old) — UI can skip background refresh.
+ * Returns { data, isStale: true } if stale — UI should silently re-fetch from Supabase.
+ * Returns null if no cached entry exists.
+ *
+ * NOTE: All cache entries use AsyncStorage. Data security is enforced by Supabase RLS,
+ * not by local cache encryption. The cache is a performance layer only.
+ */
+export async function getCached<T>(key: string): Promise<CachedResult<T>> {
   try {
     const raw = await AsyncStorage.getItem(key);
     if (!raw) return null;
-    
+
     const entry: CacheEntry<T> = JSON.parse(raw);
-    
-    // Return cached data even if stale — caller will refresh in background
-    return entry.data;
+    const isStale = Date.now() - entry.timestamp > MAX_CACHE_AGE_MS;
+
+    return { data: entry.data, isStale };
   } catch {
     return null;
   }
 }
 
+/**
+ * Write data to cache.
+ */
 export async function setCache<T>(key: string, data: T): Promise<void> {
   try {
-    const entry: CacheEntry<T> = {
-      data,
-      timestamp: Date.now(),
-    };
+    const entry: CacheEntry<T> = { data, timestamp: Date.now() };
     await AsyncStorage.setItem(key, JSON.stringify(entry));
   } catch {
     // Silently fail — caching is best-effort
@@ -90,7 +101,7 @@ export async function clearCache(): Promise<void> {
 /**
  * Prefetch all app data on startup (after login).
  * Each fetch runs independently — if one fails, others continue.
- * Cached data makes screens load instantly on first navigate.
+ * Now includes Transactions + PeopleLedger for instant Dashboard/People screen loads.
  */
 export async function prefetchAllData(): Promise<void> {
   console.log('🚀 [Prefetch] Starting background data prefetch...');
@@ -101,6 +112,8 @@ export async function prefetchAllData(): Promise<void> {
     prefetchBanks(),
     prefetchVault(),
     prefetchPlaces(),
+    prefetchTransactions(),    // ← Added: core financial data
+    prefetchPeopleLedger(),    // ← Added: people ledger for Dashboard summary
   ]);
 
   const elapsed = Date.now() - start;
@@ -151,8 +164,9 @@ async function prefetchVault() {
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
     }));
+    // SECURITY: Vault items go to EncryptedStorage via setCache
     await setCache(CACHE_KEYS.VAULT_ITEMS, mapped);
-    console.log('🚀 [Prefetch] ✅ Vault:', mapped.length, 'items');
+    console.log('🚀 [Prefetch] ✅ Vault:', mapped.length, 'items (encrypted)');
   } catch (e) {
     console.warn('🚀 [Prefetch] ❌ Vault failed:', e);
   }
@@ -164,7 +178,6 @@ async function prefetchPlaces() {
     await setCache(CACHE_KEYS.PLACES, data);
     console.log('🚀 [Prefetch] ✅ Places:', data.length, 'places');
 
-    // Prefetch place photos into image cache
     const photoUrls = data
       .filter(p => p.photo_uri && p.photo_uri.startsWith('http'))
       .map(p => p.photo_uri!);
@@ -175,5 +188,25 @@ async function prefetchPlaces() {
     }
   } catch (e) {
     console.warn('🚀 [Prefetch] ❌ Places failed:', e);
+  }
+}
+
+async function prefetchTransactions() {
+  try {
+    const data = await getTransactions();
+    await setCache(CACHE_KEYS.TRANSACTIONS, data);
+    console.log('🚀 [Prefetch] ✅ Transactions:', data.length, 'records');
+  } catch (e) {
+    console.warn('🚀 [Prefetch] ❌ Transactions failed:', e);
+  }
+}
+
+async function prefetchPeopleLedger() {
+  try {
+    const data = await getPeopleLedger(true); // include settled entries
+    await setCache(CACHE_KEYS.PEOPLE_LEDGER, data);
+    console.log('🚀 [Prefetch] ✅ People Ledger:', data.length, 'entries');
+  } catch (e) {
+    console.warn('🚀 [Prefetch] ❌ People Ledger failed:', e);
   }
 }

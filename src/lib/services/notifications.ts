@@ -1,7 +1,7 @@
 /**
  * Notifications Module
  * Consolidated: transactionNotifications.ts + BackgroundEventHandler.ts
- * 
+ *
  * Handles:
  * - Transaction confirmation notifications
  * - Failed SMS parsing notifications
@@ -11,6 +11,7 @@
 
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
+import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -18,82 +19,53 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // SPAM FILTERING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Spam/Promo keywords to filter out
-const SPAM_KEYWORDS = [
+// PERFORMANCE: Single pre-compiled regex — O(1) .test() vs O(n) .some() scan
+const SPAM_KEYWORDS_LIST = [
   // Promotional / marketing
-  'loan offer',
-  'get your',
-  'instantly',
-  't&c',
-  'tap:',
-  'click here',
-  'offer ends',
-  'apply now',
-  'pre-approved',
-  'pre approved',
-  'limited time',
-  'hurry',
-  'claim now',
-  'exclusive offer',
-  'congratulations',
-  'you are eligible',
-  'instant approval',
-  'no documents',
-  'easy emi',
-  'cashback offer',
-  'special offer',
-  'offer expire',
-  'expire',
-  'spend limit',
-  'view offer',
-  'धन्यवाद',  // "Thank you" in Hindi - common in promotional emails
-  'namaste',
-  'team bank',  // "Team BankBazaar", "Team HDFC" etc.
+  'loan offer', 'get your', 'instantly', 't&c', 'tap:', 'click here',
+  'offer ends', 'apply now', 'pre-approved', 'pre approved', 'limited time',
+  'hurry', 'claim now', 'exclusive offer', 'congratulations',
+  'you are eligible', 'instant approval', 'no documents', 'easy emi',
+  'cashback offer', 'special offer', 'offer expire', 'expire',
+  'spend limit', 'view offer', 'namaste', 'team bank',
   // EMI / Bill reminders (NOT actual transactions)
-  'emi due',
-  'emi is due',
-  'is due on',
-  'due on ',       // trailing space to avoid false positives
-  'payment due',
-  'bill due',
-  'pay now with',
-  'overdue',
-  'reminder:',
-  'upcoming emi',
-  'emi reminder',
-  'bill reminder',
-  'autopay scheduled',
-  'autopay reminder',
-  'auto-debit scheduled',
-  'scheduled for',
-  'will be debited on',
-  'will be deducted on',
-  'mandate',
-  'pay before',
-  'avoid late',
-  'late fee',
-  'penalty',
+  'emi due', 'emi is due', 'is due on', 'due on ', 'payment due',
+  'bill due', 'pay now with', 'overdue', 'reminder:', 'upcoming emi',
+  'emi reminder', 'bill reminder', 'autopay scheduled', 'autopay reminder',
+  'auto-debit scheduled', 'scheduled for', 'will be debited on',
+  'will be deducted on', 'mandate', 'pay before', 'avoid late',
+  'late fee', 'penalty',
   // Insurance / subscription reminders
-  'policy renewal',
-  'renew now',
-  'subscription due',
-  'recharge due',
+  'policy renewal', 'renew now', 'subscription due', 'recharge due',
   // Rewards / cashback promos
-  'earn cashback',
-  'win up to',
-  'scratch card',
-  'goldfly',
-  'gold*',
-  'book domestic',
-  'every domestic trip',
+  'earn cashback', 'win up to', 'scratch card', 'goldfly',
+  'book domestic', 'every domestic trip',
 ];
 
+const SPAM_REGEX = new RegExp(
+  SPAM_KEYWORDS_LIST
+    .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) // escape regex specials
+    .join('|'),
+  'i'
+);
+
 /**
- * Check if SMS/notification is spam/promo
+ * Check if SMS/notification is spam/promo — O(1) via pre-compiled SPAM_REGEX
  */
 export function isSpamMessage(text: string): boolean {
-  const lowerText = text.toLowerCase();
-  return SPAM_KEYWORDS.some(keyword => lowerText.includes(keyword));
+  return SPAM_REGEX.test(text);
+}
+
+// ─── Privacy: OTP / PIN scrubber ────────────────────────────────────────────
+/**
+ * Replace sensitive data before writing to AsyncStorage bug reports.
+ * - 4-to-6 digit standalone numbers (OTPs / PINs) → '***'
+ * - CVV keyword + trailing digits → 'CVV ***'
+ */
+function scrubSensitiveData(text: string): string {
+  return text
+    .replace(/\b\d{4,6}\b/g, '***')           // OTPs / PINs
+    .replace(/\bCVV[:\s]*\d*/gi, 'CVV ***');   // CVV keyword + value
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -105,7 +77,6 @@ export function isSpamMessage(text: string): boolean {
  */
 export async function createTransactionChannels() {
   try {
-    // Channel for successful parses
     await notifee.createChannel({
       id: 'sms_parsed',
       name: 'Transaction Confirmations',
@@ -113,7 +84,6 @@ export async function createTransactionChannels() {
       description: 'Notifications for auto-detected transactions',
     });
 
-    // Channel for failed parses
     await notifee.createChannel({
       id: 'sms_failed',
       name: 'SMS Parsing Failures',
@@ -121,9 +91,9 @@ export async function createTransactionChannels() {
       description: 'Notifications when SMS cannot be parsed',
     });
 
-    console.log('✅ Transaction notification channels created');
+    console.log('Transaction notification channels created');
   } catch (error) {
-    console.error('❌ Error creating transaction channels:', error);
+    console.error('Error creating transaction channels:', error);
   }
 }
 
@@ -146,19 +116,12 @@ export async function showTransactionConfirmation(
   try {
     await createTransactionChannels();
 
-    // Format type for display
     const typeDisplay = type.charAt(0).toUpperCase() + type.slice(1);
-    
-    // Format amount
-    const formattedAmount = `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    
-    // Build body text
-    let bodyText = `${merchant} • ${formattedAmount}`;
-    if (accountName) {
-      bodyText += `\n${accountName}`;
-    }
+    const formattedAmount = `Rs.${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-    // Display notification
+    let bodyText = `${merchant} - ${formattedAmount}`;
+    if (accountName) bodyText += `\n${accountName}`;
+
     await notifee.displayNotification({
       id: `txn_${transactionId}`,
       title: `${typeDisplay} Added`,
@@ -166,28 +129,11 @@ export async function showTransactionConfirmation(
       android: {
         channelId: 'sms_parsed',
         importance: AndroidImportance.DEFAULT,
-        pressAction: {
-          id: 'default',
-        },
+        pressAction: { id: 'default' },
         actions: [
-          {
-            title: '✓ OK',
-            pressAction: {
-              id: 'ok',
-            },
-          },
-          {
-            title: '✗ Delete',
-            pressAction: {
-              id: 'delete',
-            },
-          },
-          {
-            title: '🐛 Report Bug',
-            pressAction: {
-              id: 'report_bug',
-            },
-          },
+          { title: 'OK', pressAction: { id: 'ok' } },
+          { title: 'Delete', pressAction: { id: 'delete' } },
+          { title: 'Report Bug', pressAction: { id: 'report_bug' } },
         ],
       },
       data: {
@@ -198,9 +144,9 @@ export async function showTransactionConfirmation(
       },
     });
 
-    console.log(`✅ Transaction confirmation notification shown for ${transactionId}`);
+    console.log('Transaction confirmation notification shown for', transactionId);
   } catch (error) {
-    console.error('❌ Error showing transaction confirmation:', error);
+    console.error('Error showing transaction confirmation:', error);
   }
 }
 
@@ -215,27 +161,19 @@ export async function showSmsFailedNotification(
   try {
     await createTransactionChannels();
 
-    // Truncate SMS body for notification
-    const truncatedBody = smsBody.length > 100 
-      ? `${smsBody.substring(0, 100)}...` 
+    const truncatedBody = smsBody.length > 100
+      ? `${smsBody.substring(0, 100)}...`
       : smsBody;
 
     await notifee.displayNotification({
-      title: '⚠️ Transaction SMS Not Recognized',
+      title: 'Transaction SMS Not Recognized',
       body: `From: ${sender}\n${truncatedBody}`,
       android: {
         channelId: 'sms_failed',
         importance: AndroidImportance.HIGH,
-        pressAction: {
-          id: 'default',
-        },
+        pressAction: { id: 'default' },
         actions: [
-          {
-            title: '🐛 Report Bug',
-            pressAction: {
-              id: 'report_bug',
-            },
-          },
+          { title: 'Report Bug', pressAction: { id: 'report_bug' } },
         ],
       },
       data: {
@@ -246,9 +184,9 @@ export async function showSmsFailedNotification(
       },
     });
 
-    console.log('✅ SMS failed notification displayed');
+    console.log('SMS failed notification displayed');
   } catch (error) {
-    console.error('❌ Error showing SMS failed notification:', error);
+    console.error('Error showing SMS failed notification:', error);
   }
 }
 
@@ -262,113 +200,112 @@ export async function showSmsFailedNotification(
 export async function handleTransactionNotificationEvent(event: any): Promise<void> {
   const { type, detail } = event;
 
-  console.log('🔔 [Transaction Notification] Event received:', type);
+  console.log('[Transaction Notification] Event received:', type);
 
-  // Handle action press
   if (type === EventType.ACTION_PRESS) {
     const { pressAction, notification } = detail;
     const transactionId = notification?.data?.transactionId;
 
-    console.log('🔔 [Transaction Notification] Action pressed:', pressAction?.id);
-    console.log('🔔 [Transaction Notification] Transaction ID:', transactionId);
+    console.log('[Transaction Notification] Action pressed:', pressAction?.id);
+    console.log('[Transaction Notification] Transaction ID:', transactionId);
 
     if (pressAction?.id === 'delete' && transactionId) {
       try {
-        console.log('🗑️ Deleting transaction:', transactionId);
+        console.log('Deleting transaction:', transactionId);
 
-        // Delete transaction from Supabase
-        const { error } = await supabase
-          .from('transactions')
-          .delete()
-          .eq('id', transactionId);
+        // OFFLINE RELIABILITY: check connectivity before hitting Supabase
+        const netState = await NetInfo.fetch();
+        if (netState.isConnected) {
+          // Online — delete from Supabase immediately
+          const { error } = await supabase
+            .from('transactions')
+            .delete()
+            .eq('id', transactionId);
 
-        if (error) {
-          console.error('❌ Error deleting transaction:', error);
+          if (error) {
+            console.error('Error deleting transaction:', error);
+          } else {
+            console.log('Transaction deleted successfully');
+            await notifee.cancelNotification(notification.id);
+          }
         } else {
-          console.log('✅ Transaction deleted successfully');
-          
-          // Dismiss the notification
+          // Offline — queue for background sync, dismiss immediately for uninterrupted UX
+          console.log('Offline — queuing delete for background sync');
+          const queueRaw = await AsyncStorage.getItem('offline_delete_queue');
+          const queue: string[] = queueRaw ? JSON.parse(queueRaw) : [];
+          if (!queue.includes(transactionId)) queue.push(transactionId);
+          await AsyncStorage.setItem('offline_delete_queue', JSON.stringify(queue));
           await notifee.cancelNotification(notification.id);
+          console.log('Delete queued — notification dismissed');
         }
       } catch (error) {
-        console.error('❌ Error in delete handler:', error);
+        console.error('Error in delete handler:', error);
       }
     } else if (pressAction?.id === 'ok') {
-      // Just dismiss the notification
       await notifee.cancelNotification(notification.id);
-      console.log('✅ Transaction confirmed by user');
+      console.log('Transaction confirmed by user');
     } else if (pressAction?.id === 'report_bug') {
       try {
-        console.log('🐛 Reporting bug for notification');
+        console.log('Reporting bug for notification');
         const rawSms = notification?.data?.rawSms || 'No raw SMS available';
         const sender = notification?.data?.sender || 'Unknown Sender';
         const logicLog = notification?.data?.logicLog || 'No logic log available';
         const actionType = notification?.data?.action;
-        
+
         const currentLogsStr = await AsyncStorage.getItem('debug_bug_reports');
         const currentLogs = currentLogsStr ? JSON.parse(currentLogsStr) : [];
-        
+
         currentLogs.unshift({
           id: Date.now().toString(),
           timestamp: new Date().toISOString(),
           transactionId: transactionId || 'failed_parse',
           type: actionType,
           sender,
-          rawSms,
+          // PRIVACY: scrub OTPs, PINs, CVV before persisting to AsyncStorage
+          rawSms: scrubSensitiveData(rawSms),
           logicLog,
         });
-        
-        // Keep only last 50 logs
+
         if (currentLogs.length > 50) currentLogs.length = 50;
-        
+
         await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(currentLogs));
-        
         await notifee.cancelNotification(notification.id);
-        console.log('✅ Bug report saved successfully');
+        console.log('Bug report saved successfully');
       } catch (error) {
-        console.error('❌ Error saving bug report:', error);
+        console.error('Error saving bug report:', error);
       }
     }
   }
 
-  // Handle notification press (tap on notification body)
   if (type === EventType.PRESS) {
     const { notification } = detail;
     const transactionId = notification?.data?.transactionId;
-
-    console.log('🔔 [Transaction Notification] Notification pressed');
-    console.log('🔔 [Transaction Notification] Transaction ID:', transactionId);
-
-    // TODO: Navigate to transaction detail/edit screen
-    // This will be handled in foreground event handler in App.tsx
+    console.log('[Transaction Notification] Notification pressed, ID:', transactionId);
+    // TODO: Navigate to transaction detail screen — handled in foreground listener in App.tsx
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BACKGROUND EVENT HANDLER (from BackgroundEventHandler.ts)
+// BACKGROUND EVENT HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Background event handler for Notifee
- * This runs even when the app is closed
+ * Background event handler for Notifee — runs even when the app is closed
  */
 export async function onBackgroundEvent(event: any) {
   const { type, detail } = event;
-  console.log('🔔 [Background] Notifee event received:', type);
-  
-  // Handle transaction notification actions (delete, ok)
+  console.log('[Background] Notifee event received:', type);
+
   if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
     const action = detail?.notification?.data?.action;
-    
     if (action === 'transaction_confirmation' || action === 'sms_failed') {
       await handleTransactionNotificationEvent(event);
       return;
     }
   }
-  
-  // Handle notification events in background
+
   if (type === EventType.DELIVERED) {
-    console.log('📬 [Background] Notification delivered');
+    console.log('[Background] Notification delivered');
   }
 }
 
@@ -379,11 +316,10 @@ export async function onBackgroundEvent(event: any) {
 export function initializeForegroundListener() {
   return notifee.onForegroundEvent(async (event) => {
     const { type, detail } = event;
-    console.log('🔔 [Foreground] Notifee event received:', type);
-    
+    console.log('[Foreground] Notifee event received:', type);
+
     if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
       const action = detail?.notification?.data?.action;
-      
       if (action === 'transaction_confirmation' || action === 'sms_failed') {
         await handleTransactionNotificationEvent(event);
       }
@@ -396,22 +332,17 @@ export function initializeForegroundListener() {
  * Call this when app starts to ensure listeners are active
  */
 export async function initializeBackgroundListeners() {
-  console.log('🚀 [Background] Initializing background listeners...');
-  
+  console.log('[Background] Initializing background listeners...');
+
   try {
-    // Check if notification listener permission is granted
     const hasPermission = await RNAndroidNotificationListener.getPermissionStatus();
-    
+
     if (hasPermission === 'authorized') {
-      console.log('✅ [Background] Notification listener permission granted');
-      console.log('✅ [Background] Listener service is already active');
-      // DO NOT call requestPermission() here - it opens settings screen!
-      // The service is automatically active when permission is granted
+      console.log('[Background] Notification listener permission granted');
     } else {
-      console.log('⚠️ [Background] Notification listener permission not granted');
-      console.log('ℹ️ [Background] User needs to enable it from first-time dialog');
+      console.log('[Background] Notification listener permission not granted');
     }
   } catch (error) {
-    console.error('❌ [Background] Error initializing listeners:', error);
+    console.error('[Background] Error initializing listeners:', error);
   }
 }

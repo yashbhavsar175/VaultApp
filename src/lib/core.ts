@@ -307,3 +307,48 @@ export async function getUniqueCategories(): Promise<string[]> {
   const categories = data?.map(item => item.category).filter(Boolean) || [];
   return Array.from(new Set(categories));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OFFLINE SYNC ENGINE
+// Triggered on network reconnection or AppState change from background
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export async function syncOfflineTransactions(): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem('offline_tx_queue');
+    if (!raw) return; // Nothing to sync
+
+    const queue: any[] = JSON.parse(raw);
+    if (!queue || queue.length === 0) return;
+
+    // Get authenticated user
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      console.warn('[OfflineSync] No authenticated user — skipping sync');
+      return;
+    }
+
+    // Append user_id to every queued transaction
+    const records = queue.map(({ queued_at, ...tx }) => ({
+      ...tx,
+      user_id: user.id,
+    }));
+
+    // Bulk insert into Supabase
+    const { error } = await supabase
+      .from('transactions')
+      .insert(records);
+
+    if (error) {
+      console.error('[OfflineSync] Bulk insert failed:', error.message);
+      return; // Keep queue intact — will retry next time
+    }
+
+    // Success: clear the queue
+    await AsyncStorage.removeItem('offline_tx_queue');
+    console.log(`[OfflineSync] Synced ${records.length} offline transaction(s) successfully`);
+  } catch (e) {
+    // Never crash the app — this runs silently in the background
+    console.error('[OfflineSync] Unexpected error:', e);
+  }
+}
