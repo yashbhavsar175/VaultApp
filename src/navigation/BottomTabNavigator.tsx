@@ -7,10 +7,10 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useTheme } from '../context/ThemeContext';
 
 import DashboardStack from './DashboardStack';
+import SettingsStack from './SettingsStack';
 import PeopleScreen from '../screens/people/PeopleScreen';
 import Add from '../screens/transactions/Add';
 import SecureVaultScreen from '../screens/vault/SecureVaultScreen';
-import Settings from '../screens/user/Settings';
 
 const Tab = createBottomTabNavigator();
 
@@ -107,11 +107,28 @@ export default function BottomTabNavigator() {
         />
         <Tab.Screen
           name="Settings"
-          component={Settings}
-          options={{
-            tabBarIcon: ({ color, size }) => (
-              <MaterialCommunityIcons name="cog" color={color} size={size} />
-            ),
+          component={SettingsStack}
+          options={({ route }) => {
+            const routeName = getFocusedRouteNameFromRoute(route) ?? 'SettingsHome';
+            // Hide bottom tab bar on sub-screens inside SettingsStack
+            const hideOnScreens = ['BankConfigScreen', 'SMSTestScreen', 'Places', 'PorterTest'];
+            return {
+              tabBarIcon: ({ color, size }: { color: string; size: number }) => (
+                <MaterialCommunityIcons name="cog" color={color} size={size} />
+              ),
+              tabBarStyle: hideOnScreens.includes(routeName)
+                ? { display: 'none' as const }
+                : {
+                    backgroundColor: colors.card,
+                    borderTopColor: 'transparent',
+                    borderTopWidth: 0,
+                    height: 60 + insets.bottom,
+                    paddingBottom: insets.bottom || 8,
+                    paddingTop: 6,
+                    elevation: 8,
+                    shadowOpacity: 0,
+                  },
+            };
           }}
         />
       </Tab.Navigator>

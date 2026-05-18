@@ -12,6 +12,7 @@ export interface Transaction {
   account_last4?: string;
   sms_source?: string;
   sms_sender?: string;
+  upi_id?: string;  // UPI ID used for transaction (e.g., user@paytm)
 }
 
 export interface BankAccount {

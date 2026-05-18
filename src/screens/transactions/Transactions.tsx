@@ -140,14 +140,31 @@ const TransactionRow = React.memo(({
               color={color}
             />
           </View>
-          <View style={styles.transactionInfo}>
-            <Text style={{ color: colors.text, fontSize: 14, fontWeight: '500' }}>{item.note}</Text>
+          <View style={[styles.transactionInfo, { paddingRight: selectMode ? 44 : 8 }]}>
+            <Text
+              style={{ color: colors.text, fontSize: 14, fontWeight: '500' }}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {item.note}
+            </Text>
             <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>{formatTransactionDate(item.created_at)}</Text>
           </View>
-          <Text style={{ color, fontSize: 14, fontWeight: '600' }}>
-            {item.type === 'income' ? '+' :
-              item.type === 'transfer' ? '↔' : '-'}{formatAmount(Number(item.amount))}
-          </Text>
+          {/* 🔴 MAGIC FIX: Animate Amount BACKWARDS by 36px so it stays pinned to the right edge and doesn't get clipped! */}
+          <Animated.View style={{
+            flexShrink: 0,
+            transform: [{
+              translateX: selectAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, -36], // Counter-act the parent's +36 translation
+              })
+            }]
+          }}>
+            <Text style={{ color, fontSize: 14, fontWeight: '600' }} numberOfLines={1}>
+              {item.type === 'income' ? '+' :
+                item.type === 'transfer' ? '↔' : '-'}{formatAmount(Number(item.amount))}
+            </Text>
+          </Animated.View>
         </Animated.View>
       </View>
     </Pressable>
@@ -200,14 +217,17 @@ export default function Transactions() {
     try {
       const data = await getTransactions();
       const dataStr = JSON.stringify(data);
-      
+
+
       // Prevent unnecessary state updates and re-renders that drop touches!
       if (lastDataStringRef.current === dataStr) {
         return;
       }
-      
+
+
       lastDataStringRef.current = dataStr;
-      
+
+
       setTransactions(data);
       applyFilter(data, filter);
       // Cache for instant load next time

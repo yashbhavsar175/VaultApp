@@ -536,6 +536,15 @@ export const processNotification = async (taskData: any) => {
       /(?:autopay|auto-pay|auto\s+debit|mandate)\s+(?:for|of|on)/i,
       /(?:renew|recharge|subscribe)\s+(?:now|before|by)/i,
       /(?:avoid|prevent)\s+(?:late|penalty|interest)/i,
+      // Promotional/Cashback/Offer messages
+      /cashback\s+on/i,
+      /get\s+(?:INR|Rs\.?|₹)\s*[0-9,]+\s+cashback/i,
+      /(?:offer|deal|discount|sale|promo)/i,
+      /use\s+code\s+[A-Z0-9]+/i,
+      /(?:plus|&)\s+(?:assured|get|win)/i,
+      /pay\s+now\s*[.!]?\s*$/i,
+      /(?:limited|exclusive)\s+(?:offer|deal)/i,
+      /(?:save|earn|win)\s+(?:upto|up to)\s+(?:INR|Rs\.?|₹)/i,
     ];
     
     if (NON_TRANSACTION_PATTERNS.some(pattern => pattern.test(combinedText))) {

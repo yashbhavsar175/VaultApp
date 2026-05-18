@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   PermissionsAndroid,
   Platform,
+  Clipboard,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -140,8 +141,12 @@ export default function PorterTestScreen() {
     rawText: '',
     status: '',
     result: '',
-    eventType: ''
+    eventType: '',
+    apiError: '',
+    nominatim: ''
   });
+  const [debugHistory, setDebugHistory] = useState<any[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const eventEmitter = useRef(new NativeEventEmitter(PorterModule)).current;
 
@@ -149,7 +154,8 @@ export default function PorterTestScreen() {
     // Listen for real accessibility events (when testing on actual Porter app)
     const subscription = eventEmitter.addListener('onPorterScreenChange', (event) => {
       setCapturedText(`[${event.eventType || '?'}] ${event.textContent?.slice(0, 800) || ''}`);
-      loadDebugLogs(); // auto-refresh debug logs if open
+      // Auto-refresh debug logs and history when new event arrives
+      setTimeout(() => loadDebugLogs(), 500); // Small delay to ensure AsyncStorage is updated
     });
     requestLocation();
     loadDebugLogs();
@@ -163,8 +169,15 @@ export default function PorterTestScreen() {
       const status = await AsyncStorage.getItem('debug_porter_status') || 'Idle';
       const result = await AsyncStorage.getItem('debug_porter_result') || '';
       const eventType = await AsyncStorage.getItem('debug_porter_last_event_type') || '';
+      const apiError = await AsyncStorage.getItem('debug_porter_api_error') || '';
+      const nominatim = await AsyncStorage.getItem('debug_porter_nominatim') || '';
       
-      setDebugLogs({ time, rawText, status, result, eventType });
+      setDebugLogs({ time, rawText, status, result, eventType, apiError, nominatim });
+      
+      // Load history
+      const historyJson = await AsyncStorage.getItem('debug_porter_history');
+      const history = historyJson ? JSON.parse(historyJson) : [];
+      setDebugHistory(history);
     } catch (e) {
       console.log('Failed to load debug logs');
     }
@@ -176,7 +189,11 @@ export default function PorterTestScreen() {
       'debug_porter_last_raw_text',
       'debug_porter_status',
       'debug_porter_result',
-      'debug_porter_last_event_type'
+      'debug_porter_last_event_type',
+      'debug_porter_api_error',
+      'debug_porter_nominatim',
+      'debug_porter_api_response',
+      'debug_porter_history'
     ]);
     loadDebugLogs();
   };
@@ -231,8 +248,138 @@ export default function PorterTestScreen() {
 
     // Show native toast overlay (same as it would appear over Porter)
     showToastOverlay(
-      `📍 To Pickup: ${result.toPickup}  |  🛣️ Trip: ${result.tripDistance}`
+      `📍 To Pickup: ${result.toPickup}  |  🛣️ Trip: ${result.tripDistance}`,
+      true
     );
+  };
+
+  // Simulate a fake Porter event and add to history (for testing without real Porter app)
+  const simulateHistoryEvent = async (trip: typeof MOCK_TRIPS[0], shouldFail: boolean = false) => {
+    try {
+      const lat = currentLocation?.lat ?? 22.9938;
+      const lng = currentLocation?.lng ?? 72.6359;
+
+      // Get API error and nominatim info
+      const distances = await getDistancesKm(lat, lng, trip.pickup, trip.drop);
+      const apiError = await AsyncStorage.getItem('debug_porter_api_error') || '';
+      const nominatim = await AsyncStorage.getItem('debug_porter_nominatim') || '';
+
+      // Create fake event
+      const fakeEvent = {
+        timestamp: new Date().toISOString(),
+        eventType: 'TYPE_WINDOW_STATE_CHANGED',
+        textContent: `₹${Math.floor(Math.random() * 300 + 100)} || Pickup ${(Math.random() * 5 + 0.5).toFixed(1)} km away || PICKUP || ${trip.pickup} || DROP || ${trip.drop}`,
+        pickup: trip.pickup,
+        drop: trip.drop,
+        status: shouldFail ? 'Failed: Distance calc returned N/A' : 'Success: Overlay shown',
+        apiError: shouldFail ? 'Element status: toPickup=ZERO_RESULTS' : apiError,
+        nominatim: nominatim,
+        result: JSON.stringify(shouldFail ? { toPickup: 'N/A', tripDistance: 'N/A' } : distances),
+        location: { lat, lng },
+      };
+
+      // Load existing history
+      const historyJson = await AsyncStorage.getItem('debug_porter_history');
+      const history = historyJson ? JSON.parse(historyJson) : [];
+      
+      // Add new event
+      history.unshift(fakeEvent);
+      
+      // Keep only last 50
+      if (history.length > 50) {
+        history.splice(50);
+      }
+      
+      await AsyncStorage.setItem('debug_porter_history', JSON.stringify(history));
+      
+      // Refresh UI
+      loadDebugLogs();
+      
+      showToastOverlay(`✅ Fake event added to history (${shouldFail ? 'Failed' : 'Success'})`);
+    } catch (e: any) {
+      console.error('Failed to simulate event:', e);
+    }
+  };
+
+  const exportHistory = async () => {
+    try {
+      if (debugHistory.length === 0) {
+        showToastOverlay('⚠️ No history to export');
+        return;
+      }
+
+      let exportText = `Porter Debug History Export\n`;
+      exportText += `Generated: ${new Date().toLocaleString()}\n`;
+      exportText += `Total Events: ${debugHistory.length}\n`;
+      exportText += `Success: ${debugHistory.filter(e => e.status.includes('Success')).length}\n`;
+      exportText += `Failed: ${debugHistory.filter(e => e.status.includes('Failed') || e.status.includes('Error')).length}\n`;
+      exportText += `\n${'='.repeat(50)}\n\n`;
+
+      debugHistory.forEach((event, index) => {
+        exportText += `📦 Event #${index + 1}\n`;
+        exportText += `⏱️ Time: ${new Date(event.timestamp).toLocaleString()}\n`;
+        exportText += `⚙️ Type: ${event.eventType}\n`;
+        exportText += `📍 Pickup: ${event.pickup || 'N/A'}\n`;
+        exportText += `🚩 Drop: ${event.drop || 'N/A'}\n`;
+        if (event.location) exportText += `🧭 Location: ${event.location.lat.toFixed(4)}, ${event.location.lng.toFixed(4)}\n`;
+        exportText += `📏 Result: ${event.result || 'N/A'}\n`;
+        exportText += `🔌 API Status: ${event.apiError || 'N/A'}\n`;
+        if (event.nominatim) exportText += `🌍 Nominatim: ${event.nominatim}\n`;
+        exportText += `📝 Status: ${event.status}\n`;
+        const raw = event.textContent || 'N/A';
+        // Truncate raw text in bulk export to prevent clipboard/WhatsApp size limits
+        exportText += `📄 Raw Text: ${raw.length > 250 ? raw.substring(0, 250) + '... [TRUNCATED]' : raw}\n`;
+        exportText += `\n${'—'.repeat(50)}\n\n`;
+      });
+
+      Clipboard.setString(exportText);
+      showToastOverlay('✅ History copied to clipboard');
+    } catch (e) {
+      showToastOverlay('❌ Failed to export history');
+    }
+  };
+
+  const deleteEvent = async (index: number) => {
+    try {
+      const historyJson = await AsyncStorage.getItem('debug_porter_history');
+      const history = historyJson ? JSON.parse(historyJson) : [];
+      
+      // Remove the event at index
+      history.splice(index, 1);
+      
+      await AsyncStorage.setItem('debug_porter_history', JSON.stringify(history));
+      
+      // Refresh UI
+      loadDebugLogs();
+      
+      showToastOverlay('🗑️ Event deleted');
+    } catch (e) {
+      showToastOverlay('❌ Failed to delete event');
+    }
+  };
+
+  const deleteAllHistory = async () => {
+    try {
+      await AsyncStorage.setItem('debug_porter_history', JSON.stringify([]));
+      loadDebugLogs();
+      showToastOverlay('🗑️ All history deleted');
+    } catch (e) {
+      showToastOverlay('❌ Failed to delete history');
+    }
+  };
+
+  const copyOfflineDebugger = () => {
+    let text = `Porter Offline Debugger\n`;
+    text += `⏱️ Time: ${debugLogs.time ? new Date(debugLogs.time).toLocaleString() : 'Never'}\n`;
+    if (debugLogs.eventType) text += `⚙️ Event Type: ${debugLogs.eventType}\n`;
+    text += `📝 Status: ${debugLogs.status}\n`;
+    if (debugLogs.apiError) text += `🔌 API Status: ${debugLogs.apiError}\n`;
+    if (debugLogs.nominatim) text += `🌍 Nominatim: ${debugLogs.nominatim}\n`;
+    if (debugLogs.result) text += `📏 Result: ${debugLogs.result}\n`;
+    text += `\n📄 Raw Text (Full):\n${debugLogs.rawText}\n`;
+    
+    Clipboard.setString(text);
+    showToastOverlay('✅ Debugger info copied');
   };
 
   return (
@@ -392,43 +539,111 @@ export default function PorterTestScreen() {
         </Card>
 
         {/* Test Trip Buttons */}
-        <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1, marginBottom: spacing.sm }]}>
-          Test With These Trips
-        </Text>
-        {MOCK_TRIPS.map((trip, i) => (
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+          <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+            Test With These Trips
+          </Text>
           <TouchableOpacity
-            key={i}
-            onPress={() => simulateTripPopup(trip)}
-            disabled={loadingDistance}
-            style={[{
-              backgroundColor: currentTrip === trip ? colors.accent + '20' : colors.card,
-              borderColor: currentTrip === trip ? colors.accent : colors.border,
+            onPress={async () => {
+              // Generate 5 random events (mix of success and failures)
+              for (let i = 0; i < 5; i++) {
+                const randomTrip = MOCK_TRIPS[Math.floor(Math.random() * MOCK_TRIPS.length)];
+                const shouldFail = Math.random() > 0.6; // 40% failure rate
+                await simulateHistoryEvent(randomTrip, shouldFail);
+                await new Promise<void>(resolve => setTimeout(() => resolve(), 100)); // Small delay
+              }
+              showToastOverlay('✅ Generated 5 test events');
+            }}
+            style={{
+              backgroundColor: colors.accent + '20',
+              borderColor: colors.accent,
               borderWidth: 1,
-              borderRadius: 12,
-              padding: spacing.md,
-              marginBottom: spacing.sm,
-              opacity: loadingDistance ? 0.6 : 1,
-            }]}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-              <MaterialCommunityIcons name="map-marker" size={15} color="#10b981" />
-              <Text style={[typography.caption, { color: colors.text, marginLeft: 6, flex: 1 }]} numberOfLines={1}>{trip.pickup}</Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <MaterialCommunityIcons name="map-marker" size={15} color="#ef4444" />
-              <Text style={[typography.caption, { color: colors.text, marginLeft: 6, flex: 1 }]} numberOfLines={1}>{trip.drop}</Text>
-            </View>
-            <Text style={[typography.caption, { color: colors.accent, fontWeight: 'bold', marginTop: 8, textAlign: 'right' }]}>
-              {loadingDistance && currentTrip === trip ? 'Calculating...' : 'Tap to Simulate →'}
+              borderRadius: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 6,
+            }}>
+            <Text style={[typography.caption, { color: colors.accent, fontSize: 10, fontWeight: 'bold' }]}>
+              🎲 BULK TEST (5x)
             </Text>
           </TouchableOpacity>
+        </View>
+        {MOCK_TRIPS.map((trip, i) => (
+          <View key={i} style={{ marginBottom: spacing.sm }}>
+            <TouchableOpacity
+              onPress={() => simulateTripPopup(trip)}
+              disabled={loadingDistance}
+              style={[{
+                backgroundColor: currentTrip === trip ? colors.accent + '20' : colors.card,
+                borderColor: currentTrip === trip ? colors.accent : colors.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: spacing.md,
+                opacity: loadingDistance ? 0.6 : 1,
+              }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                <MaterialCommunityIcons name="map-marker" size={15} color="#10b981" />
+                <Text style={[typography.caption, { color: colors.text, marginLeft: 6, flex: 1 }]} numberOfLines={1}>{trip.pickup}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <MaterialCommunityIcons name="map-marker" size={15} color="#ef4444" />
+                <Text style={[typography.caption, { color: colors.text, marginLeft: 6, flex: 1 }]} numberOfLines={1}>{trip.drop}</Text>
+              </View>
+              <Text style={[typography.caption, { color: colors.accent, fontWeight: 'bold', marginTop: 8, textAlign: 'right' }]}>
+                {loadingDistance && currentTrip === trip ? 'Calculating...' : 'Tap to Simulate →'}
+              </Text>
+            </TouchableOpacity>
+            
+            {/* Quick History Test Buttons */}
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+              <TouchableOpacity
+                onPress={() => simulateHistoryEvent(trip, false)}
+                style={{
+                  flex: 1,
+                  backgroundColor: '#10b98120',
+                  borderColor: '#10b981',
+                  borderWidth: 1,
+                  borderRadius: 8,
+                  padding: 8,
+                  alignItems: 'center',
+                }}>
+                <Text style={[typography.caption, { color: '#10b981', fontSize: 10, fontWeight: 'bold' }]}>
+                  + Add Success Event
+                </Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                onPress={() => simulateHistoryEvent(trip, true)}
+                style={{
+                  flex: 1,
+                  backgroundColor: '#ef444420',
+                  borderColor: '#ef4444',
+                  borderWidth: 1,
+                  borderRadius: 8,
+                  padding: 8,
+                  alignItems: 'center',
+                }}>
+                <Text style={[typography.caption, { color: '#ef4444', fontSize: 10, fontWeight: 'bold' }]}>
+                  + Add Failed Event
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         ))}
 
         {/* Captured text from real accessibility */}
         {capturedText && (
           <View style={{ marginTop: spacing.lg }}>
-            <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1, marginBottom: spacing.sm }]}>
-              Live Capture (Foreground)
-            </Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+              <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+                Live Capture (Foreground)
+              </Text>
+              <TouchableOpacity onPress={() => { 
+                Clipboard.setString(capturedText); 
+                showToastOverlay('✅ Live capture copied'); 
+              }}>
+                <MaterialCommunityIcons name="content-copy" size={16} color={colors.accent} />
+              </TouchableOpacity>
+            </View>
             <Card>
               <Text style={[typography.caption, { color: colors.text, fontFamily: 'monospace' }]}>
                 {capturedText}
@@ -444,6 +659,9 @@ export default function PorterTestScreen() {
               Offline Debugger
             </Text>
             <View style={{ flexDirection: 'row', gap: 12 }}>
+              <TouchableOpacity onPress={copyOfflineDebugger}>
+                <MaterialCommunityIcons name="content-copy" size={18} color={colors.accent} />
+              </TouchableOpacity>
               <TouchableOpacity onPress={clearDebugLogs}>
                 <Text style={[typography.caption, { color: '#ef4444', fontWeight: '600' }]}>CLEAR</Text>
               </TouchableOpacity>
@@ -490,6 +708,28 @@ export default function PorterTestScreen() {
               {debugLogs.status}
             </Text>
 
+            {debugLogs.apiError ? (
+              <>
+                <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>API ERROR / STATUS</Text>
+                <Text style={[typography.caption, { 
+                  color: debugLogs.apiError === 'Success' ? '#10b981' : '#ef4444', 
+                  fontFamily: 'monospace', 
+                  marginBottom: spacing.sm 
+                }]}>
+                  {debugLogs.apiError}
+                </Text>
+              </>
+            ) : null}
+
+            {debugLogs.nominatim ? (
+              <>
+                <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>NOMINATIM GEOCODING</Text>
+                <Text style={[typography.caption, { color: colors.text, fontFamily: 'monospace', marginBottom: spacing.sm }]}>
+                  {debugLogs.nominatim}
+                </Text>
+              </>
+            ) : null}
+
             {debugLogs.result ? (
               <>
                 <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>CALCULATION RESULT</Text>
@@ -507,6 +747,159 @@ export default function PorterTestScreen() {
             </View>
           </Card>
         </View>
+
+        {/* Event History */}
+        {debugHistory.length > 0 && (
+          <View style={{ marginTop: spacing.lg }}>
+            <TouchableOpacity 
+              onPress={() => setShowHistory(!showHistory)}
+              style={{ 
+                flexDirection: 'row', 
+                justifyContent: 'space-between', 
+                alignItems: 'center', 
+                marginBottom: spacing.sm,
+                padding: spacing.sm,
+                backgroundColor: colors.card,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: colors.accent + '40'
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <MaterialCommunityIcons 
+                  name={showHistory ? "chevron-down" : "chevron-right"} 
+                  size={20} 
+                  color={colors.accent} 
+                />
+                <Text style={[typography.caption, { color: colors.accent, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1, marginLeft: spacing.xs }]}>
+                  Event History ({debugHistory.length})
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <TouchableOpacity onPress={exportHistory}>
+                  <MaterialCommunityIcons name="export" size={18} color={colors.accent} />
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  onPress={deleteAllHistory}
+                  onLongPress={deleteAllHistory}
+                >
+                  <MaterialCommunityIcons name="delete-sweep" size={18} color="#ef4444" />
+                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981', marginRight: 4 }} />
+                    <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
+                      {debugHistory.filter(e => e.status.includes('Success')).length}
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#ef4444', marginRight: 4 }} />
+                    <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
+                      {debugHistory.filter(e => e.status.includes('Failed') || e.status.includes('Error')).length}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </TouchableOpacity>
+
+            {showHistory && (
+              <View style={{ 
+                backgroundColor: '#06b6d420', 
+                borderRadius: 8, 
+                padding: spacing.sm, 
+                marginBottom: spacing.sm,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8
+              }}>
+                <MaterialCommunityIcons name="information-outline" size={14} color="#06b6d4" />
+                <Text style={[typography.caption, { color: '#06b6d4', fontSize: 10, flex: 1 }]}>
+                  Tap 🗑️ on any event to delete it. Tap 🗑️ above to delete all.
+                </Text>
+              </View>
+            )}
+
+            {showHistory && debugHistory.map((event, index) => (
+              <Card key={index} style={{ 
+                marginBottom: spacing.sm, 
+                borderColor: event.status.includes('Success') ? '#10b98140' : 
+                            event.status.includes('Failed') || event.status.includes('Error') ? '#ef444440' : 
+                            colors.border,
+                borderWidth: 1 
+              }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs }}>
+                  <Text style={[typography.caption, { 
+                    color: event.status.includes('Success') ? '#10b981' : 
+                           event.status.includes('Failed') || event.status.includes('Error') ? '#ef4444' : 
+                           colors.accent,
+                    fontWeight: 'bold' 
+                  }]}>
+                    #{index + 1} • {event.eventType}
+                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
+                      {new Date(event.timestamp).toLocaleTimeString()}
+                    </Text>
+                    <TouchableOpacity 
+                      onPress={() => deleteEvent(index)}
+                      style={{ 
+                        padding: 4,
+                        backgroundColor: '#ef444420',
+                        borderRadius: 4,
+                      }}
+                    >
+                      <MaterialCommunityIcons name="delete-outline" size={14} color="#ef4444" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {event.pickup && event.drop && (
+                  <View style={{ marginBottom: spacing.xs }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+                      <MaterialCommunityIcons name="map-marker" size={12} color="#10b981" />
+                      <Text style={[typography.caption, { color: colors.text, marginLeft: 4, flex: 1 }]} numberOfLines={1}>
+                        {event.pickup}
+                      </Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <MaterialCommunityIcons name="map-marker" size={12} color="#ef4444" />
+                      <Text style={[typography.caption, { color: colors.text, marginLeft: 4, flex: 1 }]} numberOfLines={1}>
+                        {event.drop}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
+                {event.result && (
+                  <View style={{ 
+                    backgroundColor: colors.background, 
+                    padding: 6, 
+                    borderRadius: 6,
+                    marginBottom: spacing.xs 
+                  }}>
+                    <Text style={[typography.caption, { color: colors.text, fontFamily: 'monospace', fontSize: 11 }]}>
+                      {event.result}
+                    </Text>
+                  </View>
+                )}
+
+                {event.apiError && (
+                  <Text style={[typography.caption, { 
+                    color: event.apiError === 'Success' ? '#10b981' : '#f59e0b',
+                    fontSize: 10,
+                    marginBottom: spacing.xs 
+                  }]}>
+                    API: {event.apiError}
+                  </Text>
+                )}
+
+                <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={2}>
+                  {event.status}
+                </Text>
+              </Card>
+            ))}
+          </View>
+        )}
 
       </ScrollView>
     </ScreenWrapper>

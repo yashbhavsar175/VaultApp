@@ -9,6 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
 import { Transaction, TransactionType } from '../types';
+import { showTransactionConfirmation } from './services/notifications';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SUPABASE CLIENT

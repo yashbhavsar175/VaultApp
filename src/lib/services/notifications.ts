@@ -14,6 +14,8 @@ import RNAndroidNotificationListener from 'react-native-android-notification-lis
 import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { parseSMS, isTransactionSMS, ParsedTransaction } from './smsParser';
+import { getBankAccounts } from '../database/financial';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SPAM FILTERING
@@ -111,7 +113,8 @@ export async function showTransactionConfirmation(
   amount: number,
   accountName?: string,
   rawSms?: string,
-  logicLog?: string
+  logicLog?: string,
+  sender?: string
 ): Promise<void> {
   try {
     await createTransactionChannels();
@@ -139,8 +142,9 @@ export async function showTransactionConfirmation(
       data: {
         transactionId,
         action: 'transaction_confirmation',
-        rawSms: rawSms || '',
-        logicLog: logicLog || '',
+        sender: sender || 'Unknown Sender',
+        rawSms: rawSms || 'No raw SMS available',
+        logicLog: logicLog || 'No logic log available',
       },
     });
 
@@ -344,5 +348,143 @@ export async function initializeBackgroundListeners() {
     }
   } catch (error) {
     console.error('[Background] Error initializing listeners:', error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INTELLIGENT SMS PROCESSING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Process incoming SMS and auto-create transaction if possible
+ * Returns transaction ID if successful, null otherwise
+ */
+export async function processTransactionSMS(
+  smsText: string,
+  senderId: string
+): Promise<{ success: boolean; transactionId?: string; parsed: ParsedTransaction }> {
+  try {
+    // Step 1: Check if it's a transaction SMS
+    if (!isTransactionSMS(smsText)) {
+      console.log('[SMS Parser] Not a transaction SMS');
+      return { success: false, parsed: parseSMS(smsText, senderId) };
+    }
+
+    // Step 2: Parse SMS
+    const parsed = parseSMS(smsText, senderId);
+    console.log('[SMS Parser] Parsed:', JSON.stringify(parsed, null, 2));
+
+    // Step 3: Check confidence
+    if (parsed.confidence < 50) {
+      console.log('[SMS Parser] Low confidence, skipping auto-creation');
+      await showSmsFailedNotification(smsText, senderId, `Low confidence: ${parsed.confidence}%`);
+      return { success: false, parsed };
+    }
+
+    // Step 4: Find matching bank account
+    const accounts = await getBankAccounts();
+    let matchedAccount = null;
+
+    if (parsed.last4Digits) {
+      matchedAccount = accounts.find(acc => acc.account_last4 === parsed.last4Digits);
+    }
+
+    if (!matchedAccount && parsed.bankName) {
+      matchedAccount = accounts.find(acc => 
+        acc.bank_name.toLowerCase().includes(parsed.bankName!.toLowerCase())
+      );
+    }
+
+    if (!matchedAccount) {
+      console.log('[SMS Parser] No matching account found');
+      await showSmsFailedNotification(
+        smsText,
+        senderId,
+        `Bank: ${parsed.bankName || 'Unknown'}, Last4: ${parsed.last4Digits || 'Unknown'} - No matching account`
+      );
+      return { success: false, parsed };
+    }
+
+    // Step 5: Create transaction
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      console.log('[SMS Parser] No user found');
+      return { success: false, parsed };
+    }
+
+    // Determine transaction type
+    let type: 'income' | 'expense' | 'transfer' = 'expense';
+    if (parsed.transactionType === 'credit') {
+      type = 'income';
+    } else if (parsed.transactionType === 'payment') {
+      // Credit card payment is expense from bank account
+      type = 'expense';
+    }
+
+    const { data: transaction, error } = await supabase
+      .from('transactions')
+      .insert({
+        user_id: user.id,
+        type,
+        amount: parsed.amount,
+        note: parsed.merchant || `${parsed.bankName || 'Bank'} Transaction`,
+        category: type === 'income' ? 'salary' : 'general',
+        account_id: matchedAccount.id,
+        account_last4: matchedAccount.account_last4,
+        sms_source: 'sms',
+        sms_sender: senderId,
+        upi_id: parsed.upiId,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SMS Parser] Error creating transaction:', error);
+      await showSmsFailedNotification(smsText, senderId, `Database error: ${error.message}`);
+      return { success: false, parsed };
+    }
+
+    // Step 6: Show confirmation notification
+    await showTransactionConfirmation(
+      transaction.id,
+      type,
+      parsed.merchant || `${parsed.bankName || 'Bank'} Transaction`,
+      parsed.amount!,
+      matchedAccount.bank_name,
+      smsText,
+      `Confidence: ${parsed.confidence}%\nMatched: ${matchedAccount.bank_name} (${matchedAccount.account_last4})`,
+      senderId
+    );
+
+    console.log('[SMS Parser] Transaction created successfully:', transaction.id);
+    return { success: true, transactionId: transaction.id, parsed };
+  } catch (error) {
+    console.error('[SMS Parser] Error processing SMS:', error);
+    return { success: false, parsed: parseSMS(smsText, senderId) };
+  }
+}
+
+/**
+ * Get SMS parsing statistics for debugging
+ */
+export async function getSMSParsingStats(): Promise<{
+  total: number;
+  successful: number;
+  failed: number;
+  successRate: number;
+}> {
+  try {
+    const bugReportsStr = await AsyncStorage.getItem('debug_bug_reports');
+    const bugReports = bugReportsStr ? JSON.parse(bugReportsStr) : [];
+    
+    const total = bugReports.length;
+    const failed = bugReports.filter((r: any) => r.type === 'sms_failed').length;
+    const successful = bugReports.filter((r: any) => r.type === 'transaction_confirmation').length;
+    const successRate = total > 0 ? (successful / total) * 100 : 0;
+
+    return { total, successful, failed, successRate };
+  } catch {
+    return { total: 0, successful: 0, failed: 0, successRate: 0 };
   }
 }

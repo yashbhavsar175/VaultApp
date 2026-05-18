@@ -31,6 +31,7 @@
     "react-native-encrypted-storage": "^4.0.3",
     "react-native-geolocation-service": "^5.3.1",
     "react-native-gesture-handler": "^2.31.0",
+    "react-native-get-sms-android": "^2.1.0",
     "react-native-gifted-charts": "^1.4.76",
     "react-native-haptic-feedback": "^3.0.0",
     "react-native-image-picker": "^8.2.1",

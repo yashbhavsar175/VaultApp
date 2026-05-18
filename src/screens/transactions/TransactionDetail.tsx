@@ -237,30 +237,45 @@ export default function TransactionDetail({ route, navigation }: Props) {
             label="Tracked Via"
             value={(() => {
               if (!transaction.sms_source) return 'Manual Entry';
-              
+
               const source = transaction.sms_source.toLowerCase();
-              let sender = transaction.sms_sender || '';
-              
-              // Map package names to readable names
-              if (sender.includes('nbu.paisa.user')) sender = 'Google Pay';
-              else if (sender.includes('phonepe')) sender = 'PhonePe';
-              else if (sender.includes('paytm')) sender = 'Paytm';
-              else if (sender.includes('whatsapp')) sender = 'WhatsApp';
-              else if (sender.includes('cred')) sender = 'CRED';
-              else if (sender.includes('gmail')) sender = 'Gmail';
-              else if (sender.length > 0) sender = sender.replace('com.', '').split('.')[0];
-              
-              if (source === 'notification' || source === 'sms' || source === 'mail' || source === 'bank' || source === 'upi') {
-                const sourceCap = source.charAt(0).toUpperCase() + source.slice(1);
-                return sender ? `${sourceCap} (${sender})` : sourceCap;
+              const sourceCap = source.charAt(0).toUpperCase() + source.slice(1);
+              const sender = transaction.sms_sender || '';
+
+              // 1. Check for known UPI/App package names first
+              if (sender.includes('nbu.paisa.user')) return `${sourceCap} (Google Pay)`;
+              if (sender.includes('phonepe')) return `${sourceCap} (PhonePe)`;
+              if (sender.includes('paytm')) return `${sourceCap} (Paytm)`;
+              if (sender.includes('whatsapp')) return `${sourceCap} (WhatsApp)`;
+              if (sender.includes('cred')) return `${sourceCap} (CRED)`;
+              if (sender.includes('gmail')) return `${sourceCap} (Gmail)`;
+
+              // 2. If not an app, check if it's a bank SMS with a known bank account
+              if ((source === 'sms' || source === 'bank') && bankName) {
+                const justBank = bankName.split('(')[0].trim();
+                return `${sourceCap} (${justBank})`;
               }
-              
-              return transaction.sms_source.charAt(0).toUpperCase() + transaction.sms_source.slice(1);
+
+              // 3. Fallback for other sources with a sender ID (e.g., raw sender ID)
+              if (sender) return `${sourceCap} (${sender.replace('com.', '').split('.')[0]})`;
+
+              // 4. Final fallback to just the source
+              return sourceCap;
             })()}
             colors={colors}
             typography={typography}
             spacing={spacing}
           />
+          {transaction.upi_id && (
+            <DetailRow
+              icon="qrcode"
+              label="UPI ID"
+              value={transaction.upi_id}
+              colors={colors}
+              typography={typography}
+              spacing={spacing}
+            />
+          )}
           {bankName && (
             <DetailRow
               icon="bank"
@@ -272,7 +287,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
               isLast
             />
           )}
-          {!bankName && (
+          {!bankName && !transaction.upi_id && (
             <View style={{ height: 0 }} />
           )}
         </Card>

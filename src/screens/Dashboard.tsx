@@ -340,10 +340,6 @@ export default function Dashboard() {
         title="SpendSense" 
         rightActions={[
           {
-            icon: 'bank',
-            onPress: () => (navigation as any).navigate('Banks'),
-          },
-          {
             icon: 'chart-bar',
             onPress: () => (navigation as any).navigate('Analytics'),
           },

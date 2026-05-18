@@ -41,9 +41,8 @@ class PorterAccessibilityService : AccessibilityService() {
         if (event.packageName == null) return
         val packageName = event.packageName.toString()
         
-        // Only process Porter app events (and WhatsApp for testing)
-        if (!packageName.contains("porter", ignoreCase = true) && 
-            !packageName.contains("whatsapp", ignoreCase = true)) {
+        // Only process Porter app events
+        if (!packageName.contains("porter", ignoreCase = true)) {
             return
         }
 
@@ -73,9 +72,10 @@ class PorterAccessibilityService : AccessibilityService() {
             }
         }
         
-        // 3. Fall back to root window if source didn't give enough data
-        if (allTextList.size < 3) {
-            val rootNode = rootInActiveWindow
+        // 3. Fall back to reading ALL windows (to catch overlays/dialogs that might be in separate windows)
+        val windowsList = this.windows
+        for (window in windowsList) {
+            val rootNode = window.root
             if (rootNode != null) {
                 val rootTexts = extractAllText(rootNode)
                 for (t in rootTexts) {

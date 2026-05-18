@@ -454,6 +454,47 @@ export default function Settings() {
           </Card>
         </View>
 
+        {/* Financial Setup Section */}
+        <View style={{ marginTop: spacing.xl }}>
+          <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+            Financial Setup
+          </Text>
+
+          <Card>
+            <TouchableOpacity 
+              style={[styles.accountRow, { paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]} 
+              onPress={() => (navigation as any).navigate('BankConfigScreen')}
+            >
+              <MaterialCommunityIcons name="bank" size={22} color="#10b981" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Bank & Card Setup
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Manage your accounts for auto-detection
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={[styles.accountRow, { paddingTop: spacing.sm }]} 
+              onPress={() => (navigation as any).navigate('SMSTestScreen')}
+            >
+              <MaterialCommunityIcons name="message-text" size={22} color="#06b6d4" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  SMS Parser Test
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Test transaction detection from SMS
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+          </Card>
+        </View>
+
         {/* Account Section */}
         <View style={{ marginTop: spacing.xl }}>
           <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
