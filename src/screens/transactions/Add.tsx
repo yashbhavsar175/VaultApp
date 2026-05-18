@@ -311,8 +311,11 @@ export default function Add() {
           note,
           type: selectedType,
           category: category || (selectedType === 'lent' ? 'Unknown' : 'general'),
+          reference_number: null,
+          account_last4: null,
           sms_source: 'manual',
-          queued_at: new Date().toISOString(),
+          _localId: Date.now().toString(), // For consistency with processor-generated entries
+          _queued_at: new Date().toISOString(),
         });
         await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
         HapticFeedback.trigger('notificationWarning', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });

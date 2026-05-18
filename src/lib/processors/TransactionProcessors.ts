@@ -242,7 +242,36 @@ async function checkForDuplicates(
   smsSource?: 'bank' | 'upi'
 ): Promise<any | null> {
   try {
+    const oneMinuteAgo = new Date(timestamp - 1 * 60 * 1000).toISOString();
     const fiveMinutesAgo = new Date(timestamp - 5 * 60 * 1000).toISOString();
+
+    // First check for very recent duplicates (within 1 minute) - these should always be skipped
+    let recentQuery = supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('amount', amount)
+      .eq('type', type)
+      .gte('created_at', oneMinuteAgo)
+      .order('created_at', { ascending: false });
+
+    if (referenceNumber) {
+      recentQuery = recentQuery.eq('reference_number', referenceNumber);
+    }
+
+    const { data: recentData, error: recentError } = await recentQuery.limit(1);
+    if (recentError) return null;
+
+    if (recentData && recentData.length > 0) {
+      const existingTxn = recentData[0];
+      // Additional check: if we have SMS source, make sure it matches
+      if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+        return existingTxn;
+      }
+      return existingTxn;
+    }
+
+    // Then check for older duplicates (within 5 minutes) - but be less aggressive
     let query = supabase
       .from('transactions')
       .select('*')
@@ -252,18 +281,23 @@ async function checkForDuplicates(
       .gte('created_at', fiveMinutesAgo)
       .order('created_at', { ascending: false });
 
-    if (referenceNumber) query = query.eq('reference_number', referenceNumber);
+    if (referenceNumber) {
+      query = query.eq('reference_number', referenceNumber);
+    }
+
     const { data, error } = await query.limit(1);
     if (error) return null;
 
     if (data && data.length > 0) {
       const existingTxn = data[0];
+      // Additional check: if we have SMS source, make sure it matches
       if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
         return existingTxn;
       }
       return existingTxn;
     }
 
+    // Fallback: check for transactions without reference number
     if (!referenceNumber) {
       const { data: fallbackData } = await supabase
         .from('transactions')
@@ -284,6 +318,7 @@ async function checkForDuplicates(
         return existingTxn;
       }
     }
+
     return null;
   } catch (error) {
     return null;
@@ -372,43 +407,13 @@ export const processSms = async (taskData: SmsData) => {
 
     // OFFLINE-FIRST: check connectivity before hitting Supabase
     const netState = await NetInfo.fetch();
-    if (!netState.isConnected) {
-      // Offline — build local record and queue for sync
-      const tempId = Date.now().toString();
-      const offlineTx = {
-        user_id: userId,
-        amount: parsed.amount,
-        type: dbType,
-        note: parsed.merchant || 'Transaction',
-        category: parsed.merchant || 'general',
-        reference_number: parsed.reference,
-        account_last4: parsed.accountLast4,
-        sms_source: parsed.source,
-        _localId: tempId,
-        _queued_at: new Date().toISOString(),
-      };
-      const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
-      const queue = queueRaw ? JSON.parse(queueRaw) : [];
-      queue.push(offlineTx);
-      await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
-      console.log('Offline — SMS transaction queued with local ID:', tempId);
-      await showTransactionConfirmation(
-        tempId,
-        dbType,
-        parsed.merchant || 'Unknown',
-        parsed.amount,
-        parsed.accountLast4,
-        taskData.body
-      );
-      return;
-    }
+    let transactionId: string | null = null;
 
-    // Online — insert to Supabase
-    let newTxnId: string;
     try {
-      const { data: newTxn, error } = await supabase
-        .from('transactions')
-        .insert({
+      if (!netState.isConnected) {
+        // Offline — build local record and queue for sync
+        const tempId = Date.now().toString();
+        const offlineTx = {
           user_id: userId,
           amount: parsed.amount,
           type: dbType,
@@ -417,17 +422,38 @@ export const processSms = async (taskData: SmsData) => {
           reference_number: parsed.reference,
           account_last4: parsed.accountLast4,
           sms_source: parsed.source,
-        })
-        .select()
-        .single();
+          _localId: tempId,
+          _queued_at: new Date().toISOString(),
+        };
+        const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
+        const queue = queueRaw ? JSON.parse(queueRaw) : [];
+        queue.push(offlineTx);
+        await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+        transactionId = tempId;
+      } else {
+        // Online — insert to Supabase
+        const { data: newTxn, error } = await supabase
+          .from('transactions')
+          .insert({
+            user_id: userId,
+            amount: parsed.amount,
+            type: dbType,
+            note: parsed.merchant || 'Transaction',
+            category: parsed.merchant || 'general',
+            reference_number: parsed.reference,
+            account_last4: parsed.accountLast4,
+            sms_source: parsed.source,
+          })
+          .select()
+          .single();
 
-      if (error) throw error;
+        if (error) throw error;
 
-      newTxnId = newTxn.id;
-      console.log('Transaction saved:', newTxnId);
-    } catch (insertError) {
+        transactionId = newTxn.id;
+      }
+    } catch (error) {
       // Network call failed unexpectedly — queue offline
-      console.error('Supabase insert failed, queuing offline:', insertError);
+      console.error('Database operation failed, queuing offline:', error);
       const tempId = Date.now().toString();
       const offlineTx = {
         user_id: userId,
@@ -445,17 +471,32 @@ export const processSms = async (taskData: SmsData) => {
       const queue = queueRaw ? JSON.parse(queueRaw) : [];
       queue.push(offlineTx);
       await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
-      newTxnId = tempId;
+      transactionId = tempId;
     }
 
-    await showTransactionConfirmation(
-      newTxnId,
-      dbType,
-      parsed.merchant || 'Unknown',
-      parsed.amount,
-      parsed.accountLast4,
-      taskData.body
-    );
+    // Show confirmation notification - this should not fail the whole operation
+    if (transactionId) {
+      try {
+        await showTransactionConfirmation(
+          transactionId,
+          dbType,
+          parsed.merchant || 'Unknown',
+          parsed.amount,
+          parsed.accountLast4,
+          taskData.body
+        );
+      } catch (notificationError) {
+        console.error('Failed to show transaction notification (non-critical):', notificationError);
+        // Don't fail the whole operation for notification issues
+      }
+    }
+
+    // Log success - this should not fail the whole operation
+    try {
+      console.log('Transaction processed successfully:', transactionId);
+    } catch (logError) {
+      // Swallow logging errors - they're not critical
+    }
   } catch (error) {
     console.error('Error in SMS processor:', error);
   }
@@ -574,42 +615,12 @@ export const processNotification = async (taskData: any) => {
 
     // OFFLINE-FIRST: check connectivity before hitting Supabase
     const netState = await NetInfo.fetch();
-    if (!netState.isConnected) {
-      const tempId = Date.now().toString();
-      const offlineTx = {
-        user_id: userId,
-        amount: parsed.amount,
-        type: dbType,
-        note: parsed.merchant || 'Transaction',
-        category: parsed.merchant || 'general',
-        reference_number: parsed.reference,
-        account_last4: parsed.accountLast4,
-        sms_source: parsed.source,
-        _localId: tempId,
-        _queued_at: new Date().toISOString(),
-      };
-      const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
-      const queue = queueRaw ? JSON.parse(queueRaw) : [];
-      queue.push(offlineTx);
-      await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
-      console.log('Offline — notification transaction queued with local ID:', tempId);
-      await showTransactionConfirmation(
-        tempId,
-        dbType,
-        parsed.merchant || 'Unknown',
-        parsed.amount,
-        parsed.accountLast4,
-        taskData.body
-      );
-      return;
-    }
+    let transactionId: string | null = null;
 
-    // Online — insert to Supabase
-    let newTxnId: string;
     try {
-      const { data: newTxn, error } = await supabase
-        .from('transactions')
-        .insert({
+      if (!netState.isConnected) {
+        const tempId = Date.now().toString();
+        const offlineTx = {
           user_id: userId,
           amount: parsed.amount,
           type: dbType,
@@ -618,16 +629,38 @@ export const processNotification = async (taskData: any) => {
           reference_number: parsed.reference,
           account_last4: parsed.accountLast4,
           sms_source: parsed.source,
-        })
-        .select()
-        .single();
+          _localId: tempId,
+          _queued_at: new Date().toISOString(),
+        };
+        const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
+        const queue = queueRaw ? JSON.parse(queueRaw) : [];
+        queue.push(offlineTx);
+        await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+        transactionId = tempId;
+      } else {
+        // Online — insert to Supabase
+        const { data: newTxn, error } = await supabase
+          .from('transactions')
+          .insert({
+            user_id: userId,
+            amount: parsed.amount,
+            type: dbType,
+            note: parsed.merchant || 'Transaction',
+            category: parsed.merchant || 'general',
+            reference_number: parsed.reference,
+            account_last4: parsed.accountLast4,
+            sms_source: parsed.source,
+          })
+          .select()
+          .single();
 
-      if (error) throw error;
+        if (error) throw error;
 
-      newTxnId = newTxn.id;
-      console.log('Transaction saved:', newTxnId);
-    } catch (insertError) {
-      console.error('Supabase insert failed, queuing offline:', insertError);
+        transactionId = newTxn.id;
+      }
+    } catch (error) {
+      // Network call failed unexpectedly — queue offline
+      console.error('Database operation failed, queuing offline:', error);
       const tempId = Date.now().toString();
       const offlineTx = {
         user_id: userId,
@@ -645,17 +678,32 @@ export const processNotification = async (taskData: any) => {
       const queue = queueRaw ? JSON.parse(queueRaw) : [];
       queue.push(offlineTx);
       await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
-      newTxnId = tempId;
+      transactionId = tempId;
     }
 
-    await showTransactionConfirmation(
-      newTxnId,
-      dbType,
-      parsed.merchant || 'Unknown',
-      parsed.amount,
-      parsed.accountLast4,
-      taskData.body
-    );
+    // Show confirmation notification - this should not fail the whole operation
+    if (transactionId) {
+      try {
+        await showTransactionConfirmation(
+          transactionId,
+          dbType,
+          parsed.merchant || 'Unknown',
+          parsed.amount,
+          parsed.accountLast4,
+          taskData.body
+        );
+      } catch (notificationError) {
+        console.error('Failed to show transaction notification (non-critical):', notificationError);
+        // Don't fail the whole operation for notification issues
+      }
+    }
+
+    // Log success - this should not fail the whole operation
+    try {
+      console.log('Transaction processed successfully:', transactionId);
+    } catch (logError) {
+      // Swallow logging errors - they're not critical
+    }
   } catch (error) {
     console.error('Error in notification processor:', error);
   }

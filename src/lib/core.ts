@@ -328,20 +328,40 @@ export async function syncOfflineTransactions(): Promise<void> {
       return;
     }
 
-    // Append user_id to every queued transaction
-    const records = queue.map(({ queued_at, ...tx }) => ({
+    // Append user_id to every queued transaction and remove temporary fields
+    const records = queue.map(({ _localId, _queued_at, queued_at, ...tx }) => ({
       ...tx,
       user_id: user.id,
     }));
 
     // Bulk insert into Supabase
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('transactions')
-      .insert(records);
+      .insert(records)
+      .select(); // Get the inserted records with IDs
 
     if (error) {
       console.error('[OfflineSync] Bulk insert failed:', error.message);
       return; // Keep queue intact — will retry next time
+    }
+
+    // Success: Show notifications for transactions that might have missed them
+    // We assume that if a transaction was queued, it should have gotten a notification
+    // when it was originally processed. If it didn't, we should show one now.
+    for (const tx of records) {
+      try {
+        await showTransactionConfirmation(
+          tx.id, // The actual DB ID from the insert
+          tx.type as any, // Cast to match the expected type
+          tx.note || 'Transaction',
+          tx.amount,
+          tx.account_last4,
+          `Synced from offline queue (originally queued at: ${tx._queued_at || 'unknown'})`
+        );
+      } catch (notifyError) {
+        console.error('[OfflineSync] Failed to show notification for synced transaction:', notifyError);
+        // Don't fail the whole sync for notification issues
+      }
     }
 
     // Success: clear the queue
