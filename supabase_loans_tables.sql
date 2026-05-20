@@ -75,11 +75,11 @@ CREATE POLICY "Users can delete own emi payments"
   USING (auth.uid() = user_id);
 
 -- Indexes for performance
-CREATE INDEX idx_loans_user_id ON loans(user_id);
-CREATE INDEX idx_loans_lender_name ON loans(lender_name);
-CREATE INDEX idx_emi_payments_user_id ON emi_payments(user_id);
-CREATE INDEX idx_emi_payments_loan_id ON emi_payments(loan_id);
-CREATE INDEX idx_emi_payments_date ON emi_payments(payment_date DESC);
+CREATE INDEX IF NOT EXISTS idx_loans_user_id ON loans(user_id);
+CREATE INDEX IF NOT EXISTS idx_loans_lender_name ON loans(lender_name);
+CREATE INDEX IF NOT EXISTS idx_emi_payments_user_id ON emi_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_emi_payments_loan_id ON emi_payments(loan_id);
+CREATE INDEX IF NOT EXISTS idx_emi_payments_date ON emi_payments(payment_date DESC);
 
 -- Function to update outstanding balance on EMI payment
 CREATE OR REPLACE FUNCTION update_loan_outstanding()

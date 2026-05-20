@@ -74,11 +74,11 @@ CREATE POLICY "Users can delete own cc transactions"
   USING (auth.uid() = user_id);
 
 -- Indexes for performance
-CREATE INDEX idx_credit_cards_user_id ON credit_cards(user_id);
-CREATE INDEX idx_credit_cards_last_4_digits ON credit_cards(last_4_digits);
-CREATE INDEX idx_cc_transactions_user_id ON cc_transactions(user_id);
-CREATE INDEX idx_cc_transactions_card_id ON cc_transactions(card_id);
-CREATE INDEX idx_cc_transactions_date ON cc_transactions(transaction_date DESC);
+CREATE INDEX IF NOT EXISTS idx_credit_cards_user_id ON credit_cards(user_id);
+CREATE INDEX IF NOT EXISTS idx_credit_cards_last_4_digits ON credit_cards(last_4_digits);
+CREATE INDEX IF NOT EXISTS idx_cc_transactions_user_id ON cc_transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_cc_transactions_card_id ON cc_transactions(card_id);
+CREATE INDEX IF NOT EXISTS idx_cc_transactions_date ON cc_transactions(transaction_date DESC);
 
 -- Function to update outstanding balance
 CREATE OR REPLACE FUNCTION update_card_outstanding()

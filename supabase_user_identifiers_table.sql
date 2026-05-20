@@ -37,9 +37,9 @@ CREATE POLICY "Users can delete own accounts"
   USING (auth.uid() = user_id);
 
 -- Add indexes
-CREATE INDEX idx_user_accounts_user_id ON user_accounts(user_id);
-CREATE INDEX idx_user_accounts_identifier ON user_accounts(identifier_value);
-CREATE INDEX idx_user_accounts_type ON user_accounts(identifier_type);
+CREATE INDEX IF NOT EXISTS idx_user_accounts_user_id ON user_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_accounts_identifier ON user_accounts(identifier_value);
+CREATE INDEX IF NOT EXISTS idx_user_accounts_type ON user_accounts(identifier_type);
 
 -- Migration: If old table exists, migrate data
 -- Run this only if you have existing data in the old format

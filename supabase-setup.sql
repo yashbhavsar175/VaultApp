@@ -2,7 +2,7 @@
 -- Run this in your Supabase SQL Editor
 
 -- 1. Create transactions table
-CREATE TABLE transactions (
+CREATE TABLE IF NOT EXISTS transactions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   amount numeric NOT NULL,
@@ -47,5 +47,5 @@ CREATE POLICY "Users can delete their own transactions"
   USING (auth.uid() = user_id);
 
 -- 4. Create index for fast queries
-CREATE INDEX idx_transactions_user_created 
+CREATE INDEX IF NOT EXISTS idx_transactions_user_created 
   ON transactions(user_id, created_at DESC);
