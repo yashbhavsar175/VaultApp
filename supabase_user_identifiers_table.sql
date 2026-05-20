@@ -16,18 +16,22 @@ CREATE TABLE IF NOT EXISTS user_accounts (
 ALTER TABLE user_accounts ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies
+DROP POLICY IF EXISTS "Users can view own accounts" ON user_accounts;
 CREATE POLICY "Users can view own accounts"
   ON user_accounts FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own accounts" ON user_accounts;
 CREATE POLICY "Users can insert own accounts"
   ON user_accounts FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update own accounts" ON user_accounts;
 CREATE POLICY "Users can update own accounts"
   ON user_accounts FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own accounts" ON user_accounts;
 CREATE POLICY "Users can delete own accounts"
   ON user_accounts FOR DELETE
   USING (auth.uid() = user_id);

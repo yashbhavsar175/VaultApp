@@ -11,6 +11,7 @@ import {
   PermissionsAndroid,
   Platform,
   Clipboard,
+  Share,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -159,7 +160,7 @@ export default function PorterTestScreen() {
   useEffect(() => {
     // Listen for real accessibility events (when testing on actual Porter app)
     const subscription = eventEmitter.addListener('onPorterScreenChange', (event) => {
-      setCapturedText(`[${event.eventType || '?'}] ${event.textContent?.slice(0, 800) || ''}`);
+      setCapturedText(`[${event.eventType || '?'}] ${event.textContent || ''}`);
       // Auto-refresh debug logs and history when new event arrives
       setTimeout(() => loadDebugLogs(), 500); // Small delay to ensure AsyncStorage is updated
     });
@@ -309,9 +310,9 @@ export default function PorterTestScreen() {
       // Add new event
       history.unshift(fakeEvent);
       
-      // Keep only last 50
-      if (history.length > 50) {
-        history.splice(50);
+      // Keep a deeper local history for diagnostics.
+      if (history.length > 150) {
+        history.splice(150);
       }
       
       await AsyncStorage.setItem('debug_porter_history', JSON.stringify(history));
@@ -351,8 +352,7 @@ export default function PorterTestScreen() {
         if (event.nominatim) exportText += `🌍 Nominatim: ${event.nominatim}\n`;
         exportText += `📝 Status: ${event.status}\n`;
         const raw = event.textContent || 'N/A';
-        // Truncate raw text in bulk export to prevent clipboard/WhatsApp size limits
-        exportText += `📄 Raw Text: ${raw.length > 250 ? raw.substring(0, 250) + '... [TRUNCATED]' : raw}\n`;
+        exportText += `📄 Raw Text: ${raw}\n`;
         exportText += `\n${'—'.repeat(50)}\n\n`;
       });
 
@@ -360,6 +360,80 @@ export default function PorterTestScreen() {
       showToastOverlay('✅ History copied to clipboard');
     } catch {
       showToastOverlay('❌ Failed to export history');
+    }
+  };
+
+  const buildAllPorterLogsReport = async () => {
+    const nativeLogs = await getPorterNativeDebugLogs();
+    const historyJson = await AsyncStorage.getItem('debug_porter_history');
+    const latestHistory = historyJson ? JSON.parse(historyJson) : [];
+    const apiResponse = await AsyncStorage.getItem('debug_porter_api_response') || '';
+
+    let report = `SpendSense Porter Diagnostics\n`;
+    report += `Generated: ${new Date().toLocaleString()}\n`;
+    report += `Platform: ${Platform.OS} ${Platform.Version}\n`;
+    report += `Google Maps Key: ${GOOGLE_MAPS_API_KEY ? 'Configured' : 'Missing'}\n`;
+    report += `Native Logs: ${nativeLogs.length}\n`;
+    report += `Event History: ${latestHistory.length}\n`;
+    report += `\n${'='.repeat(60)}\nCURRENT DEBUG STATE\n${'='.repeat(60)}\n`;
+    report += `Last Event Time: ${debugLogs.time || 'Never'}\n`;
+    report += `Event Type: ${debugLogs.eventType || 'N/A'}\n`;
+    report += `Status: ${debugLogs.status || 'N/A'}\n`;
+    report += `API Error/Status: ${debugLogs.apiError || 'N/A'}\n`;
+    report += `Nominatim: ${debugLogs.nominatim || 'N/A'}\n`;
+    report += `Result: ${debugLogs.result || 'N/A'}\n`;
+    report += `Raw Text: ${debugLogs.rawText || 'N/A'}\n`;
+    report += `API Response: ${apiResponse || 'N/A'}\n`;
+
+    report += `\n${'='.repeat(60)}\nNATIVE INBOX\n${'='.repeat(60)}\n`;
+    if (nativeLogs.length === 0) {
+      report += `No native logs collected.\n`;
+    } else {
+      nativeLogs.forEach((log: any, index: number) => {
+        report += `\n#${index + 1} ${log.stage || 'log'}\n`;
+        report += `Time: ${log.time ? new Date(log.time).toLocaleString() : 'N/A'}\n`;
+        report += `Message: ${log.message || 'N/A'}\n`;
+        report += `Package: ${log.packageName || 'N/A'}\n`;
+        report += `Event Type: ${log.eventType || 'N/A'}\n`;
+        report += `Text Length: ${log.textLength || 0}\n`;
+        report += `Full Text: ${log.sample || 'N/A'}\n`;
+      });
+    }
+
+    report += `\n${'='.repeat(60)}\nEVENT HISTORY\n${'='.repeat(60)}\n`;
+    if (latestHistory.length === 0) {
+      report += `No JS event history collected.\n`;
+    } else {
+      latestHistory.forEach((event: any, index: number) => {
+        report += `\n#${index + 1}\n`;
+        report += `Time: ${event.timestamp ? new Date(event.timestamp).toLocaleString() : 'N/A'}\n`;
+        report += `Event Type: ${event.eventType || 'N/A'}\n`;
+        report += `Pickup: ${event.pickup || 'N/A'}\n`;
+        report += `Drop: ${event.drop || 'N/A'}\n`;
+        if (event.location) report += `Location: ${event.location.lat}, ${event.location.lng}\n`;
+        report += `Status: ${event.status || 'N/A'}\n`;
+        report += `Result: ${event.result || 'N/A'}\n`;
+        report += `API: ${event.apiError || 'N/A'}\n`;
+        report += `Nominatim: ${event.nominatim || 'N/A'}\n`;
+        report += `Raw Text: ${event.textContent || 'N/A'}\n`;
+      });
+    }
+
+    return report;
+  };
+
+  const shareAllLogs = async () => {
+    try {
+      await loadDebugLogs();
+      const report = await buildAllPorterLogsReport();
+      Clipboard.setString(report);
+      await Share.share({
+        title: 'SpendSense Porter Diagnostics',
+        message: report,
+      });
+      showToastOverlay(`✅ Full logs copied (${report.length} chars)`);
+    } catch (error: any) {
+      showToastOverlay(`❌ Failed to share logs: ${error?.message || 'Unknown error'}`);
     }
   };
 
@@ -683,6 +757,9 @@ export default function PorterTestScreen() {
               Offline Debugger
             </Text>
             <View style={{ flexDirection: 'row', gap: 12 }}>
+              <TouchableOpacity onPress={shareAllLogs}>
+                <Text style={[typography.caption, { color: '#10b981', fontWeight: '600' }]}>SHARE ALL</Text>
+              </TouchableOpacity>
               <TouchableOpacity onPress={copyOfflineDebugger}>
                 <MaterialCommunityIcons name="content-copy" size={18} color={colors.accent} />
               </TouchableOpacity>
@@ -798,6 +875,9 @@ export default function PorterTestScreen() {
               </Text>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+              <TouchableOpacity onPress={shareAllLogs}>
+                <MaterialCommunityIcons name="share-variant-outline" size={18} color="#10b981" />
+              </TouchableOpacity>
               <TouchableOpacity onPress={loadDebugLogs}>
                 <MaterialCommunityIcons name="refresh" size={18} color={colors.accent} />
               </TouchableOpacity>
@@ -819,12 +899,12 @@ export default function PorterTestScreen() {
                   No native logs yet. Open real Porter app and wait for an order, then come back and tap refresh.
                 </Text>
               ) : (
-                nativeInbox.slice(0, 20).map((log, index) => (
+                nativeInbox.map((log, index) => (
                   <View
                     key={`${log.time}-${index}`}
                     style={{
                       paddingVertical: spacing.sm,
-                      borderBottomWidth: index === Math.min(nativeInbox.length, 20) - 1 ? 0 : 1,
+                      borderBottomWidth: index === nativeInbox.length - 1 ? 0 : 1,
                       borderBottomColor: colors.border,
                     }}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
@@ -844,7 +924,7 @@ export default function PorterTestScreen() {
                       </Text>
                     )}
                     {!!log.sample && (
-                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontFamily: 'monospace', fontSize: 10 }]} numberOfLines={3}>
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontFamily: 'monospace', fontSize: 10 }]}>
                         {log.sample}
                       </Text>
                     )}

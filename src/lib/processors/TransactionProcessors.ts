@@ -19,7 +19,6 @@ import {
 } from '../../utils/transactionPresentation';
 import { CACHE_KEYS, updateCache } from '../services/cache';
 import { BankAccount, Transaction } from '../../types';
-import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES

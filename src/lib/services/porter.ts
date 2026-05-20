@@ -46,8 +46,8 @@ let activeTripOverlay: {
 } | null = null;
 
 // ─── Debug History Storage ──────────────────────────────────────────────────────
-// Store last 50 events for offline debugging (Porter blocks screen during orders)
-const MAX_DEBUG_HISTORY = 50;
+// Store a deeper history for offline debugging (Porter blocks screen during orders).
+const MAX_DEBUG_HISTORY = 150;
 
 interface DebugEvent {
   timestamp: string;
@@ -419,13 +419,23 @@ function extractAcceptDeadline(text: string, now: number): number {
   return Math.min(now + MAX_RESULT_WAIT_MS, popupDeadline);
 }
 
+function isPorterHomeOrIdleText(lowerText: string): boolean {
+  return (
+    lowerText.includes('go offline') ||
+    lowerText.includes('view profile') ||
+    lowerText.includes('wallet balance') ||
+    lowerText.includes("today's earning") ||
+    lowerText.includes('preferred app language')
+  );
+}
+
 /**
  * Extract pickup and drop addresses from Porter popup text.
  * Based on real Porter App layout logs:
  * ₹105 || Pickup 2.2 km away || PICKUP || PICKUP || [Pickup Address] || DROP || DROP || [Drop Address]
  */
 function extractAddresses(text: string): { pickup: string; drop: string } | null {
-  const parts = text.split('||').map((s: string) => s.trim()).filter(Boolean);
+  const parts = text.split(/\|\||[\r\n]+|•/).map((s: string) => s.trim()).filter(Boolean);
   
   let pickup = '';
   let drop = '';
@@ -579,11 +589,13 @@ export const initPorterDistanceCalculator = () => {
       const isRideRequest = (hasPickup && hasDrop) || (hasPickup && hasCurrency);
       
       if (!isRideRequest) {
-        activeRideSignature = null;
-        activeRideRunId += 1;
-        activeTripOverlay = null;
         debugEvent.status = `Ignored: No ride keywords found (event: ${eventType})`;
-        await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+        if (isPorterHomeOrIdleText(lowerText)) {
+          activeRideSignature = null;
+          activeRideRunId += 1;
+          activeTripOverlay = null;
+          await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+        }
         return;
       }
       
@@ -599,7 +611,7 @@ export const initPorterDistanceCalculator = () => {
           `unparsed:${textHash}`,
           'Porter order detected\nReading pickup/drop...'
         );
-        debugEvent.status = `Failed: Could not extract addresses.\nParts found: ${text.split('||').length}\nRaw text (first 500): ${text.slice(0, 500)}`;
+        debugEvent.status = `Failed: Could not extract addresses.\nParts found: ${text.split(/\|\||[\r\n]+|•/).length}\nRaw text:\n${text}`;
         await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
         return;
       }

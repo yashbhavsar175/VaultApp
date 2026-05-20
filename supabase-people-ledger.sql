@@ -14,8 +14,12 @@ CREATE TABLE IF NOT EXISTS people_ledger (
   start_date DATE,
   notes TEXT,
   is_settled BOOLEAN NOT NULL DEFAULT false,
+  settled_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE people_ledger
+ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 
 -- Create people_ledger_payments table
 CREATE TABLE IF NOT EXISTS people_ledger_payments (
@@ -37,23 +41,28 @@ ALTER TABLE people_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE people_ledger_payments ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies for people_ledger
+DROP POLICY IF EXISTS "Users can view their own ledger entries" ON people_ledger;
 CREATE POLICY "Users can view their own ledger entries"
   ON people_ledger FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert their own ledger entries" ON people_ledger;
 CREATE POLICY "Users can insert their own ledger entries"
   ON people_ledger FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their own ledger entries" ON people_ledger;
 CREATE POLICY "Users can update their own ledger entries"
   ON people_ledger FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete their own ledger entries" ON people_ledger;
 CREATE POLICY "Users can delete their own ledger entries"
   ON people_ledger FOR DELETE
   USING (auth.uid() = user_id);
 
 -- RLS Policies for people_ledger_payments
+DROP POLICY IF EXISTS "Users can view payments for their ledger entries" ON people_ledger_payments;
 CREATE POLICY "Users can view payments for their ledger entries"
   ON people_ledger_payments FOR SELECT
   USING (
@@ -64,6 +73,7 @@ CREATE POLICY "Users can view payments for their ledger entries"
     )
   );
 
+DROP POLICY IF EXISTS "Users can insert payments for their ledger entries" ON people_ledger_payments;
 CREATE POLICY "Users can insert payments for their ledger entries"
   ON people_ledger_payments FOR INSERT
   WITH CHECK (
@@ -74,6 +84,7 @@ CREATE POLICY "Users can insert payments for their ledger entries"
     )
   );
 
+DROP POLICY IF EXISTS "Users can update payments for their ledger entries" ON people_ledger_payments;
 CREATE POLICY "Users can update payments for their ledger entries"
   ON people_ledger_payments FOR UPDATE
   USING (
@@ -84,6 +95,7 @@ CREATE POLICY "Users can update payments for their ledger entries"
     )
   );
 
+DROP POLICY IF EXISTS "Users can delete payments for their ledger entries" ON people_ledger_payments;
 CREATE POLICY "Users can delete payments for their ledger entries"
   ON people_ledger_payments FOR DELETE
   USING (
@@ -97,26 +109,46 @@ CREATE POLICY "Users can delete payments for their ledger entries"
 -- Function to automatically update paid_amount when payment is added
 CREATE OR REPLACE FUNCTION update_ledger_paid_amount()
 RETURNS TRIGGER AS $$
+DECLARE
+  v_ledger_id UUID;
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_ledger_id := OLD.ledger_id;
+  ELSE
+    v_ledger_id := NEW.ledger_id;
+  END IF;
+
   UPDATE people_ledger
   SET paid_amount = (
     SELECT COALESCE(SUM(amount), 0)
     FROM people_ledger_payments
-    WHERE ledger_id = NEW.ledger_id
+    WHERE ledger_id = v_ledger_id
   )
-  WHERE id = NEW.ledger_id;
+  WHERE id = v_ledger_id;
   
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to update paid_amount on payment insert
+DROP TRIGGER IF EXISTS trigger_update_paid_amount_on_insert ON people_ledger_payments;
 CREATE TRIGGER trigger_update_paid_amount_on_insert
 AFTER INSERT ON people_ledger_payments
 FOR EACH ROW
 EXECUTE FUNCTION update_ledger_paid_amount();
 
+DROP TRIGGER IF EXISTS trigger_update_paid_amount_on_update ON people_ledger_payments;
+CREATE TRIGGER trigger_update_paid_amount_on_update
+AFTER UPDATE ON people_ledger_payments
+FOR EACH ROW
+EXECUTE FUNCTION update_ledger_paid_amount();
+
 -- Trigger to update paid_amount on payment delete
+DROP TRIGGER IF EXISTS trigger_update_paid_amount_on_delete ON people_ledger_payments;
 CREATE TRIGGER trigger_update_paid_amount_on_delete
 AFTER DELETE ON people_ledger_payments
 FOR EACH ROW

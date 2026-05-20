@@ -8,9 +8,15 @@ CREATE OR REPLACE FUNCTION delete_bank_account_cascade(
 )
 RETURNS void
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 BEGIN
+  IF auth.uid() IS NULL OR p_user_id IS DISTINCT FROM auth.uid() THEN
+    RAISE EXCEPTION 'Not authorized to delete this bank account'
+      USING ERRCODE = '42501';
+  END IF;
+
   -- First, delete all related transactions
   -- This handles foreign key constraints from transactions table
   DELETE FROM transactions 

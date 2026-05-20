@@ -7,17 +7,23 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
 import android.content.Intent
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.view.Display
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.Arguments
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
 
 class PorterAccessibilityService : AccessibilityService() {
 
@@ -28,11 +34,13 @@ class PorterAccessibilityService : AccessibilityService() {
         private const val DISPATCH_DEBOUNCE_MS = 250L
         private const val DISPATCH_THROTTLE_MS = 600L
         private const val DUPLICATE_REFRESH_MS = 2500L
+        private const val OCR_MIN_INTERVAL_MS = 900L
+        private const val OCR_DUPLICATE_REFRESH_MS = 2500L
         private const val PREFS_NAME = "spendsense_volume_guard"
         private const val NATIVE_LOG_PREFS_NAME = "spendsense_porter_native_logs"
         private const val KEY_NATIVE_LOGS = "logs"
         private const val KEY_ENABLED = "enabled"
-        private const val MAX_NATIVE_LOGS = 80
+        private const val MAX_NATIVE_LOGS = 250
         private val VOLUME_GUARD_PACKAGES = listOf(
             "porter",
             "swiggy",
@@ -88,7 +96,7 @@ class PorterAccessibilityService : AccessibilityService() {
                     .put("packageName", packageName)
                     .put("eventType", eventType)
                     .put("textLength", textLength)
-                    .put("sample", sample.take(500))
+                    .put("sample", sample)
 
                 next.put(entry)
                 val limit = minOf(existing.length(), MAX_NATIVE_LOGS - 1)
@@ -176,6 +184,16 @@ class PorterAccessibilityService : AccessibilityService() {
     private var pendingEventType: String = ""
     private var lastSentTime: Long = 0
     private var lastTextHash: Int = 0
+    private val ocrExecutor = Executors.newSingleThreadExecutor()
+    private val textRecognizer by lazy {
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
+    private var isOcrInFlight = false
+    private var lastOcrRequestTime: Long = 0
+    private var lastOcrDispatchTime: Long = 0
+    private var lastOcrTextHash: Int = 0
+    private var lastVolumeLogTime: Long = 0
+    private var lastEmptyLogTime: Long = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -202,13 +220,7 @@ class PorterAccessibilityService : AccessibilityService() {
         val isVolumeGuardPackage = VOLUME_GUARD_PACKAGES.any { packageName.contains(it, ignoreCase = true) }
         if (isVolumeGuardPackage) {
             clampVolumeBurst()
-            appendNativeLog(
-                applicationContext,
-                "volume_guard",
-                "Matched guarded app package; clamped volume burst",
-                packageName,
-                AccessibilityEvent.eventTypeToString(event.eventType)
-            )
+            appendThrottledVolumeLog(packageName, AccessibilityEvent.eventTypeToString(event.eventType))
         }
 
         if (!isPorterPackage) {
@@ -218,20 +230,36 @@ class PorterAccessibilityService : AccessibilityService() {
         val eventType = AccessibilityEvent.eventTypeToString(event.eventType)
         appendNativeLog(applicationContext, "event", "Porter event received", packageName, eventType)
 
-        // Try to get text from the event source first (popup/dialog), then from all active windows.
+        // Try to get text from the Porter event source first, then Porter-owned windows.
+        // Avoid reading SystemUI/status-bar windows because they produce notification/battery text noise.
         // Porter popups often arrive in pieces; debounce below lets the final text settle before JS parses it.
         val allTextList = mutableListOf<String>()
+        val windowDiagnostics = mutableListOf<String>()
+        var hasPorterOwnedSource = false
         
         // 1. Extract from event source node (catches popup/dialog content)
         val sourceNode = event.source
         if (sourceNode != null) {
-            allTextList.addAll(extractAllText(sourceNode))
+            val sourcePackage = sourceNode.packageName?.toString() ?: ""
+            val sourceClass = sourceNode.className?.toString() ?: ""
+            windowDiagnostics.add("source=$sourcePackage/$sourceClass")
+            if (isPorterOwnedPackage(sourcePackage)) {
+                hasPorterOwnedSource = true
+                allTextList.addAll(extractAllText(sourceNode))
+            }
         }
         
-        // 2. Also extract from event text (sometimes popups send text directly in event)
+        // 2. Also extract from event text, but only when it looks like a ride.
+        // Porter/SystemUI sometimes sends app labels like "Application icon" with Porter as the
+        // event package; dispatching those overwrites the last useful debug state.
         for (charSeq in event.text) {
             val t = charSeq?.toString()?.trim() ?: ""
-            if (t.isNotEmpty() && !allTextList.contains(t)) {
+            if (
+                t.isNotEmpty() &&
+                (hasPorterOwnedSource || looksLikePorterRideText(t)) &&
+                !isPorterChromeNoise(t) &&
+                !allTextList.contains(t)
+            ) {
                 allTextList.add(t)
             }
         }
@@ -241,10 +269,16 @@ class PorterAccessibilityService : AccessibilityService() {
         for (window in windowsList) {
             val rootNode = window.root
             if (rootNode != null) {
-                val rootTexts = extractAllText(rootNode)
-                for (t in rootTexts) {
-                    if (!allTextList.contains(t)) {
-                        allTextList.add(t)
+                val rootPackage = rootNode.packageName?.toString() ?: ""
+                val rootClass = rootNode.className?.toString() ?: ""
+                windowDiagnostics.add("windowType=${window.type} root=$rootPackage/$rootClass")
+
+                if (isPorterOwnedPackage(rootPackage)) {
+                    val rootTexts = extractAllText(rootNode)
+                    for (t in rootTexts) {
+                        if (!allTextList.contains(t)) {
+                            allTextList.add(t)
+                        }
                     }
                 }
             }
@@ -253,6 +287,19 @@ class PorterAccessibilityService : AccessibilityService() {
         val fullText = allTextList.joinToString(" || ")
         
         if (fullText.isNotEmpty()) {
+            if (isNotificationOrSystemNoise(fullText) || isPorterChromeNoise(fullText)) {
+                appendNativeLog(
+                    applicationContext,
+                    "notification_noise",
+                    "Ignored notification/status-bar text from Porter package. Windows: ${windowDiagnostics.joinToString(" | ")}",
+                    packageName,
+                    eventType,
+                    fullText.length,
+                    fullText
+                )
+                return
+            }
+
             pendingPackageName = packageName
             pendingTextContent = fullText
             pendingEventType = eventType
@@ -260,7 +307,7 @@ class PorterAccessibilityService : AccessibilityService() {
             appendNativeLog(
                 applicationContext,
                 "extract",
-                "Extracted accessibility text parts=${allTextList.size}",
+                "Extracted Porter-owned text parts=${allTextList.size}. Windows: ${windowDiagnostics.joinToString(" | ")}",
                 packageName,
                 eventType,
                 fullText.length,
@@ -278,14 +325,271 @@ class PorterAccessibilityService : AccessibilityService() {
                 handler.postDelayed(dispatch, DISPATCH_DEBOUNCE_MS)
             }
         } else {
-            appendNativeLog(
-                applicationContext,
-                "extract_empty",
-                "Porter event had no readable text",
-                packageName,
-                eventType
-            )
+            appendThrottledEmptyLog(packageName, eventType, windowDiagnostics.joinToString(" | "))
+
+            if (shouldTryOcr(windowDiagnostics)) {
+                requestOcrFallback(packageName, eventType, windowDiagnostics.joinToString(" | "))
+            }
         }
+    }
+
+    private fun isPorterOwnedPackage(packageName: String): Boolean {
+        return packageName.contains("porter", ignoreCase = true)
+    }
+
+    private fun appendThrottledVolumeLog(packageName: String, eventType: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastVolumeLogTime < 3000L) return
+        lastVolumeLogTime = now
+        appendNativeLog(
+            applicationContext,
+            "volume_guard",
+            "Matched guarded app package; clamped volume burst",
+            packageName,
+            eventType
+        )
+    }
+
+    private fun appendThrottledEmptyLog(packageName: String, eventType: String, diagnostics: String) {
+        val now = System.currentTimeMillis()
+        val hasOcrCandidate = diagnostics.contains("root=com.theporter", ignoreCase = true) &&
+            diagnostics.contains("windowType=3", ignoreCase = true)
+
+        if (!hasOcrCandidate && now - lastEmptyLogTime < 2000L) return
+        lastEmptyLogTime = now
+
+        appendNativeLog(
+            applicationContext,
+            "extract_empty",
+            "Porter event had no readable Porter-owned text. Windows: $diagnostics",
+            packageName,
+            eventType
+        )
+    }
+
+    private fun looksLikePorterRideText(text: String): Boolean {
+        val lower = text.lowercase()
+        val hasPickup = lower.contains("pickup") || lower.contains("pick up")
+        val hasDrop = lower.contains("drop") || lower.contains("destination")
+        val hasAccept = lower.contains("accept") || lower.contains("swipe")
+        val hasCurrency = lower.contains("₹") || lower.contains("rs")
+
+        return hasPickup && (hasDrop || hasAccept || hasCurrency)
+    }
+
+    private fun isPorterChromeNoise(text: String): Boolean {
+        val normalized = text
+            .lowercase()
+            .split("||")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        if (normalized.isEmpty()) return false
+        if (looksLikePorterRideText(text)) return false
+
+        val chromeParts = setOf(
+            "application icon",
+            "porter partner",
+            "porter",
+            "app icon",
+            "notification",
+            "notifications"
+        )
+
+        return normalized.size <= 2 && normalized.all { part -> chromeParts.contains(part) }
+    }
+
+    private fun shouldTryOcr(windowDiagnostics: List<String>): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+
+        val hasPorterOverlay = windowDiagnostics.any { diagnostic ->
+            diagnostic.contains("root=com.theporter", ignoreCase = true) &&
+                diagnostic.contains("windowType=3", ignoreCase = true)
+        }
+        if (!hasPorterOverlay) return false
+
+        val now = System.currentTimeMillis()
+        if (isOcrInFlight || now - lastOcrRequestTime < OCR_MIN_INTERVAL_MS) return false
+
+        return true
+    }
+
+    private fun requestOcrFallback(packageName: String, eventType: String, diagnostics: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+
+        lastOcrRequestTime = System.currentTimeMillis()
+        isOcrInFlight = true
+
+        appendNativeLog(
+            applicationContext,
+            "ocr_request",
+            "Trying screenshot OCR fallback. Windows: $diagnostics",
+            packageName,
+            eventType
+        )
+
+        takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            ocrExecutor,
+            object : TakeScreenshotCallback {
+                override fun onSuccess(screenshot: ScreenshotResult) {
+                    try {
+                        val hardwareBitmap = Bitmap.wrapHardwareBuffer(
+                            screenshot.hardwareBuffer,
+                            screenshot.colorSpace
+                        )
+
+                        if (hardwareBitmap == null) {
+                            isOcrInFlight = false
+                            screenshot.hardwareBuffer.close()
+                            appendNativeLog(
+                                applicationContext,
+                                "ocr_empty",
+                                "Screenshot bitmap was unavailable",
+                                packageName,
+                                eventType
+                            )
+                            return
+                        }
+
+                        val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                        screenshot.hardwareBuffer.close()
+                        runTextRecognition(bitmap, packageName, eventType)
+                    } catch (e: Exception) {
+                        isOcrInFlight = false
+                        try {
+                            screenshot.hardwareBuffer.close()
+                        } catch (_: Exception) {
+                        }
+                        appendNativeLog(
+                            applicationContext,
+                            "ocr_failed",
+                            "Screenshot OCR setup failed: ${e.message}",
+                            packageName,
+                            eventType
+                        )
+                    }
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    isOcrInFlight = false
+                    appendNativeLog(
+                        applicationContext,
+                        "ocr_failed",
+                        "takeScreenshot failed with code $errorCode",
+                        packageName,
+                        eventType
+                    )
+                }
+            }
+        )
+    }
+
+    private fun runTextRecognition(bitmap: Bitmap, packageName: String, eventType: String) {
+        val image = InputImage.fromBitmap(bitmap, 0)
+        textRecognizer
+            .process(image)
+            .addOnSuccessListener(ocrExecutor) { result ->
+                isOcrInFlight = false
+                val ocrText = result.textBlocks
+                    .flatMap { block -> block.lines }
+                    .joinToString(" || ") { line -> line.text.trim() }
+                    .trim()
+
+                if (ocrText.isEmpty()) {
+                    appendNativeLog(
+                        applicationContext,
+                        "ocr_empty",
+                        "OCR completed but found no text",
+                        packageName,
+                        eventType
+                    )
+                    return@addOnSuccessListener
+                }
+
+                val ocrHash = ocrText.hashCode()
+                val now = System.currentTimeMillis()
+                if (ocrHash == lastOcrTextHash && now - lastOcrDispatchTime < OCR_DUPLICATE_REFRESH_MS) {
+                    appendNativeLog(
+                        applicationContext,
+                        "ocr_duplicate",
+                        "Suppressed duplicate OCR text",
+                        packageName,
+                        eventType,
+                        ocrText.length,
+                        ocrText
+                    )
+                    return@addOnSuccessListener
+                }
+
+                if (!looksLikePorterRideOcr(ocrText)) {
+                    appendNativeLog(
+                        applicationContext,
+                        "ocr_ignored",
+                        "OCR text did not look like a Porter ride request",
+                        packageName,
+                        eventType,
+                        ocrText.length,
+                        ocrText
+                    )
+                    return@addOnSuccessListener
+                }
+
+                lastOcrTextHash = ocrHash
+                lastOcrDispatchTime = now
+                appendNativeLog(
+                    applicationContext,
+                    "ocr_success",
+                    "OCR extracted Porter ride text",
+                    packageName,
+                    eventType,
+                    ocrText.length,
+                    ocrText
+                )
+
+                sendEventToJS(packageName, ocrText, "${eventType}_OCR")
+            }
+            .addOnFailureListener(ocrExecutor) { e ->
+                isOcrInFlight = false
+                appendNativeLog(
+                    applicationContext,
+                    "ocr_failed",
+                    "ML Kit text recognition failed: ${e.message}",
+                    packageName,
+                    eventType
+                )
+            }
+    }
+
+    private fun looksLikePorterRideOcr(text: String): Boolean {
+        val lower = text.lowercase()
+        val hasPickup = lower.contains("pickup") || lower.contains("pick up") || lower.contains("píckup")
+        val hasDrop = lower.contains("drop") || lower.contains("destination")
+        val hasAccept = lower.contains("accept") || lower.contains("swipe")
+        val hasCurrency = lower.contains("₹") || lower.contains("rs") || lower.matches(Regex("(?s).*\\b[4-9][0-9]\\b.*"))
+
+        return hasPickup && (hasDrop || hasAccept || hasCurrency)
+    }
+
+    private fun isNotificationOrSystemNoise(text: String): Boolean {
+        val lower = text.lowercase()
+        val hasRideSignal =
+            lower.contains("pickup") ||
+                lower.contains("drop") ||
+                lower.contains("accept in") ||
+                lower.contains("₹") ||
+                lower.contains("rs")
+
+        val hasSystemSignal =
+            lower.contains("notification:") ||
+                lower.contains("battery") ||
+                lower.contains("volte") ||
+                lower.contains("vonr") ||
+                lower.contains("true5g") ||
+                lower.contains("airtel") ||
+                lower.contains("jio")
+
+        return hasSystemSignal && !hasRideSignal
     }
 
     private fun clampVolumeBurst() {

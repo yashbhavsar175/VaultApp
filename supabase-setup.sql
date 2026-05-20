@@ -18,18 +18,21 @@ ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 -- 3. Create RLS Policies
 
 -- SELECT: Users can only read their own transactions
+DROP POLICY IF EXISTS "Users can view their own transactions" ON transactions;
 CREATE POLICY "Users can view their own transactions"
   ON transactions
   FOR SELECT
   USING (auth.uid() = user_id);
 
 -- INSERT: Users can only insert transactions with their own user_id
+DROP POLICY IF EXISTS "Users can insert their own transactions" ON transactions;
 CREATE POLICY "Users can insert their own transactions"
   ON transactions
   FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
 -- UPDATE: Users can only update their own transactions
+DROP POLICY IF EXISTS "Users can update their own transactions" ON transactions;
 CREATE POLICY "Users can update their own transactions"
   ON transactions
   FOR UPDATE
@@ -37,6 +40,7 @@ CREATE POLICY "Users can update their own transactions"
   WITH CHECK (auth.uid() = user_id);
 
 -- DELETE: Users can only delete their own transactions
+DROP POLICY IF EXISTS "Users can delete their own transactions" ON transactions;
 CREATE POLICY "Users can delete their own transactions"
   ON transactions
   FOR DELETE

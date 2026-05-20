@@ -32,35 +32,43 @@ ALTER TABLE credit_cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cc_transactions ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies for credit_cards
+DROP POLICY IF EXISTS "Users can view own credit cards" ON credit_cards;
 CREATE POLICY "Users can view own credit cards"
   ON credit_cards FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own credit cards" ON credit_cards;
 CREATE POLICY "Users can insert own credit cards"
   ON credit_cards FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update own credit cards" ON credit_cards;
 CREATE POLICY "Users can update own credit cards"
   ON credit_cards FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own credit cards" ON credit_cards;
 CREATE POLICY "Users can delete own credit cards"
   ON credit_cards FOR DELETE
   USING (auth.uid() = user_id);
 
 -- RLS Policies for cc_transactions
+DROP POLICY IF EXISTS "Users can view own cc transactions" ON cc_transactions;
 CREATE POLICY "Users can view own cc transactions"
   ON cc_transactions FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own cc transactions" ON cc_transactions;
 CREATE POLICY "Users can insert own cc transactions"
   ON cc_transactions FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update own cc transactions" ON cc_transactions;
 CREATE POLICY "Users can update own cc transactions"
   ON cc_transactions FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own cc transactions" ON cc_transactions;
 CREATE POLICY "Users can delete own cc transactions"
   ON cc_transactions FOR DELETE
   USING (auth.uid() = user_id);
@@ -106,6 +114,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to auto-update outstanding balance
+DROP TRIGGER IF EXISTS trigger_update_card_outstanding ON cc_transactions;
 CREATE TRIGGER trigger_update_card_outstanding
 AFTER INSERT OR DELETE ON cc_transactions
 FOR EACH ROW

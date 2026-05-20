@@ -9,7 +9,8 @@ CREATE OR REPLACE FUNCTION update_bank_balance(
 )
 RETURNS VOID
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 BEGIN
   -- Validate transaction type
@@ -22,17 +23,20 @@ BEGIN
     -- Debit: subtract from balance
     UPDATE bank_accounts
     SET balance = COALESCE(balance, starting_balance) - p_amount
-    WHERE id = p_account_id;
+    WHERE id = p_account_id
+      AND user_id = auth.uid();
   ELSE
     -- Credit: add to balance
     UPDATE bank_accounts
     SET balance = COALESCE(balance, starting_balance) + p_amount
-    WHERE id = p_account_id;
+    WHERE id = p_account_id
+      AND user_id = auth.uid();
   END IF;
 
   -- Check if update affected any rows
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'Bank account not found: %', p_account_id;
+    RAISE EXCEPTION 'Bank account not found or not authorized: %', p_account_id
+      USING ERRCODE = '42501';
   END IF;
 END;
 $$;

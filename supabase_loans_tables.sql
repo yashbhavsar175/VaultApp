@@ -33,35 +33,43 @@ ALTER TABLE loans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE emi_payments ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies for loans
+DROP POLICY IF EXISTS "Users can view own loans" ON loans;
 CREATE POLICY "Users can view own loans"
   ON loans FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own loans" ON loans;
 CREATE POLICY "Users can insert own loans"
   ON loans FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update own loans" ON loans;
 CREATE POLICY "Users can update own loans"
   ON loans FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own loans" ON loans;
 CREATE POLICY "Users can delete own loans"
   ON loans FOR DELETE
   USING (auth.uid() = user_id);
 
 -- RLS Policies for emi_payments
+DROP POLICY IF EXISTS "Users can view own emi payments" ON emi_payments;
 CREATE POLICY "Users can view own emi payments"
   ON emi_payments FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own emi payments" ON emi_payments;
 CREATE POLICY "Users can insert own emi payments"
   ON emi_payments FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update own emi payments" ON emi_payments;
 CREATE POLICY "Users can update own emi payments"
   ON emi_payments FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own emi payments" ON emi_payments;
 CREATE POLICY "Users can delete own emi payments"
   ON emi_payments FOR DELETE
   USING (auth.uid() = user_id);
@@ -93,6 +101,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to auto-update outstanding balance
+DROP TRIGGER IF EXISTS trigger_update_loan_outstanding ON emi_payments;
 CREATE TRIGGER trigger_update_loan_outstanding
 AFTER INSERT OR DELETE ON emi_payments
 FOR EACH ROW

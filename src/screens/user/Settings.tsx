@@ -343,12 +343,37 @@ export default function Settings() {
               const { data: { user } } = await supabase.auth.getUser();
               if (!user) throw new Error('No user found');
 
-              // Delete user data
-              await Promise.all([
-                supabase.from('transactions').delete().eq('user_id', user.id),
-                supabase.from('bank_accounts').delete().eq('user_id', user.id),
-                supabase.from('profiles').delete().eq('id', user.id),
-              ]);
+              const { data: placePhotos, error: listPhotosError } = await supabase.storage
+                .from('place-photos')
+                .list(user.id);
+
+              if (!listPhotosError && placePhotos?.length) {
+                const { error: removePhotosError } = await supabase.storage
+                  .from('place-photos')
+                  .remove(placePhotos.map(photo => `${user.id}/${photo.name}`));
+
+                if (removePhotosError) throw removePhotosError;
+              }
+
+              const deleteSteps = [
+                { label: 'transactions', request: () => supabase.from('transactions').delete().eq('user_id', user.id) },
+                { label: 'credit card transactions', request: () => supabase.from('cc_transactions').delete().eq('user_id', user.id) },
+                { label: 'credit cards', request: () => supabase.from('credit_cards').delete().eq('user_id', user.id) },
+                { label: 'EMI payments', request: () => supabase.from('emi_payments').delete().eq('user_id', user.id) },
+                { label: 'loans', request: () => supabase.from('loans').delete().eq('user_id', user.id) },
+                { label: 'people ledger', request: () => supabase.from('people_ledger').delete().eq('user_id', user.id) },
+                { label: 'places', request: () => supabase.from('places').delete().eq('user_id', user.id) },
+                { label: 'vault items', request: () => supabase.from('vault_items').delete().eq('user_id', user.id) },
+                { label: 'bank accounts', request: () => supabase.from('bank_accounts').delete().eq('user_id', user.id) },
+                { label: 'profile', request: () => supabase.from('profiles').delete().eq('id', user.id) },
+              ];
+
+              for (const step of deleteSteps) {
+                const { error } = await step.request();
+                if (error) {
+                  throw new Error(`Failed to delete ${step.label}: ${error.message}`);
+                }
+              }
 
               // Sign out
               await clearCache();

@@ -6,8 +6,11 @@ create table if not exists bank_accounts (
   user_id uuid references auth.users(id) on delete cascade,
   bank_name text not null,
   account_last4 text not null,
+  account_type text not null default 'savings',
   starting_balance numeric not null default 0,
   balance numeric not null default 0,
+  credit_limit numeric not null default 0,
+  loan_total numeric not null default 0,
   upi_ids text[] default '{}',
   created_at timestamptz default now()
 );
@@ -16,13 +19,29 @@ alter table bank_accounts
 add column if not exists user_id uuid references auth.users(id) on delete cascade,
 add column if not exists bank_name text,
 add column if not exists account_last4 text,
+add column if not exists account_type text not null default 'savings',
 add column if not exists starting_balance numeric not null default 0,
-add column if not exists balance numeric not null default 0;
+add column if not exists balance numeric not null default 0,
+add column if not exists credit_limit numeric not null default 0,
+add column if not exists loan_total numeric not null default 0,
+add column if not exists upi_ids text[] default '{}';
 
 alter table bank_accounts
+alter column account_type set default 'savings',
 alter column starting_balance set default 0,
 alter column balance set default 0,
+alter column credit_limit set default 0,
+alter column loan_total set default 0,
 alter column upi_ids set default '{}';
+
+update bank_accounts
+set account_type = 'current'
+where account_type = 'checking';
+
+alter table bank_accounts drop constraint if exists bank_accounts_account_type_check;
+alter table bank_accounts
+add constraint bank_accounts_account_type_check
+check (account_type in ('savings', 'current', 'credit_card', 'loan'));
 
 -- Enable RLS
 alter table bank_accounts enable row level security;

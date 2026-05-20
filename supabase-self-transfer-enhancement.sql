@@ -12,7 +12,7 @@ ADD COLUMN IF NOT EXISTS is_transfer_pending BOOLEAN DEFAULT FALSE;
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
 ALTER TABLE transactions 
 ADD CONSTRAINT transactions_type_check 
-CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer', 'debit', 'credit'));
+CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer'));
 
 -- Create index for transfer matching (amount + reference + time window)
 CREATE INDEX IF NOT EXISTS idx_transactions_transfer_match 
@@ -48,12 +48,12 @@ BEGIN
     
     -- Decrease balance from source account
     UPDATE bank_accounts 
-    SET starting_balance = starting_balance - NEW.amount
+    SET balance = balance - NEW.amount
     WHERE id = NEW.from_account_id;
     
     -- Increase balance in destination account
     UPDATE bank_accounts 
-    SET starting_balance = starting_balance + NEW.amount
+    SET balance = balance + NEW.amount
     WHERE id = NEW.to_account_id;
     
   END IF;
