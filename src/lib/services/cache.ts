@@ -36,7 +36,12 @@ export const CACHE_KEYS = {
   PLACES: 'cache_places',
   VAULT_ITEMS: 'cache_vault_items',
   BANK_ACCOUNTS: 'cache_bank_accounts',
+  UNIQUE_CATEGORIES: 'cache_unique_categories',
+  USER_PROFILE: 'cache_user_profile',
+  LEDGER_PAYMENTS: 'cache_ledger_payments',
 } as const;
+
+const CACHE_PREFIX = 'cache_';
 
 // Max age before cache is considered stale (5 minutes)
 const MAX_CACHE_AGE_MS = 5 * 60 * 1000;
@@ -63,7 +68,11 @@ export async function getCached<T>(key: string): Promise<CachedResult<T>> {
     const raw = await AsyncStorage.getItem(key);
     if (!raw) return null;
 
-    const entry: CacheEntry<T> = JSON.parse(raw);
+    const entry = JSON.parse(raw) as CacheEntry<T> | T;
+    if (!entry || typeof entry !== 'object' || !('data' in entry) || !('timestamp' in entry)) {
+      return { data: entry as T, isStale: true };
+    }
+
     const isStale = Date.now() - entry.timestamp > MAX_CACHE_AGE_MS;
 
     return { data: entry.data, isStale };
@@ -84,11 +93,41 @@ export async function setCache<T>(key: string, data: T): Promise<void> {
   }
 }
 
+export function scopedCacheKey(baseKey: string, scope: string | number): string {
+  return `${baseKey}:${scope}`;
+}
+
+export async function updateCache<T>(
+  key: string,
+  updater: (current: T | null) => T | null
+): Promise<void> {
+  try {
+    const current = await getCached<T>(key);
+    const next = updater(current?.data ?? null);
+
+    if (next === null) {
+      await AsyncStorage.removeItem(key);
+      return;
+    }
+
+    await setCache(key, next);
+  } catch {
+    // Cache writes are best-effort only.
+  }
+}
+
+export async function removeCache(key: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch {
+    // Silently fail
+  }
+}
+
 export async function clearCache(): Promise<void> {
   try {
-    await Promise.all(
-      Object.values(CACHE_KEYS).map(key => AsyncStorage.removeItem(key))
-    );
+    const keys = await AsyncStorage.getAllKeys();
+    await Promise.all(keys.filter(key => key.startsWith(CACHE_PREFIX)).map(key => AsyncStorage.removeItem(key)));
   } catch {
     // Silently fail
   }
@@ -132,10 +171,10 @@ async function prefetchProfile() {
       .eq('id', user.id)
       .single();
 
-    await AsyncStorage.setItem('cache_user_profile', JSON.stringify({
+    await setCache(CACHE_KEYS.USER_PROFILE, {
       email: user.email,
       name: profile?.full_name || '',
-    }));
+    });
     console.log('🚀 [Prefetch] ✅ Profile:', user.email);
   } catch (e) {
     console.warn('🚀 [Prefetch] ❌ Profile failed:', e);

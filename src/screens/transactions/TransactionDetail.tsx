@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import HapticFeedback from 'react-native-haptic-feedback';
 import { supabase, deleteTransaction, updateTransaction } from '../../lib/core';
-import { Transaction } from '../../types';
+import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, AppButton, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import { getTransactionIcon, getTransactionColor, formatTransactionDateTime } from '../../utils/transactionHelpers';
+import { extractUpiIdFromText, getUpiHandle, getUpiProviderName } from '../../utils/upi';
+import { getBankAccounts } from '../../lib/database/financial';
+import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
 
 type TransactionDetailRouteProp = RouteProp<
   { TransactionDetail: { transactionId: string } },
@@ -22,6 +25,106 @@ type TransactionDetailNavigationProp = StackNavigationProp<any, 'TransactionDeta
 interface Props {
   route: TransactionDetailRouteProp;
   navigation: TransactionDetailNavigationProp;
+}
+
+type ThemeColors = ReturnType<typeof useTheme>['colors'];
+
+interface SourceTrace {
+  icon: string;
+  title: string;
+  subtitle: string;
+  color: string;
+}
+
+interface TraceRow {
+  icon: string;
+  label: string;
+  value: string;
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .replace(/[_-]/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function getKnownSenderName(sender?: string | null): string | null {
+  if (!sender) return null;
+  const normalized = sender.toLowerCase();
+
+  if (normalized.includes('nbu.paisa.user') || normalized.includes('gpay')) return 'Google Pay';
+  if (normalized.includes('phonepe')) return 'PhonePe';
+  if (normalized.includes('paytm')) return 'Paytm';
+  if (normalized.includes('whatsapp')) return 'WhatsApp';
+  if (normalized.includes('dreamplug') || normalized.includes('cred')) return 'CRED';
+  if (normalized.includes('amazon')) return 'Amazon Pay';
+  if (normalized.includes('super')) return 'Super.money';
+  if (normalized.includes('slice') || normalized.includes('slce')) return 'Slice';
+
+  return null;
+}
+
+function formatSender(sender?: string | null): string | null {
+  const trimmed = sender?.trim();
+  if (!trimmed) return null;
+
+  const knownName = getKnownSenderName(trimmed);
+  if (knownName) {
+    return `${knownName} (${trimmed})`;
+  }
+
+  return trimmed;
+}
+
+function getEntrySourceTrace(transaction: Transaction, bankName: string | null, colors: ThemeColors): SourceTrace {
+  const source = transaction.sms_source?.toLowerCase();
+  const senderName = getKnownSenderName(transaction.sms_sender);
+  const upiId = transaction.upi_id || extractUpiIdFromText(transaction.raw_sms);
+  const upiProvider = getUpiProviderName(upiId);
+
+  if (!source || source === 'manual') {
+    return {
+      icon: 'pencil-circle',
+      title: 'Manual Entry',
+      subtitle: bankName ? `Added manually for ${bankName}` : 'Added manually in the app',
+      color: colors.accent,
+    };
+  }
+
+  if (source === 'sms' || source === 'bank') {
+    return {
+      icon: 'message-text-clock',
+      title: senderName ? `${senderName} SMS` : 'Bank SMS',
+      subtitle: senderName
+        ? `Detected from ${senderName}`
+        : bankName
+          ? `Matched with ${bankName}`
+          : transaction.account_last4
+            ? `Matched account ending ${transaction.account_last4}`
+            : 'Captured from a bank message',
+      color: colors.info,
+    };
+  }
+
+  if (source === 'upi') {
+    return {
+      icon: 'cellphone-message',
+      title: senderName ? `${senderName} Alert` : 'UPI/App Alert',
+      subtitle: senderName && upiProvider && senderName !== upiProvider
+        ? `Detected by ${senderName}; UPI handle looks like ${upiProvider}`
+        : upiProvider
+          ? `UPI handle looks like ${upiProvider}`
+          : 'Captured from a payment app notification',
+      color: colors.success,
+    };
+  }
+
+  return {
+    icon: 'radar',
+    title: `${toTitleCase(source)} Entry`,
+    subtitle: transaction.sms_sender ? `Sender ${transaction.sms_sender}` : 'Captured automatically',
+    color: colors.warning,
+  };
 }
 
 export default function TransactionDetail({ route, navigation }: Props) {
@@ -42,15 +145,36 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
   // Track mount state to prevent setState on unmounted component
   const isMountedRef = useRef(true);
-  useEffect(() => {
-    isMountedRef.current = true;
-    loadTransaction();
-    return () => { isMountedRef.current = false; };
-  }, [transactionId]);
 
-  const loadTransaction = async () => {
+  const applyBankNameFromCache = useCallback(async (tx: Transaction) => {
+    if (!tx.account_id) {
+      setBankName(tx.account_last4 ? `Account ending ${tx.account_last4}` : null);
+      return;
+    }
+
+    const cachedBanks = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+    const bank = cachedBanks?.data.find(account => account.id === tx.account_id);
+    if (bank && isMountedRef.current) {
+      setBankName(`${bank.bank_name} (${bank.account_last4})`);
+    }
+  }, []);
+
+  const loadTransaction = useCallback(async () => {
+    let hasCachedTransaction = false;
+
     try {
-      setLoading(true);
+      const cachedTransactions = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
+      const cachedTransaction = cachedTransactions?.data.find(tx => tx.id === transactionId);
+
+      if (cachedTransaction && isMountedRef.current) {
+        hasCachedTransaction = true;
+        setTransaction(cachedTransaction);
+        await applyBankNameFromCache(cachedTransaction);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
       // SECURITY: Always verify user_id — navigation params can be tampered
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
@@ -65,31 +189,44 @@ export default function TransactionDetail({ route, navigation }: Props) {
       if (error) throw error;
       if (!isMountedRef.current) return; // BUG FIX: prevent state update after unmount
       setTransaction(data);
+      await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+        current
+          ? current.map(tx => tx.id === data.id ? data : tx)
+          : [data]
+      );
 
       // Fetch bank account name if account_id exists
       if (data.account_id) {
-        const { data: bankData } = await supabase
-          .from('bank_accounts')
-          .select('bank_name, account_last4')
-          .eq('id', data.account_id)
-          .single();
-        
+        const bankAccounts = await getBankAccounts();
+        await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
+        const bankData = bankAccounts.find(account => account.id === data.account_id);
+
         if (bankData && isMountedRef.current) {
           setBankName(`${bankData.bank_name} (${bankData.account_last4})`);
         }
+      } else if (isMountedRef.current) {
+        setBankName(data.account_last4 ? `Account ending ${data.account_last4}` : null);
       }
     } catch (error) {
       if (!isMountedRef.current) return;
       console.error('Error loading transaction:', error);
-      Toast.show({
-        type: 'error',
-        text1: 'Error',
-        text2: 'Failed to load transaction details',
-      });
+      if (!hasCachedTransaction) {
+        Toast.show({
+          type: 'error',
+          text1: 'Error',
+          text2: 'Failed to load transaction details',
+        });
+      }
     } finally {
       if (isMountedRef.current) setLoading(false);
     }
-  };
+  }, [applyBankNameFromCache, transactionId]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    loadTransaction();
+    return () => { isMountedRef.current = false; };
+  }, [loadTransaction]);
 
   const handleDelete = () => {
     if (!transaction) return;
@@ -104,6 +241,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
         setConfirmDialog(null);
         try {
           await deleteTransaction(transaction.id);
+          await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+            current ? current.filter(tx => tx.id !== transaction.id) : current
+          );
           HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
           Toast.show({
             type: 'success',
@@ -111,7 +251,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
             text2: 'Transaction deleted successfully',
           });
           navigation.goBack();
-        } catch (error) {
+        } catch {
           HapticFeedback.trigger('notificationError', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
           Toast.show({
             type: 'error',
@@ -125,15 +265,18 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
   const handleSaveEdit = async (id: string, updates: Partial<Transaction>) => {
     try {
-      await updateTransaction(id, updates);
+      const updatedTransaction = await updateTransaction(id, updates);
+      setTransaction(updatedTransaction);
+      await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+        current ? current.map(tx => tx.id === id ? updatedTransaction : tx) : [updatedTransaction]
+      );
       Toast.show({
         type: 'success',
         text1: 'Updated',
         text2: 'Transaction updated successfully',
       });
       setIsEditModalVisible(false);
-      loadTransaction(); // Reload to show new data
-    } catch (error) {
+    } catch {
       Toast.show({
         type: 'error',
         text1: 'Error',
@@ -170,6 +313,38 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const txColor = getTransactionColor(transaction.type);
   const txIcon = getTransactionIcon(transaction.type);
   const { date: formattedDate, time: formattedTime } = formatTransactionDateTime(transaction.created_at);
+  const sourceTrace = getEntrySourceTrace(transaction, bankName, colors);
+  const senderLabel = formatSender(transaction.sms_sender);
+  const accountLabel = bankName || (transaction.account_last4 ? `Account ending ${transaction.account_last4}` : null);
+  const rawMessage = transaction.raw_sms?.trim();
+  const upiId = transaction.upi_id || extractUpiIdFromText(rawMessage);
+  const detectedApp = getKnownSenderName(transaction.sms_sender);
+  const upiProvider = getUpiProviderName(upiId);
+  const upiHandle = getUpiHandle(upiId);
+  const appRoute = detectedApp && upiProvider && detectedApp !== upiProvider
+    ? `${detectedApp} -> ${upiProvider}`
+    : null;
+  const balanceAfter = transaction.balance !== null && transaction.balance !== undefined
+    ? formatAmount(Number(transaction.balance))
+    : null;
+  const savedAt = new Date(transaction.created_at).toLocaleString();
+  const traceRows = [
+    { icon: 'radar', label: 'Captured From', value: sourceTrace.title },
+    appRoute ? { icon: 'swap-horizontal', label: 'App Route', value: appRoute } : null,
+    detectedApp ? { icon: 'cellphone', label: 'Detected App', value: detectedApp } : null,
+    senderLabel ? { icon: 'account-voice', label: 'Sender', value: senderLabel } : null,
+    accountLabel ? { icon: 'bank', label: 'Matched Account', value: accountLabel } : null,
+    upiProvider ? { icon: 'cellphone-link', label: 'UPI Provider', value: upiHandle ? `${upiProvider} (@${upiHandle})` : upiProvider } : null,
+    upiId ? { icon: 'qrcode', label: 'UPI ID', value: upiId } : null,
+    transaction.reference_number ? { icon: 'identifier', label: 'Reference / UTR', value: transaction.reference_number } : null,
+    balanceAfter ? { icon: 'wallet-outline', label: 'Balance After', value: balanceAfter } : null,
+    transaction.is_transfer_pending
+      ? { icon: 'swap-horizontal-circle-outline', label: 'Transfer Status', value: 'Waiting for matching transfer entry' }
+      : null,
+    { icon: 'clock-check-outline', label: 'Saved At', value: savedAt },
+    rawMessage ? { icon: 'message-text-outline', label: 'Raw Message', value: rawMessage } : null,
+    { icon: 'identifier', label: 'Record ID', value: transaction.id },
+  ].filter(Boolean) as TraceRow[];
 
   return (
     <ScreenWrapper scrollable>
@@ -231,65 +406,56 @@ export default function TransactionDetail({ route, navigation }: Props) {
             colors={colors}
             typography={typography}
             spacing={spacing}
+            isLast
           />
-          <DetailRow
-            icon="radar"
-            label="Tracked Via"
-            value={(() => {
-              if (!transaction.sms_source) return 'Manual Entry';
+        </Card>
 
-              const source = transaction.sms_source.toLowerCase();
-              const sourceCap = source.charAt(0).toUpperCase() + source.slice(1);
-              const sender = transaction.sms_sender || '';
+        {/* Source Trace Card */}
+        <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
+          <View style={[styles.sectionHeader, { marginBottom: spacing.md }]}>
+            <MaterialCommunityIcons name="timeline-text-outline" size={22} color={colors.text} />
+            <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.sm }]}>
+              Source Trace
+            </Text>
+          </View>
 
-              // 1. Check for known UPI/App package names first
-              if (sender.includes('nbu.paisa.user')) return `${sourceCap} (Google Pay)`;
-              if (sender.includes('phonepe')) return `${sourceCap} (PhonePe)`;
-              if (sender.includes('paytm')) return `${sourceCap} (Paytm)`;
-              if (sender.includes('whatsapp')) return `${sourceCap} (WhatsApp)`;
-              if (sender.includes('cred')) return `${sourceCap} (CRED)`;
-              if (sender.includes('gmail')) return `${sourceCap} (Gmail)`;
+          <View
+            style={[
+              styles.sourceSummary,
+              {
+                backgroundColor: sourceTrace.color + '12',
+                borderColor: sourceTrace.color + '40',
+                borderRadius: borderRadius.sm,
+                marginBottom: spacing.sm,
+                padding: spacing.md,
+              },
+            ]}
+          >
+            <View style={styles.sourceSummaryHeader}>
+              <View style={[styles.sourceIcon, { backgroundColor: sourceTrace.color + '20' }]}>
+                <MaterialCommunityIcons name={sourceTrace.icon} size={22} color={sourceTrace.color} />
+              </View>
+              <View style={[styles.sourceText, { marginLeft: spacing.sm }]}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>{sourceTrace.title}</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>
+                  {sourceTrace.subtitle}
+                </Text>
+              </View>
+            </View>
+          </View>
 
-              // 2. If not an app, check if it's a bank SMS with a known bank account
-              if ((source === 'sms' || source === 'bank') && bankName) {
-                const justBank = bankName.split('(')[0].trim();
-                return `${sourceCap} (${justBank})`;
-              }
-
-              // 3. Fallback for other sources with a sender ID (e.g., raw sender ID)
-              if (sender) return `${sourceCap} (${sender.replace('com.', '').split('.')[0]})`;
-
-              // 4. Final fallback to just the source
-              return sourceCap;
-            })()}
-            colors={colors}
-            typography={typography}
-            spacing={spacing}
-          />
-          {transaction.upi_id && (
+          {traceRows.map((row, index) => (
             <DetailRow
-              icon="qrcode"
-              label="UPI ID"
-              value={transaction.upi_id}
+              key={`${row.label}-${index}`}
+              icon={row.icon}
+              label={row.label}
+              value={row.value}
               colors={colors}
               typography={typography}
               spacing={spacing}
+              isLast={index === traceRows.length - 1}
             />
-          )}
-          {bankName && (
-            <DetailRow
-              icon="bank"
-              label="Bank Account"
-              value={bankName}
-              colors={colors}
-              typography={typography}
-              spacing={spacing}
-              isLast
-            />
-          )}
-          {!bankName && !transaction.upi_id && (
-            <View style={{ height: 0 }} />
-          )}
+          ))}
         </Card>
 
         {/* Delete Button */}
@@ -367,5 +533,26 @@ const styles = StyleSheet.create({
   },
   detailRow: {
     paddingVertical: 12,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sourceSummary: {
+    borderWidth: 1,
+  },
+  sourceSummaryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sourceIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sourceText: {
+    flex: 1,
   },
 });

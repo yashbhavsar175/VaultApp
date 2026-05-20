@@ -162,6 +162,29 @@ export const signOutFromGoogle = async () => {
 // DATABASE OPERATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const TRANSACTIONS_CACHE_KEY = 'cache_transactions';
+
+async function updateTransactionsCache(
+  updater: (current: Transaction[]) => Transaction[]
+): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(TRANSACTIONS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const current = Array.isArray(parsed?.data)
+      ? parsed.data
+      : Array.isArray(parsed)
+        ? parsed
+        : [];
+    const next = updater(current);
+    await AsyncStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify({
+      data: next,
+      timestamp: Date.now(),
+    }));
+  } catch {
+    // Cache is a best-effort performance layer.
+  }
+}
+
 export async function addTransaction(
   tx: Omit<Transaction, 'id' | 'user_id' | 'created_at'>
 ): Promise<Transaction> {
@@ -184,6 +207,27 @@ export async function addTransaction(
     throw new Error('Note required');
   }
 
+  const optionalFields: (keyof Omit<Transaction, 'id' | 'user_id' | 'created_at' | 'amount' | 'type' | 'note' | 'category'>)[] = [
+    'account_id',
+    'account_last4',
+    'sms_source',
+    'sms_sender',
+    'upi_id',
+    'reference_number',
+    'raw_sms',
+    'balance',
+    'from_account_id',
+    'to_account_id',
+    'is_transfer_pending',
+  ];
+  const metadata = optionalFields.reduce<Record<string, unknown>>((fields, key) => {
+    const value = tx[key];
+    if (value !== undefined && value !== null && value !== '') {
+      fields[key] = value;
+    }
+    return fields;
+  }, {});
+
   const { data, error } = await supabase
     .from('transactions')
     .insert({
@@ -192,6 +236,7 @@ export async function addTransaction(
       type: tx.type,
       note: tx.note.trim(),
       category: tx.category,
+      ...metadata,
     })
     .select()
     .single();
@@ -199,6 +244,11 @@ export async function addTransaction(
   if (error) {
     throw new Error(error.message);
   }
+
+  await updateTransactionsCache(current => [
+    data as Transaction,
+    ...current.filter(item => item.id !== data.id),
+  ]);
 
   return data;
 }
@@ -236,6 +286,8 @@ export async function deleteTransaction(id: string): Promise<void> {
   if (error) {
     throw new Error(error.message);
   }
+
+  await updateTransactionsCache(current => current.filter(tx => tx.id !== id));
 }
 
 export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
@@ -263,6 +315,9 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
   if (errors.length > 0) {
     throw new Error(`Some transactions could not be deleted:\n${errors.join('\n')}`);
   }
+
+  const idSet = new Set(ids);
+  await updateTransactionsCache(current => current.filter(tx => !idSet.has(tx.id)));
 }
 
 export async function updateTransaction(
@@ -283,6 +338,12 @@ export async function updateTransaction(
   if (error) {
     throw new Error(error.message);
   }
+
+  await updateTransactionsCache(current =>
+    current.length > 0
+      ? current.map(tx => tx.id === id ? data as Transaction : tx)
+      : [data as Transaction]
+  );
 
   return data;
 }
@@ -314,12 +375,23 @@ export async function getUniqueCategories(): Promise<string[]> {
 // Triggered on network reconnection or AppState change from background
 // ═══════════════════════════════════════════════════════════════════════════════
 
+type OfflineQueueEntry = Record<string, any>;
+
+function isDuplicateTransactionError(error: any): boolean {
+  const message = String(error?.message || '');
+  return (
+    error?.code === '23505' ||
+    message.includes('duplicate key value') ||
+    message.includes('unique_transaction_identifier')
+  );
+}
+
 export async function syncOfflineTransactions(): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem('offline_tx_queue');
     if (!raw) return; // Nothing to sync
 
-    const queue: any[] = JSON.parse(raw);
+    const queue: OfflineQueueEntry[] = JSON.parse(raw);
     if (!queue || queue.length === 0) return;
 
     // Get authenticated user
@@ -329,27 +401,53 @@ export async function syncOfflineTransactions(): Promise<void> {
       return;
     }
 
-    // Append user_id to every queued transaction and remove temporary fields
-    const records = queue.map(({ _localId, _queued_at, queued_at, ...tx }) => ({
-      ...tx,
-      user_id: user.id,
-    }));
+    // Append user_id to every queued transaction and keep local metadata out of DB rows.
+    const queueItems = queue.map(({ _localId, _queued_at, queued_at, id, created_at, ...tx }) => {
+      const record: OfflineQueueEntry = {
+        ...tx,
+        user_id: user.id,
+      };
 
-    // Bulk insert into Supabase
-    const { data, error } = await supabase
-      .from('transactions')
-      .insert(records)
-      .select(); // Get the inserted records with IDs
+      if (record.sms_source === 'manual') {
+        delete record.sms_source;
+      }
 
-    if (error) {
-      console.error('[OfflineSync] Bulk insert failed:', error.message);
-      return; // Keep queue intact — will retry next time
+      return {
+        record,
+        queuedAt: _queued_at || queued_at || null,
+        original: { _localId, _queued_at, queued_at, id, created_at, ...tx },
+      };
+    });
+
+    const remainingQueue: OfflineQueueEntry[] = [];
+    const syncedRecords: { tx: any; queuedAt: string | null }[] = [];
+    let duplicateCount = 0;
+
+    for (const item of queueItems) {
+      const { data: insertedRecord, error } = await supabase
+        .from('transactions')
+        .insert(item.record)
+        .select()
+        .single();
+
+      if (error) {
+        if (isDuplicateTransactionError(error)) {
+          duplicateCount++;
+          continue; // Already synced earlier; remove it from the local queue.
+        }
+
+        console.error('[OfflineSync] Insert failed, keeping item queued:', error.message);
+        remainingQueue.push(item.original);
+        continue;
+      }
+
+      syncedRecords.push({ tx: insertedRecord || item.record, queuedAt: item.queuedAt });
     }
 
     // Success: Show notifications for transactions that might have missed them
     // We assume that if a transaction was queued, it should have gotten a notification
     // when it was originally processed. If it didn't, we should show one now.
-    for (const tx of records) {
+    for (const { tx, queuedAt } of syncedRecords) {
       try {
         await showTransactionConfirmation(
           tx.id, // The actual DB ID from the insert
@@ -357,7 +455,7 @@ export async function syncOfflineTransactions(): Promise<void> {
           tx.note || 'Transaction',
           tx.amount,
           tx.account_last4,
-          `Synced from offline queue (originally queued at: ${tx._queued_at || 'unknown'})`
+          `Synced from offline queue (originally queued at: ${queuedAt || 'unknown'})`
         );
       } catch (notifyError) {
         console.error('[OfflineSync] Failed to show notification for synced transaction:', notifyError);
@@ -365,9 +463,24 @@ export async function syncOfflineTransactions(): Promise<void> {
       }
     }
 
-    // Success: clear the queue
-    await AsyncStorage.removeItem('offline_tx_queue');
-    console.log(`[OfflineSync] Synced ${records.length} offline transaction(s) successfully`);
+    if (syncedRecords.length > 0) {
+      const syncedTransactions = syncedRecords.map(({ tx }) => tx as Transaction);
+      const syncedIds = new Set(syncedTransactions.map(tx => tx.id));
+      await updateTransactionsCache(current => [
+        ...syncedTransactions,
+        ...current.filter(tx => !syncedIds.has(tx.id)),
+      ]);
+    }
+
+    if (remainingQueue.length > 0) {
+      await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(remainingQueue));
+    } else {
+      await AsyncStorage.removeItem('offline_tx_queue');
+    }
+
+    console.log(
+      `[OfflineSync] Synced ${syncedRecords.length} transaction(s), skipped ${duplicateCount} duplicate(s), kept ${remainingQueue.length} queued`
+    );
   } catch (e) {
     // Never crash the app — this runs silently in the background
     console.error('[OfflineSync] Unexpected error:', e);

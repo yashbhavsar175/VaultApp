@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, AppState, AppStateStatus, Share, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, AppState, AppStateStatus, Share, ScrollView, Switch, Platform, PermissionsAndroid } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -8,7 +8,20 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { useNavigation } from '@react-navigation/native';
 import { runAllNotificationTests } from '../../utils/testUtils';
-import { isAccessibilityServiceEnabled, openAccessibilitySettings } from '../../lib/services/porter';
+import {
+  isAccessibilityServiceEnabled,
+  isVolumeGuardEnabled,
+  openAccessibilitySettings,
+  refreshVolumeGuardCaps,
+  setVolumeGuardEnabled,
+} from '../../lib/services/porter';
+import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
+
+interface CachedProfile {
+  email?: string;
+  name?: string;
+  full_name?: string;
+}
 
 export default function Settings() {
   const navigation = useNavigation();
@@ -20,6 +33,7 @@ export default function Settings() {
   const [editedName, setEditedName] = useState('');
   const [saving, setSaving] = useState(false);
   const [porterServiceEnabled, setPorterServiceEnabled] = useState(false);
+  const [volumeGuardEnabled, setVolumeGuardState] = useState(false);
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -47,10 +61,73 @@ export default function Settings() {
     try {
       const enabled = await isAccessibilityServiceEnabled();
       setPorterServiceEnabled(enabled);
+      const guardEnabled = await isVolumeGuardEnabled();
+      setVolumeGuardState(guardEnabled);
     } catch (error) {
       console.log('Error checking Porter service', error);
     }
   }, []);
+
+  const requestBluetoothRoutePermission = async (): Promise<boolean> => {
+    if (Platform.OS !== 'android' || Number(Platform.Version) < 31) return true;
+
+    const permission = PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT;
+    const granted = await PermissionsAndroid.request(permission, {
+      title: 'Bluetooth Route Permission',
+      message: 'SpendSense needs nearby device access to prefer Bluetooth when delivery apps force speaker audio.',
+      buttonPositive: 'Allow',
+      buttonNegative: 'Not now',
+    });
+
+    return granted === PermissionsAndroid.RESULTS.GRANTED;
+  };
+
+  const toggleVolumeGuard = async (enabled: boolean) => {
+    try {
+      if (enabled) {
+        const hasBluetoothPermission = await requestBluetoothRoutePermission();
+        if (!hasBluetoothPermission) {
+          Toast.show({
+            type: 'info',
+            text1: 'Volume Guard On',
+            text2: 'Volume clamp will work, but Bluetooth route guard needs nearby device permission',
+          });
+        }
+      }
+      await setVolumeGuardEnabled(enabled);
+      setVolumeGuardState(enabled);
+      Toast.show({
+        type: enabled ? 'success' : 'info',
+        text1: enabled ? 'Volume Guard On' : 'Volume Guard Off',
+        text2: enabled
+          ? 'Current media, alarm, ring and notification volumes are locked as max'
+          : 'Delivery apps can control volume normally again',
+      });
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Volume Guard needs rebuild',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const lockCurrentVolumes = async () => {
+    try {
+      await refreshVolumeGuardCaps();
+      Toast.show({
+        type: 'success',
+        text1: 'Volumes locked',
+        text2: 'Current media, alarm, ring and notification levels saved',
+      });
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Could not lock volume',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
 
   useEffect(() => {
     console.log('🔧 [Settings] Component mounted');
@@ -78,11 +155,12 @@ export default function Settings() {
   const loadUserInfo = async () => {
     try {
       // Show cached profile instantly
-      const cachedProfile = await AsyncStorage.getItem('cache_user_profile');
+      const cachedProfile = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
       if (cachedProfile) {
-        const { email, name } = JSON.parse(cachedProfile);
+        const { email, name, full_name } = cachedProfile.data;
         if (email) setUserEmail(email);
-        if (name) setUserName(name);
+        if (full_name || name) setUserName(full_name || name || '');
+        if (!cachedProfile.isStale) return;
       }
 
       // Then fetch fresh from cloud
@@ -101,10 +179,11 @@ export default function Settings() {
         }
 
         // Update cache
-        AsyncStorage.setItem('cache_user_profile', JSON.stringify({
+        await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
           email: user.email,
           name: profile?.full_name || '',
-        }));
+          full_name: profile?.full_name || '',
+        });
       }
     } catch (error) {
       console.error('Error loading user info:', error);
@@ -122,13 +201,14 @@ export default function Settings() {
         // Dismiss dialog instantly for a faster feel
         setConfirmDialog(null);
         try {
+          await clearCache();
           await supabase.auth.signOut();
           Toast.show({
             type: 'success',
             text1: 'Signed Out',
             text2: 'You have been logged out successfully',
           });
-        } catch (error) {
+        } catch {
           Toast.show({
             type: 'error',
             text1: 'Error',
@@ -172,10 +252,11 @@ export default function Settings() {
       setUserName(editedName.trim());
       setShowEditModal(false);
       // Update profile cache
-      AsyncStorage.setItem('cache_user_profile', JSON.stringify({
+      await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
         email: userEmail,
         name: editedName.trim(),
-      }));
+        full_name: editedName.trim(),
+      });
       Toast.show({
         type: 'success',
         text1: 'Success',
@@ -270,6 +351,7 @@ export default function Settings() {
               ]);
 
               // Sign out
+              await clearCache();
               await supabase.auth.signOut();
 
               Toast.show({
@@ -674,6 +756,42 @@ export default function Settings() {
                 </Text>
               </TouchableOpacity>
             </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
+
+            <View style={[styles.accountRow, { alignItems: 'flex-start', paddingBottom: spacing.sm }]}>
+              <MaterialCommunityIcons name="volume-vibrate" size={24} color="#f59e0b" style={{ marginTop: 2 }} />
+              <View style={{ flex: 1, marginLeft: spacing.md, marginRight: spacing.sm }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>Delivery Volume Guard</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Keep Porter, Swiggy, Zomato and similar delivery alerts from raising volume above your locked levels
+                </Text>
+                <TouchableOpacity
+                  onPress={lockCurrentVolumes}
+                  disabled={!volumeGuardEnabled}
+                  style={{
+                    alignSelf: 'flex-start',
+                    marginTop: spacing.sm,
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 16,
+                    borderWidth: 1,
+                    borderColor: volumeGuardEnabled ? colors.accent : colors.border,
+                    backgroundColor: volumeGuardEnabled ? colors.accent + '15' : colors.card,
+                    opacity: volumeGuardEnabled ? 1 : 0.5,
+                  }}>
+                  <Text style={[typography.caption, { color: volumeGuardEnabled ? colors.accent : colors.subtext, fontWeight: 'bold' }]}>
+                    Lock Current Volume
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <Switch
+                value={volumeGuardEnabled}
+                onValueChange={toggleVolumeGuard}
+                trackColor={{ false: colors.border, true: '#10b98155' }}
+                thumbColor={volumeGuardEnabled ? '#10b981' : colors.subtext}
+              />
+            </View>
           </Card>
         </View>
 
@@ -885,7 +1003,7 @@ export default function Settings() {
           )}
 
           {/* Render a localized Toast so it appears above this Modal */}
-          <Toast />
+          <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
         </View>
       </Modal>
     </ScreenWrapper>

@@ -23,8 +23,8 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
-import { getTransactions, deleteTransaction, updateTransaction, bulkDeleteTransactions } from '../../lib/core';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { getTransactions, updateTransaction, bulkDeleteTransactions } from '../../lib/core';
+import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
 import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
@@ -204,14 +204,19 @@ export default function Transactions() {
     onConfirm: () => void;
   } | null>(null);
 
-  // Double-tap tracking
-  const lastTapRef = useRef<{ id: string; time: number } | null>(null);
-
   // Deep equality tracking to prevent re-renders
   const lastDataStringRef = useRef<string | null>(null);
 
   // 120 FPS smooth bottom bar animation
   const bottomBarAnim = useRef(new Animated.Value(0)).current;
+
+  const applyFilter = useCallback((data: Transaction[], filterType: FilterType) => {
+    if (filterType === 'all') {
+      setFilteredTransactions(data);
+    } else {
+      setFilteredTransactions(data.filter(t => t.type === filterType));
+    }
+  }, []);
 
   const loadTransactions = useCallback(async () => {
     try {
@@ -232,7 +237,7 @@ export default function Transactions() {
       applyFilter(data, filter);
       // Cache for instant load next time
       setCache(CACHE_KEYS.TRANSACTIONS, data);
-    } catch (error) {
+    } catch {
       Toast.show({
         type: 'error',
         text1: 'Error',
@@ -242,14 +247,14 @@ export default function Transactions() {
       setRefreshing(false);
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, applyFilter]);
 
   // Initial load: cache first, then network
   useEffect(() => {
     const initLoad = async () => {
       // Try cache for instant display (getCached returns { data, isStale } | null)
       const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
-      if (cached?.data && cached.data.length > 0) {
+      if (cached) {
         setTransactions(cached.data);
         applyFilter(cached.data, filter);
         setLoading(false);
@@ -260,7 +265,7 @@ export default function Transactions() {
       }
     };
     initLoad();
-  }, []);
+  }, [filter, loadTransactions, applyFilter]);
 
   useFocusEffect(
     useCallback(() => {
@@ -286,15 +291,6 @@ export default function Transactions() {
     }).start();
   }, [selectMode, bottomBarAnim]);
 
-
-  const applyFilter = useCallback((data: Transaction[], filterType: FilterType) => {
-    if (filterType === 'all') {
-      setFilteredTransactions(data);
-    } else {
-      setFilteredTransactions(data.filter(t => t.type === filterType));
-    }
-  }, []);
-
   const handleFilterChange = useCallback((filterType: FilterType) => {
     HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
     setFilter(filterType);
@@ -305,42 +301,6 @@ export default function Transactions() {
     setRefreshing(true);
     loadTransactions();
   }, [loadTransactions]);
-
-  const handleDeleteTransaction = useCallback((id: string, note: string) => {
-    setConfirmDialog({
-      visible: true,
-      title: 'Delete Transaction',
-      message: `Delete "${note}"?`,
-      confirmText: 'Delete',
-      isDestructive: true,
-      onConfirm: async () => {
-        // Dismiss dialog immediately for a faster feel
-        setConfirmDialog(null);
-
-        // Optimistic UI Update: Remove from list instantly
-        setTransactions(prev => prev.filter(t => t.id !== id));
-        setFilteredTransactions(prev => prev.filter(t => t.id !== id));
-
-        try {
-          await deleteTransaction(id);
-          // No reload needed — optimistic update already done
-        } catch (error) {
-          // Revert optimistic update on failure
-          loadTransactions();
-          Toast.show({
-            type: 'error',
-            text1: 'Error',
-            text2: 'Failed to delete transaction',
-          });
-        }
-      }
-    });
-  }, [loadTransactions]);
-
-  // Single delete via swipe — shortcut wrapper for swipe-list delete action
-  const handleSingleDelete = useCallback((item: Transaction) => {
-    handleDeleteTransaction(item.id, item.note);
-  }, [handleDeleteTransaction]);
 
   // Select mode functions — instant updates with object spread
   const enterSelectMode = useCallback((id: string) => {
@@ -413,6 +373,9 @@ export default function Transactions() {
         const idSet = new Set(ids);
         setTransactions(prev => prev.filter(t => !idSet.has(t.id)));
         setFilteredTransactions(prev => prev.filter(t => !idSet.has(t.id)));
+        updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+          current ? current.filter(t => !idSet.has(t.id)) : current
+        );
         exitSelectMode();
 
         Toast.show({
@@ -424,7 +387,7 @@ export default function Transactions() {
         // Background: single batch API call (not 120 individual calls!)
         try {
           await bulkDeleteTransactions(ids);
-        } catch (error) {
+        } catch {
           // Revert on failure — reload from server
           loadTransactions();
           Toast.show({
@@ -437,12 +400,6 @@ export default function Transactions() {
     });
   }, [selectedMap, exitSelectMode, loadTransactions]);
 
-  // Edit modal functions
-  const openEditModal = useCallback((transaction: Transaction) => {
-    setEditingTransaction(transaction);
-    setIsEditModalVisible(true);
-  }, []);
-
   const closeEditModal = useCallback(() => {
     setIsEditModalVisible(false);
     setEditingTransaction(null);
@@ -450,7 +407,12 @@ export default function Transactions() {
 
   const handleSaveEdit = useCallback(async (id: string, updates: Partial<Transaction>) => {
     try {
-      await updateTransaction(id, updates);
+      const updatedTransaction = await updateTransaction(id, updates);
+      setTransactions(prev => prev.map(tx => tx.id === id ? updatedTransaction : tx));
+      setFilteredTransactions(prev => prev.map(tx => tx.id === id ? updatedTransaction : tx));
+      await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+        current ? current.map(tx => tx.id === id ? updatedTransaction : tx) : [updatedTransaction]
+      );
 
       Toast.show({
         type: 'success',
@@ -459,15 +421,14 @@ export default function Transactions() {
       });
 
       closeEditModal();
-      loadTransactions();
-    } catch (error) {
+    } catch {
       Toast.show({
         type: 'error',
         text1: 'Error',
         text2: 'Failed to update transaction',
       });
     }
-  }, [closeEditModal, loadTransactions]);
+  }, [closeEditModal]);
 
   // Memoized press handlers for each item
   const handleItemPress = useCallback((item: Transaction) => {
@@ -662,7 +623,7 @@ export default function Transactions() {
         renderItem={renderTransaction}
         keyExtractor={keyExtractor}
         extraData={selectedMap}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: selectMode ? 100 : 16 }}
+        contentContainerStyle={listContentStyle}
         ListEmptyComponent={renderEmptyState}
         refreshControl={
           <RefreshControl

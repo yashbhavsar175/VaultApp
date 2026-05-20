@@ -11,11 +11,21 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import Toast from 'react-native-toast-message';
 import { supabase } from '../../lib/core';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, AppHeader, Card, AppButton } from '../../components';
+import { ScreenWrapper, AppHeader, AppButton } from '../../components';
+import { CACHE_KEYS, getCached, setCache } from '../../lib/services/cache';
 
 interface ProfileScreenProps {
   onProfileComplete?: () => void;
   isEditing?: boolean;
+}
+
+interface CachedProfile {
+  email?: string;
+  name?: string;
+  full_name?: string;
+  phone?: string | null;
+  monthly_budget?: number | null;
+  currency?: string | null;
 }
 
 export default function ProfileScreen({ onProfileComplete, isEditing = false }: ProfileScreenProps) {
@@ -38,6 +48,13 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
 
   const loadGoogleUserName = async () => {
     try {
+      const cached = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
+      const cachedName = cached?.data.full_name || cached?.data.name;
+      if (cachedName) {
+        setFullName(cachedName);
+        return;
+      }
+
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user?.user_metadata) {
         const metadata = session.user.user_metadata;
@@ -53,6 +70,16 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
 
   const loadProfile = async () => {
     try {
+      const cached = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
+      if (cached) {
+        const cachedName = cached.data.full_name || cached.data.name || '';
+        setFullName(cachedName);
+        setPhone(cached.data.phone || '');
+        setMonthlyBudget(cached.data.monthly_budget?.toString() || '');
+        setCurrency(cached.data.currency || 'INR');
+        setInitialLoading(false);
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
@@ -69,6 +96,14 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
         setPhone(data.phone || '');
         setMonthlyBudget(data.monthly_budget?.toString() || '');
         setCurrency(data.currency || 'INR');
+        await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
+          email: user.email,
+          name: data.full_name || '',
+          full_name: data.full_name || '',
+          phone: data.phone || null,
+          monthly_budget: data.monthly_budget ?? null,
+          currency: data.currency || 'INR',
+        });
       }
     } catch (error) {
       console.error('Error loading profile:', error);
@@ -107,6 +142,14 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
         .upsert(profileData);
 
       if (error) throw error;
+      await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
+        email: user.email,
+        name: fullName.trim(),
+        full_name: fullName.trim(),
+        phone: phone.trim() || null,
+        monthly_budget: monthlyBudget ? parseFloat(monthlyBudget) : null,
+        currency,
+      });
 
       Toast.show({
         type: 'success',

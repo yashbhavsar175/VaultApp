@@ -15,7 +15,9 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
-import { getUniqueCategories, supabase } from '../../lib/core';
+import { getUniqueCategories } from '../../lib/core';
+import { getBankAccounts } from '../../lib/database/financial';
+import { CACHE_KEYS, getCached, setCache } from '../../lib/services/cache';
 
 interface EditTransactionModalProps {
   visible: boolean;
@@ -38,7 +40,7 @@ export default function EditTransactionModal({
   onClose,
   onSave,
 }: EditTransactionModalProps) {
-  const { colors, typography, spacing, borderRadius } = useTheme();
+  const { colors, typography, borderRadius } = useTheme();
   
   const [note, setNote] = useState('');
   const [type, setType] = useState<TransactionType>('expense');
@@ -98,11 +100,15 @@ export default function EditTransactionModal({
 
   const loadCategories = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const categories = await getUniqueCategories();
-        setAllCategories(categories);
+      const cached = await getCached<string[]>(CACHE_KEYS.UNIQUE_CATEGORIES);
+      if (cached) {
+        setAllCategories(cached.data);
+        if (!cached.isStale) return;
       }
+
+      const categories = await getUniqueCategories();
+      setAllCategories(categories);
+      await setCache(CACHE_KEYS.UNIQUE_CATEGORIES, categories);
     } catch (error) {
       console.error('Error loading categories:', error);
     }
@@ -110,20 +116,15 @@ export default function EditTransactionModal({
 
   const loadBankAccounts = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data, error } = await supabase
-          .from('bank_accounts')
-          .select('id, bank_name, account_last4')
-          .eq('user_id', user.id)
-          .order('bank_name', { ascending: true });
-        
-        if (error) {
-          console.error('Error loading bank accounts:', error);
-        } else {
-          setBankAccounts(data || []);
-        }
+      const cached = await getCached<any[]>(CACHE_KEYS.BANK_ACCOUNTS);
+      if (cached) {
+        setBankAccounts(cached.data);
+        if (!cached.isStale) return;
       }
+
+      const data = await getBankAccounts();
+      setBankAccounts(data || []);
+      await setCache(CACHE_KEYS.BANK_ACCOUNTS, data || []);
     } catch (error) {
       console.error('Error loading bank accounts:', error);
     }

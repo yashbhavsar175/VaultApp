@@ -15,7 +15,13 @@ import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { parseSMS, isTransactionSMS, ParsedTransaction } from './smsParser';
-import { getBankAccounts } from '../database/financial';
+import { getBankAccounts, updateBankAccount } from '../database/financial';
+import {
+  getTransactionDisplayName,
+  inferTransactionCategory,
+} from '../../utils/transactionPresentation';
+import { BankAccount, Transaction } from '../../types';
+import { CACHE_KEYS, updateCache } from './cache';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SPAM FILTERING
@@ -421,18 +427,33 @@ export async function processTransactionSMS(
       type = 'expense';
     }
 
+    const presentation = {
+      type,
+      merchant: parsed.merchant,
+      note: parsed.merchant || (parsed.bankName ? `${parsed.bankName} Transaction` : undefined),
+      category: parsed.merchant,
+      upi_id: parsed.upiId,
+      raw_sms: smsText,
+      sms_source: 'sms',
+      sms_sender: senderId,
+    };
+    const transactionNote = getTransactionDisplayName(presentation);
+    const transactionCategory = inferTransactionCategory(presentation);
+
     const { data: transaction, error } = await supabase
       .from('transactions')
       .insert({
         user_id: user.id,
         type,
         amount: parsed.amount,
-        note: parsed.merchant || `${parsed.bankName || 'Bank'} Transaction`,
-        category: type === 'income' ? 'salary' : 'general',
+        note: transactionNote,
+        category: transactionCategory,
         account_id: matchedAccount.id,
         account_last4: matchedAccount.account_last4,
         sms_source: 'sms',
         sms_sender: senderId,
+        raw_sms: smsText,
+        balance: parsed.balance,
         upi_id: parsed.upiId,
         created_at: new Date().toISOString(),
       })
@@ -445,11 +466,27 @@ export async function processTransactionSMS(
       return { success: false, parsed };
     }
 
+    if (parsed.balance !== null && parsed.balance !== undefined) {
+      try {
+        await updateBankAccount(matchedAccount.id, { balance: parsed.balance });
+        await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
+          current ? current.map(account => account.id === matchedAccount.id ? { ...account, balance: parsed.balance! } : account) : current
+        );
+      } catch (balanceError) {
+        console.warn('[SMS Parser] Transaction saved, but balance update failed:', balanceError);
+      }
+    }
+
+    await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
+      transaction as Transaction,
+      ...(current || []).filter(tx => tx.id !== transaction.id),
+    ]);
+
     // Step 6: Show confirmation notification
     await showTransactionConfirmation(
       transaction.id,
       type,
-      parsed.merchant || `${parsed.bankName || 'Bank'} Transaction`,
+      transactionNote,
       parsed.amount!,
       matchedAccount.bank_name,
       smsText,

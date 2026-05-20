@@ -5,15 +5,12 @@ import {
   StyleSheet,
   Modal,
   TouchableOpacity,
-  Dimensions,
   ActivityIndicator,
   Platform,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, MapType } from 'react-native-maps';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useTheme } from '../../context/ThemeContext';
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface MapPickerModalProps {
   visible: boolean;

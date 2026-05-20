@@ -12,6 +12,14 @@ import {
   showSmsFailedNotification,
   showTransactionConfirmation
 } from '../services/notifications';
+import { extractUpiIdFromText } from '../../utils/upi';
+import {
+  getTransactionDisplayName,
+  inferTransactionCategory,
+} from '../../utils/transactionPresentation';
+import { CACHE_KEYS, updateCache } from '../services/cache';
+import { BankAccount, Transaction } from '../../types';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -20,13 +28,6 @@ import {
 interface SmsData {
   sender: string;
   body: string;
-  timestamp: number;
-}
-
-interface NotificationData {
-  packageName: string;
-  title: string;
-  text: string;
   timestamp: number;
 }
 
@@ -39,12 +40,7 @@ interface ParsedTransaction {
   source: 'bank' | 'upi';
   rawSender: string;
   accountLast4?: string;
-}
-
-interface BankAccount {
-  id: string;
-  account_last4: string;
-  bank_name: string;
+  upiId?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -91,6 +87,32 @@ const UPI_SENDERS = [
 const BLOCKED_SENDERS = ['TEST', 'TEST-SMS', 'DM-TEST', 'VM-TEST'];
 const TRAI_DLT_PREFIXES = ['JM-', 'BT-', 'AD-', 'VM-', 'DM-', 'TM-', 'AM-', 'LM-'];
 
+const NON_TRANSACTION_AMOUNT_PATTERNS = [
+  /(?:send|transfer)\s+(?:up\s*to|upto)\s+(?:INR|Rs\.?|₹)\s*[0-9,]+/i,
+  /(?:up\s*to|upto|starting\s+from|starts?\s+at|as\s+low\s+as)\s+(?:INR|Rs\.?|₹)\s*[0-9,]+/i,
+  /(?:INR|Rs\.?|₹)\s*[0-9,]+(?:\.\d{1,2})?\s*(?:off|discount|coupon|voucher|reward)/i,
+  /(?:get|save|earn|win|claim|unlock)\s+(?:up\s*to|upto|flat)?\s*(?:INR|Rs\.?|₹)\s*[0-9,]+/i,
+  /(?:offer|deal|discount|sale|promo|coupon|voucher|reward)\b/i,
+  /(?:free\s+cancellation|book\s+(?:train|flight|bus|hotel|ticket)|travel|trip|holiday)/i,
+  /\b(?:t20\s+vibes|kaafi\s+hai)\b/i,
+  /(?:add(?:ed|ing)?|beneficiary|payee).*?(?:send|transfer).*?(?:up\s*to|upto|limit|first\s+\d+\s*(?:hrs?|hours?|days?))/i,
+  /(?:\d+\s*(?:mins?|minutes?|hrs?|hours?)\s+have\s+passed).*?(?:add(?:ed|ing)?|payee|beneficiary)/i,
+];
+
+const COMPLETED_TRANSACTION_PATTERNS = [
+  /\b(?:debited|credited|deducted|spent|withdrawn|withdrawal|purchased?|paid|received|deposited|refunded|transferred|sent)\b/i,
+  /\b(?:dr|cr)\.?\s*(?:INR|Rs\.?|₹)?\s*[0-9,]+/i,
+  /\bpayment\s+(?:of\s+)?(?:INR|Rs\.?|₹)?\s*[0-9,]+(?:\.\d{1,2})?\s+(?:made|successful|completed|done|received)/i,
+  /\b(?:payment|transaction|txn)\s+(?:successful|completed|done|failed|declined)\b/i,
+  /you'?ve\s+got\s+(?:INR|Rs\.?|₹)\s*[0-9,]+.*\bfrom\b/i,
+];
+
+const TRANSACTION_CONTEXT_PATTERNS = [
+  /\b(?:a\/?c|acct|account|card|supercard|upi|utr|ref(?:erence)?\s*(?:no|id)?|txn|transaction\s+id)\b/i,
+  /\b(?:avl|available|current|closing)\s+bal(?:ance)?\b/i,
+  /\b(?:to|from|at)\s+[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\b/i,
+];
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SHARED HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -133,6 +155,31 @@ function isNumericUpiId(str: string): boolean {
   return /^\d+$/.test(str.trim());
 }
 
+function hasAmount(body: string): boolean {
+  return /(?:INR|Rs\.?|₹)\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body) ||
+    /(?:amount|amt|paid|debited|credited|received|deducted|spent|withdrawn|sent|transferred)\s*(?:of|:)?\s*(?:INR|Rs\.?|₹)?\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body);
+}
+
+function isNonTransactionalAmountMention(body: string): boolean {
+  return NON_TRANSACTION_AMOUNT_PATTERNS.some(pattern => pattern.test(body));
+}
+
+function hasCompletedTransactionEvidence(body: string): boolean {
+  return COMPLETED_TRANSACTION_PATTERNS.some(pattern => pattern.test(body));
+}
+
+function hasTransactionContext(body: string): boolean {
+  return TRANSACTION_CONTEXT_PATTERNS.some(pattern => pattern.test(body));
+}
+
+function shouldAttemptTransactionParse(body: string): boolean {
+  if (!hasAmount(body)) return false;
+  if (isNonTransactionalAmountMention(body)) return false;
+
+  const hasCompletedAction = hasCompletedTransactionEvidence(body);
+  return hasCompletedAction || hasTransactionContext(body);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRANSACTION PARSING
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -142,12 +189,14 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     const source = identifySource(sender);
     if (source === 'unknown') return null;
 
+    if (!shouldAttemptTransactionParse(body)) return null;
+
     // Extract amount
     const amountPatterns = [
       /^(?:INR|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
       /(?:INR|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
       /(?:amount|amt)[\s:]*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:debited|credited|paid|received)[\s:]*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
+      /(?:debited|credited|paid|received|deducted|spent|withdrawn|sent|transferred)[\s:]*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
     ];
 
     let amount = 0;
@@ -165,8 +214,11 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     const isCredit = isPaidToYou || 
                      /you'?ve\s+got/i.test(body) ||
                      /credited|received|deposited|refund|added|cr\.?\s/i.test(body);
-    const isDebit = /debited|deducted|spent|withdrawn|purchase|sent|dr\.?\s/i.test(body) || 
+    const isDebit = /debited|deducted|spent|withdrawn|purchase|purchased|sent|dr\.?\s/i.test(body) ||
+                    /\bpayment\s+(?:of\s+)?(?:INR|Rs\.?|₹)?\s*[0-9,]+(?:\.\d{1,2})?\s+(?:made|successful|completed|done)\b/i.test(body) ||
                     (!isCredit && /paid/i.test(body));
+
+    if (!isCredit && !isDebit) return null;
     
     let type: 'debit' | 'credit';
     if (/\bdebited\b|\bdr\.?\s/i.test(body)) {
@@ -201,7 +253,7 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
       /(?:to)\s+([A-Z][A-Za-z\s&]+?)(?:\s*\(UPI Ref)/i,
       /(?:to|from|paid to|sent to)\s+(?!view\b)([a-zA-Z0-9.-]+@[a-zA-Z0-9.-]+|[A-Za-z0-9\s&]+?)(?:\s+on|\s+via|[\s(]+UPI|\s+to A\/c|\s+in\s+your|\.|$)/i,
       /(?:paid to|sent to|received from)\s+(?!view\b)([A-Za-z0-9\s&]+?)(?:\s+on|\s+via|\s+to A\/c|\.|$)/i,
-      /Info[:\s]*([A-Z0-9*\/]+?)(?:\.|\s|$)/i,
+      /Info[:\s]*([A-Z0-9*/]+?)(?:\.|\s|$)/i,
     ];
     let merchant: string | undefined;
     for (const pattern of merchantPatterns) {
@@ -221,8 +273,9 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     const balance = balanceMatch ? parseFloat(balanceMatch[1].replace(/,/g, '')) : undefined;
 
     const accountLast4 = extractAccountLast4(body);
+    const upiId = extractUpiIdFromText(body) || undefined;
 
-    return { amount, type, reference, merchant, balance, source, rawSender: sender, accountLast4 };
+    return { amount, type, reference, merchant, balance, source, rawSender: sender, accountLast4, upiId };
   } catch (error) {
     console.error('Error parsing transaction:', error);
     return null;
@@ -320,26 +373,50 @@ async function checkForDuplicates(
     }
 
     return null;
-  } catch (error) {
+  } catch {
     return null;
   }
 }
 
-async function getUserBankAccounts(userId: string): Promise<BankAccount[]> {
+async function findAndSyncBankAccount(
+  userId: string,
+  accountLast4?: string,
+  balance?: number
+): Promise<string | null> {
+  if (!accountLast4) return null;
+
   try {
     const { data } = await supabase
       .from('bank_accounts')
-      .select('id, account_last4, bank_name')
-      .eq('user_id', userId);
-    return data || [];
-  } catch {
-    return [];
-  }
-}
+      .select('id')
+      .eq('user_id', userId)
+      .eq('account_last4', accountLast4)
+      .limit(1);
 
-function findBankAccountByLast4(accounts: BankAccount[], last4?: string): BankAccount | undefined {
-  if (!last4) return undefined;
-  return accounts.find(acc => acc.account_last4 === last4);
+    const accountId = data?.[0]?.id || null;
+    if (!accountId) return null;
+
+    if (balance !== undefined && balance !== null) {
+      const { error } = await supabase
+        .from('bank_accounts')
+        .update({ balance })
+        .eq('id', accountId)
+        .eq('user_id', userId);
+
+      if (error) {
+        console.warn('[TransactionProcessors] Failed to sync bank balance from SMS:', error.message);
+      }
+
+      await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
+        current ? current.map(account => account.id === accountId ? { ...account, balance } : account) : current
+      );
+    }
+
+    return accountId;
+  } catch (error) {
+    console.warn('[TransactionProcessors] Failed to find matched bank account:', error);
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -405,6 +482,20 @@ export const processSms = async (taskData: SmsData) => {
       return;
     }
 
+    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+    const presentation = {
+      type: dbType,
+      merchant: parsed.merchant,
+      note: parsed.merchant,
+      category: parsed.merchant,
+      upi_id: parsed.upiId,
+      raw_sms: taskData.body,
+      sms_source: parsed.source,
+      sms_sender: parsed.rawSender,
+    };
+    const transactionNote = getTransactionDisplayName(presentation);
+    const transactionCategory = inferTransactionCategory(presentation);
+
     // OFFLINE-FIRST: check connectivity before hitting Supabase
     const netState = await NetInfo.fetch();
     let transactionId: string | null = null;
@@ -417,11 +508,16 @@ export const processSms = async (taskData: SmsData) => {
           user_id: userId,
           amount: parsed.amount,
           type: dbType,
-          note: parsed.merchant || 'Transaction',
-          category: parsed.merchant || 'general',
+          note: transactionNote,
+          category: transactionCategory,
+          account_id: matchedAccountId,
           reference_number: parsed.reference,
           account_last4: parsed.accountLast4,
+          balance: parsed.balance,
           sms_source: parsed.source,
+          sms_sender: parsed.rawSender,
+          upi_id: parsed.upiId,
+          raw_sms: taskData.body,
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -438,11 +534,16 @@ export const processSms = async (taskData: SmsData) => {
             user_id: userId,
             amount: parsed.amount,
             type: dbType,
-            note: parsed.merchant || 'Transaction',
-            category: parsed.merchant || 'general',
+            note: transactionNote,
+            category: transactionCategory,
+            account_id: matchedAccountId,
             reference_number: parsed.reference,
             account_last4: parsed.accountLast4,
+            balance: parsed.balance,
             sms_source: parsed.source,
+            sms_sender: parsed.rawSender,
+            upi_id: parsed.upiId,
+            raw_sms: taskData.body,
           })
           .select()
           .single();
@@ -450,6 +551,10 @@ export const processSms = async (taskData: SmsData) => {
         if (error) throw error;
 
         transactionId = newTxn.id;
+        await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
+          newTxn as Transaction,
+          ...(current || []).filter(tx => tx.id !== newTxn.id),
+        ]);
       }
     } catch (error) {
       // Network call failed unexpectedly — queue offline
@@ -459,11 +564,16 @@ export const processSms = async (taskData: SmsData) => {
         user_id: userId,
         amount: parsed.amount,
         type: dbType,
-        note: parsed.merchant || 'Transaction',
-        category: parsed.merchant || 'general',
+        note: transactionNote,
+        category: transactionCategory,
+        account_id: matchedAccountId,
         reference_number: parsed.reference,
         account_last4: parsed.accountLast4,
+        balance: parsed.balance,
         sms_source: parsed.source,
+        sms_sender: parsed.rawSender,
+        upi_id: parsed.upiId,
+        raw_sms: taskData.body,
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -480,7 +590,7 @@ export const processSms = async (taskData: SmsData) => {
         await showTransactionConfirmation(
           transactionId,
           dbType,
-          parsed.merchant || 'Unknown',
+          transactionNote,
           parsed.amount,
           parsed.accountLast4,
           taskData.body
@@ -494,7 +604,7 @@ export const processSms = async (taskData: SmsData) => {
     // Log success - this should not fail the whole operation
     try {
       console.log('Transaction processed successfully:', transactionId);
-    } catch (logError) {
+    } catch {
       // Swallow logging errors - they're not critical
     }
   } catch (error) {
@@ -584,7 +694,9 @@ export const processNotification = async (taskData: any) => {
     const parsed = parseTransaction(combinedText, sender);
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
-      await showSmsFailedNotification(combinedText, sender, 'Parse failed');
+      if (hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText)) {
+        await showSmsFailedNotification(combinedText, sender, 'Parse failed');
+      }
       return;
     }
 
@@ -622,6 +734,21 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
+    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+    const senderLabel = notif.app || parsed.rawSender;
+    const presentation = {
+      type: dbType,
+      merchant: parsed.merchant,
+      note: parsed.merchant,
+      category: parsed.merchant,
+      upi_id: parsed.upiId,
+      raw_sms: combinedText,
+      sms_source: parsed.source,
+      sms_sender: senderLabel,
+    };
+    const transactionNote = getTransactionDisplayName(presentation);
+    const transactionCategory = inferTransactionCategory(presentation);
+
     // OFFLINE-FIRST: check connectivity before hitting Supabase
     const netState = await NetInfo.fetch();
     let transactionId: string | null = null;
@@ -633,11 +760,16 @@ export const processNotification = async (taskData: any) => {
           user_id: userId,
           amount: parsed.amount,
           type: dbType,
-          note: parsed.merchant || 'Transaction',
-          category: parsed.merchant || 'general',
+          note: transactionNote,
+          category: transactionCategory,
+          account_id: matchedAccountId,
           reference_number: parsed.reference,
           account_last4: parsed.accountLast4,
+          balance: parsed.balance,
           sms_source: parsed.source,
+          sms_sender: senderLabel,
+          upi_id: parsed.upiId,
+          raw_sms: combinedText,
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -654,11 +786,16 @@ export const processNotification = async (taskData: any) => {
             user_id: userId,
             amount: parsed.amount,
             type: dbType,
-            note: parsed.merchant || 'Transaction',
-            category: parsed.merchant || 'general',
+            note: transactionNote,
+            category: transactionCategory,
+            account_id: matchedAccountId,
             reference_number: parsed.reference,
             account_last4: parsed.accountLast4,
+            balance: parsed.balance,
             sms_source: parsed.source,
+            sms_sender: senderLabel,
+            upi_id: parsed.upiId,
+            raw_sms: combinedText,
           })
           .select()
           .single();
@@ -666,6 +803,10 @@ export const processNotification = async (taskData: any) => {
         if (error) throw error;
 
         transactionId = newTxn.id;
+        await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
+          newTxn as Transaction,
+          ...(current || []).filter(tx => tx.id !== newTxn.id),
+        ]);
       }
     } catch (error) {
       // Network call failed unexpectedly — queue offline
@@ -675,11 +816,16 @@ export const processNotification = async (taskData: any) => {
         user_id: userId,
         amount: parsed.amount,
         type: dbType,
-        note: parsed.merchant || 'Transaction',
-        category: parsed.merchant || 'general',
+        note: transactionNote,
+        category: transactionCategory,
+        account_id: matchedAccountId,
         reference_number: parsed.reference,
         account_last4: parsed.accountLast4,
+        balance: parsed.balance,
         sms_source: parsed.source,
+        sms_sender: senderLabel,
+        upi_id: parsed.upiId,
+        raw_sms: combinedText,
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -696,10 +842,10 @@ export const processNotification = async (taskData: any) => {
         await showTransactionConfirmation(
           transactionId,
           dbType,
-          parsed.merchant || 'Unknown',
+          transactionNote,
           parsed.amount,
           parsed.accountLast4,
-          taskData.body
+          combinedText
         );
       } catch (notificationError) {
         console.error('Failed to show transaction notification (non-critical):', notificationError);
@@ -710,7 +856,7 @@ export const processNotification = async (taskData: any) => {
     // Log success - this should not fail the whole operation
     try {
       console.log('Transaction processed successfully:', transactionId);
-    } catch (logError) {
+    } catch {
       // Swallow logging errors - they're not critical
     }
   } catch (error) {

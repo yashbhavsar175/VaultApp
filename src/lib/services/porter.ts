@@ -19,8 +19,23 @@ const { PorterModule } = NativeModules;
 const GOOGLE_MAPS_API_KEY: string = Config.GOOGLE_MAPS_API_KEY || '';
 const eventEmitter = new NativeEventEmitter(PorterModule);
 
+const NATIVE_REBUILD_REQUIRED =
+  'Native update required. Rebuild and reinstall the Android app with npm run android.';
+
+function requirePorterNativeMethod(methodName: string) {
+  const method = PorterModule?.[methodName];
+  if (typeof method !== 'function') {
+    throw new Error(NATIVE_REBUILD_REQUIRED);
+  }
+  return method;
+}
+
 let subscription: any = null;
 let lastProcessedHash = 0;
+let activeRideRunId = 0;
+let activeRideSignature: string | null = null;
+
+const MAX_RESULT_WAIT_MS = 5200;
 
 // ─── Active Overlay State ──────────────────────────────────────────────────
 let activeTripOverlay: {
@@ -45,6 +60,11 @@ interface DebugEvent {
   nominatim: string;
   result: string;
   location: { lat: number; lng: number } | null;
+}
+
+interface DistanceResult {
+  toPickup: string;
+  tripDistance: string;
 }
 
 async function saveDebugEvent(event: DebugEvent) {
@@ -85,7 +105,7 @@ function getCachedOrFreshLocation(): Promise<{ lat: number; lng: number }> {
         resolve({ lat: cachedLocation.lat, lng: cachedLocation.lng });
       },
       (err) => reject(err),
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+      { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 }
     );
   });
 }
@@ -96,13 +116,47 @@ function getCachedOrFreshLocation(): Promise<{ lat: number; lng: number }> {
 
 export const isAccessibilityServiceEnabled = async (): Promise<boolean> => {
   if (Platform.OS !== 'android') return false;
-  return await PorterModule.isAccessibilityServiceEnabled();
+  return await requirePorterNativeMethod('isAccessibilityServiceEnabled')();
 };
 
 export const openAccessibilitySettings = () => {
   if (Platform.OS === 'android') {
     PorterModule.openAccessibilitySettings();
   }
+};
+
+export const isVolumeGuardEnabled = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return false;
+  if (typeof PorterModule?.isVolumeGuardEnabled !== 'function') return false;
+  return await PorterModule.isVolumeGuardEnabled();
+};
+
+export const setVolumeGuardEnabled = async (enabled: boolean): Promise<void> => {
+  if (Platform.OS !== 'android') return;
+  await requirePorterNativeMethod('setVolumeGuardEnabled')(enabled);
+};
+
+export const refreshVolumeGuardCaps = async (): Promise<void> => {
+  if (Platform.OS !== 'android') return;
+  await requirePorterNativeMethod('refreshVolumeGuardCaps')();
+};
+
+export const getPorterNativeDebugLogs = async (): Promise<any[]> => {
+  if (Platform.OS !== 'android') return [];
+  if (typeof PorterModule?.getPorterNativeDebugLogs !== 'function') return [];
+  const raw = await PorterModule.getPorterNativeDebugLogs();
+  if (typeof raw !== 'string') return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+};
+
+export const clearPorterNativeDebugLogs = async (): Promise<void> => {
+  if (Platform.OS !== 'android') return;
+  if (typeof PorterModule?.clearPorterNativeDebugLogs !== 'function') return;
+  await PorterModule.clearPorterNativeDebugLogs();
 };
 
 export const showToastOverlay = (message: string, longDuration: boolean = false) => {
@@ -118,6 +172,30 @@ export const showToastOverlay = (message: string, longDuration: boolean = false)
     }
   }
 };
+
+function showActivePorterOverlay(signature: string, message: string) {
+  if (Platform.OS !== 'android') return;
+
+  showToastOverlay(message, false);
+  activeTripOverlay = {
+    signature,
+    message,
+    firstShownAt: Date.now(),
+    lastShownAt: Date.now(),
+  };
+}
+
+async function fetchJsonWithTimeout(url: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DISTANCE CALCULATION
@@ -138,12 +216,12 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * c;
 }
 
-// Geocode a location string using free OpenStreetMap Nominatim API
-// Includes 8-second timeout to prevent hanging when rate-limited
+// Geocode a location string using free OpenStreetMap Nominatim API.
+// Keep this very short because Porter request popups disappear quickly.
 async function geocode(location: string): Promise<{ lat: number; lng: number } | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 1800);
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
     const res = await fetch(url, {
       headers: { 'User-Agent': 'SpendSense/1.0' },
@@ -176,29 +254,41 @@ function isValidAddressString(s: string): boolean {
   return typeof s === 'string' && s.trim().length >= 5 && VALID_ADDRESS_RE.test(s);
 }
 
-async function getDistancesKm(currentLat: number, currentLng: number, pickup: string, drop: string) {
+async function getDistancesKm(
+  currentLat: number,
+  currentLng: number,
+  pickup: string,
+  drop: string,
+  porterPickupDistance?: string | null,
+  deadlineAt?: number
+): Promise<DistanceResult> {
   // API QUOTA PROTECTION: Reject clearly invalid addresses before making network calls
   if (!isValidAddressString(pickup) || !isValidAddressString(drop)) {
     console.warn('[Porter] Invalid address strings — skipping API call:', { pickup, drop });
     await AsyncStorage.setItem('debug_porter_api_error', 'Invalid address format');
-    return { toPickup: 'Invalid Address', tripDistance: 'Invalid Address' };
+    return { toPickup: porterPickupDistance || 'Invalid Address', tripDistance: 'Invalid Address' };
   }
 
   if (GOOGLE_MAPS_API_KEY) {
     try {
       const origin = `${currentLat},${currentLng}`;
       console.log('[Porter] Calling Google Maps API with:', { origin, pickup, drop });
-      
-      const [toPickupResp, tripResp] = await Promise.all([
-        fetch(`https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(origin)}&destinations=${encodeURIComponent(pickup)}&mode=driving&key=${GOOGLE_MAPS_API_KEY}`),
-        fetch(`https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(pickup)}&destinations=${encodeURIComponent(drop)}&mode=driving&key=${GOOGLE_MAPS_API_KEY}`),
-      ]);
-      
-      const [toPickupData, tripData] = await Promise.all([toPickupResp.json(), tripResp.json()]);
+
+      const tripData = await fetchJsonWithTimeout(
+        `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(pickup)}&destinations=${encodeURIComponent(drop)}&mode=driving&key=${GOOGLE_MAPS_API_KEY}`,
+        2400
+      );
+
+      const toPickupData = porterPickupDistance
+        ? null
+        : await fetchJsonWithTimeout(
+          `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(origin)}&destinations=${encodeURIComponent(pickup)}&mode=driving&key=${GOOGLE_MAPS_API_KEY}`,
+          2400
+        );
       
       console.log('[Porter] Google Maps API Response:', { 
-        toPickupStatus: toPickupData.status,
-        toPickupError: toPickupData.error_message,
+        toPickupStatus: toPickupData?.status || 'SKIPPED',
+        toPickupError: toPickupData?.error_message,
         tripStatus: tripData.status,
         tripError: tripData.error_message,
       });
@@ -210,19 +300,19 @@ async function getDistancesKm(currentLat: number, currentLng: number, pickup: st
       }));
       
       // Check for API errors
-      if (toPickupData.status !== 'OK' || tripData.status !== 'OK') {
-        const errorMsg = toPickupData.error_message || tripData.error_message || `API Status: ${toPickupData.status}`;
+      if ((!porterPickupDistance && toPickupData?.status !== 'OK') || tripData.status !== 'OK') {
+        const errorMsg = toPickupData?.error_message || tripData.error_message || `API Status: ${toPickupData?.status || tripData.status}`;
         console.warn('[Porter] Google Maps API Error:', errorMsg);
         await AsyncStorage.setItem('debug_porter_api_error', errorMsg);
         // Fall through to Nominatim fallback
       } else {
-        const toPickupStatus = toPickupData.rows?.[0]?.elements?.[0]?.status;
+        const toPickupStatus = porterPickupDistance ? 'OK' : toPickupData?.rows?.[0]?.elements?.[0]?.status;
         const tripStatus = tripData.rows?.[0]?.elements?.[0]?.status;
         
         if (toPickupStatus === 'OK' && tripStatus === 'OK') {
           await AsyncStorage.setItem('debug_porter_api_error', 'Success');
           return {
-            toPickup: toPickupData.rows[0].elements[0].distance.text,
+            toPickup: porterPickupDistance || toPickupData!.rows[0].elements[0].distance.text,
             tripDistance: tripData.rows[0].elements[0].distance.text,
           };
         } else {
@@ -241,6 +331,10 @@ async function getDistancesKm(currentLat: number, currentLng: number, pickup: st
     await AsyncStorage.setItem('debug_porter_api_error', 'No API key configured');
   }
 
+  if (deadlineAt && Date.now() > deadlineAt) {
+    return { toPickup: porterPickupDistance || 'N/A', tripDistance: 'N/A' };
+  }
+
   // Fallback: Free Nominatim geocoding + Haversine
   console.log('[Porter] Using Nominatim fallback for:', { pickup, drop });
   const ROAD_FACTOR = 1.25;
@@ -249,7 +343,7 @@ async function getDistancesKm(currentLat: number, currentLng: number, pickup: st
   console.log('[Porter] Nominatim results:', { pickupCoords, dropCoords });
   await AsyncStorage.setItem('debug_porter_nominatim', JSON.stringify({ pickupCoords, dropCoords }));
   
-  const toPickup = pickupCoords ? `~${(haversineKm(currentLat, currentLng, pickupCoords.lat, pickupCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A';
+  const toPickup = porterPickupDistance || (pickupCoords ? `~${(haversineKm(currentLat, currentLng, pickupCoords.lat, pickupCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A');
   const tripDistance = pickupCoords && dropCoords ? `~${(haversineKm(pickupCoords.lat, pickupCoords.lng, dropCoords.lat, dropCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A';
 
   return { toPickup, tripDistance };
@@ -308,9 +402,21 @@ function looksLikeAddress(text: string): boolean {
   if (hasDigits && text.length > 15 && lower.includes(',')) return true;
   
   // Fallback: if it's long enough, has a comma, and doesn't look like a price/time
-  if (text.length > 30 && lower.includes(',') && !lower.match(/^[\d₹\.\s]+$/)) return true;
+  if (text.length > 30 && lower.includes(',') && !lower.match(/^[\d₹.\s]+$/)) return true;
   
   return false;
+}
+
+function extractPorterPickupDistance(text: string): string | null {
+  const match = text.match(/pickup\s+([0-9]+(?:\.[0-9]+)?)\s*km\s+away/i);
+  return match ? `${match[1]} km` : null;
+}
+
+function extractAcceptDeadline(text: string, now: number): number {
+  const match = text.match(/accept\s+in\s+(\d+)\s*s/i);
+  const secondsLeft = match ? Number(match[1]) : 0;
+  const popupDeadline = secondsLeft > 0 ? now + Math.max(1200, (secondsLeft * 1000) - 700) : now + MAX_RESULT_WAIT_MS;
+  return Math.min(now + MAX_RESULT_WAIT_MS, popupDeadline);
 }
 
 /**
@@ -473,6 +579,9 @@ export const initPorterDistanceCalculator = () => {
       const isRideRequest = (hasPickup && hasDrop) || (hasPickup && hasCurrency);
       
       if (!isRideRequest) {
+        activeRideSignature = null;
+        activeRideRunId += 1;
+        activeTripOverlay = null;
         debugEvent.status = `Ignored: No ride keywords found (event: ${eventType})`;
         await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
         return;
@@ -486,12 +595,17 @@ export const initPorterDistanceCalculator = () => {
       const addresses = extractAddresses(text);
       
       if (!addresses) {
+        showActivePorterOverlay(
+          `unparsed:${textHash}`,
+          'Porter order detected\nReading pickup/drop...'
+        );
         debugEvent.status = `Failed: Could not extract addresses.\nParts found: ${text.split('||').length}\nRaw text (first 500): ${text.slice(0, 500)}`;
         await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
         return;
       }
 
       const tripSig = `${addresses.pickup}|${addresses.drop}`;
+      const porterPickupDistance = extractPorterPickupDistance(text);
       
       // 2. DEDUPLICATE TRIPS (Save API Quota & Battery)
       if (activeTripOverlay && activeTripOverlay.signature === tripSig) {
@@ -499,17 +613,48 @@ export const initPorterDistanceCalculator = () => {
         return;
       }
 
+      const rideRunId = activeRideRunId + 1;
+      activeRideRunId = rideRunId;
+      activeRideSignature = tripSig;
+      const resultDeadlineAt = extractAcceptDeadline(text, now);
+
       debugEvent.pickup = addresses.pickup;
       debugEvent.drop = addresses.drop;
-      debugEvent.status = `Extracted:\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`;
+      debugEvent.status = `Order detected, calculating distance...\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`;
       await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+      showActivePorterOverlay(
+        tripSig,
+        porterPickupDistance
+          ? 'Porter order detected\nCalculating trip distance...'
+          : `Porter order detected\nCalculating distance...\nPickup: ${addresses.pickup.slice(0, 40)}`
+      );
 
       // BATTERY OPTIMIZATION: use cached GPS coordinates (re-fetched only if > 60s old)
       try {
-        const { lat, lng } = await getCachedOrFreshLocation();
+        const { lat, lng } = porterPickupDistance
+          ? { lat: cachedLocation?.lat || 0, lng: cachedLocation?.lng || 0 }
+          : await getCachedOrFreshLocation();
         debugEvent.location = { lat, lng };
         
-        const distances = await getDistancesKm(lat, lng, addresses.pickup, addresses.drop);
+        const distances = await getDistancesKm(
+          lat,
+          lng,
+          addresses.pickup,
+          addresses.drop,
+          porterPickupDistance,
+          resultDeadlineAt
+        );
+
+        const isStillCurrentOrder =
+          rideRunId === activeRideRunId &&
+          activeRideSignature === tripSig &&
+          Date.now() <= resultDeadlineAt;
+
+        if (!isStillCurrentOrder) {
+          debugEvent.status = 'Skipped: Late distance result after order popup disappeared';
+          await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+          return;
+        }
 
         debugEvent.result = JSON.stringify(distances);
         await AsyncStorage.setItem('debug_porter_result', debugEvent.result);
@@ -519,25 +664,26 @@ export const initPorterDistanceCalculator = () => {
         debugEvent.nominatim = await AsyncStorage.getItem('debug_porter_nominatim') || '';
 
         if (distances.toPickup !== 'N/A' && distances.toPickup !== 'Invalid Address' && Platform.OS === 'android') {
-          const message = `📍 You -> Pickup: ${distances.toPickup}\n🛣️ Pickup -> Drop: ${distances.tripDistance}`;
-          showToastOverlay(message, false); // False because activeTripOverlay will handle the background refresh
-          
-          activeTripOverlay = {
-            signature: tripSig,
-            message: message,
-            firstShownAt: Date.now(),
-            lastShownAt: Date.now()
-          };
+          const message = distances.tripDistance !== 'N/A' && distances.tripDistance !== 'Invalid Address'
+            ? `📍 You -> Pickup: ${distances.toPickup}\n🛣️ Pickup -> Drop: ${distances.tripDistance}`
+            : `📍 You -> Pickup: ${distances.toPickup}\n🛣️ Trip distance unavailable`;
+          showActivePorterOverlay(tripSig, message);
 
-          debugEvent.status = 'Success: Overlay shown';
+          debugEvent.status = distances.tripDistance !== 'N/A' && distances.tripDistance !== 'Invalid Address'
+            ? 'Success: Overlay shown'
+            : 'Partial: Pickup distance shown, trip distance unavailable';
           await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
         } else {
-          debugEvent.status = `Failed: Distance calc returned N/A or invalid address\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`;
+          const fallbackMessage = `Porter order detected\nDistance unavailable\nCheck Maps API/location`;
+          showActivePorterOverlay(tripSig, fallbackMessage);
+          debugEvent.status = `Partial: Order popup shown, but distance calc returned N/A or invalid address\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`;
           await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
         }
       } catch (geoError: any) {
         console.log('Geolocation error in Porter calculator:', geoError);
-        debugEvent.status = `Geo Error: ${geoError.message}`;
+        const fallbackMessage = `Porter order detected\nLocation unavailable\nPickup: ${addresses.pickup.slice(0, 40)}`;
+        showActivePorterOverlay(tripSig, fallbackMessage);
+        debugEvent.status = `Geo Error: ${geoError.message}. Order popup still shown.`;
         await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
       }
     } catch (e: any) {

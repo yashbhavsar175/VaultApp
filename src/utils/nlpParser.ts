@@ -1,4 +1,4 @@
-import { Transaction, TransactionType } from '../types';
+import { TransactionType } from '../types';
 
 export interface ParsedTransaction {
   amount: number | null;
@@ -35,17 +35,6 @@ const INCOME_KEYWORDS = [
 // They need directional context (who gave to whom), handled by phrases above.
 const LENT_KEYWORDS = ['udhar diya', 'lent'];
 const BORROWED_KEYWORDS = ['udhar liya', 'borrowed'];
-
-// Filler words to strip from the note to get clean category
-const FILLER_WORDS = [
-  'i', 'me', 'mene', 'maine', 'mujhe', 'ne', 'ko', 'ka', 'ki', 'ke', 'se',
-  'for', 'to', 'the', 'a', 'an', 'in', 'on', 'of', 'at', 'and', 'or', 'with',
-  'per', 'pe', 'par', 'ke', 'liye', 'wala', 'wali', 'hai', 'tha', 'thi',
-  'kiya', 'kiye', 'kar', 'karna', 'karke', 'ho', 'gaya', 'gayi',
-  'rupees', 'rupee', 'rs', 'today', 'yesterday', 'aaj', 'kal', 'abhi',
-  'give', 'gave', 'gives', 'giving', 'given', 'diya', 'liya', 'de',
-  'brother', 'bhai', 'friend', 'dost', 'papa', 'mom', 'dad', 'mummy',
-];
 
 // Category mapping — keyword -> category label
 const CATEGORY_MAP: Record<string, string> = {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { TouchableOpacity, StyleSheet } from 'react-native';
+import { TouchableOpacity } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,9 +14,56 @@ import SecureVaultScreen from '../screens/vault/SecureVaultScreen';
 
 const Tab = createBottomTabNavigator();
 
+type TabIconProps = {
+  color: string;
+  size: number;
+};
+
+const HIDDEN_DASHBOARD_TAB_SCREENS = ['Transactions', 'TransactionDetail', 'Banks', 'Analytics'];
+const HIDDEN_SETTINGS_TAB_SCREENS = ['BankConfigScreen', 'SMSTestScreen', 'Places', 'PorterTest'];
+
+function TabBarButton(props: any) {
+  // Strip null values from navigation props — TouchableOpacity only accepts undefined
+  const cleanProps = Object.fromEntries(
+    Object.entries(props).map(([key, value]) => [key, value === null ? undefined : value])
+  );
+  return <TouchableOpacity {...cleanProps as any} activeOpacity={0.6} />;
+}
+
+function DashboardTabIcon({ color, size }: TabIconProps) {
+  return <MaterialCommunityIcons name="view-dashboard" color={color} size={size} />;
+}
+
+function AddTabIcon({ color, size }: TabIconProps) {
+  return <MaterialCommunityIcons name="plus-circle" size={size} color={color} />;
+}
+
+function PeopleTabIcon({ color, size }: TabIconProps) {
+  return <MaterialCommunityIcons name="account-group" color={color} size={size} />;
+}
+
+function VaultTabIcon({ color, size }: TabIconProps) {
+  return <MaterialCommunityIcons name="shield-lock" color={color} size={size} />;
+}
+
+function SettingsTabIcon({ color, size }: TabIconProps) {
+  return <MaterialCommunityIcons name="cog" color={color} size={size} />;
+}
+
 export default function BottomTabNavigator() {
   const insets = useSafeAreaInsets();
-  const { colors, typography, spacing, borderRadius } = useTheme();
+  const { colors } = useTheme();
+
+  const visibleTabBarStyle = {
+    backgroundColor: colors.card,
+    borderTopColor: 'transparent',
+    borderTopWidth: 0,
+    height: 60 + insets.bottom,
+    paddingBottom: insets.bottom || 8,
+    paddingTop: 6,
+    elevation: 8,
+    shadowOpacity: 0,
+  };
 
   return (
     <>
@@ -25,52 +72,24 @@ export default function BottomTabNavigator() {
           headerShown: false,
           tabBarActiveTintColor: colors.accent,
           tabBarInactiveTintColor: '#888',
-          tabBarStyle: {
-            backgroundColor: colors.card,
-            borderTopColor: 'transparent',
-            borderTopWidth: 0,
-            height: 60 + insets.bottom,
-            paddingBottom: insets.bottom || 8,
-            paddingTop: 6,
-            elevation: 8,
-            shadowOpacity: 0,
-          },
+          tabBarStyle: visibleTabBarStyle,
           tabBarLabelStyle: {
             fontSize: 11,
             marginTop: 2,
           },
           tabBarHideOnKeyboard: true,
-          tabBarButton: (props) => {
-            // Strip null values from navigation props — TouchableOpacity only accepts undefined
-            const cleanProps = Object.fromEntries(
-              Object.entries(props).map(([k, v]) => [k, v === null ? undefined : v])
-            );
-            return <TouchableOpacity {...cleanProps as any} activeOpacity={0.6} />;
-          },
+          tabBarButton: TabBarButton,
         }}>
         <Tab.Screen
           name="Dashboard"
           component={DashboardStack}
           options={({ route }) => {
             const routeName = getFocusedRouteNameFromRoute(route) ?? 'DashboardHome';
-            // Hide bottom tab bar on sub-screens inside DashboardStack
-            const hideOnScreens = ['Transactions', 'TransactionDetail', 'Banks', 'Analytics'];
             return {
-              tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-                <MaterialCommunityIcons name="view-dashboard" color={color} size={size} />
-              ),
-              tabBarStyle: hideOnScreens.includes(routeName)
+              tabBarIcon: DashboardTabIcon,
+              tabBarStyle: HIDDEN_DASHBOARD_TAB_SCREENS.includes(routeName)
                 ? { display: 'none' as const }
-                : {
-                    backgroundColor: colors.card,
-                    borderTopColor: 'transparent',
-                    borderTopWidth: 0,
-                    height: 60 + insets.bottom,
-                    paddingBottom: insets.bottom || 8,
-                    paddingTop: 6,
-                    elevation: 8,
-                    shadowOpacity: 0,
-                  },
+                : visibleTabBarStyle,
             };
           }}
         />
@@ -78,31 +97,21 @@ export default function BottomTabNavigator() {
           name="Add"
           component={Add}
           options={{
-            tabBarIcon: ({ focused, color, size }) => (
-              <MaterialCommunityIcons 
-                name="plus-circle" 
-                size={26} 
-                color={focused ? colors.accent : '#888888'} 
-              />
-            ),
+            tabBarIcon: AddTabIcon,
           }}
         />
         <Tab.Screen
           name="People"
           component={PeopleScreen}
           options={{
-            tabBarIcon: ({ color, size }) => (
-              <MaterialCommunityIcons name="account-group" color={color} size={size} />
-            ),
+            tabBarIcon: PeopleTabIcon,
           }}
         />
         <Tab.Screen
           name="Vault"
           component={SecureVaultScreen}
           options={{
-            tabBarIcon: ({ color, size }) => (
-              <MaterialCommunityIcons name="shield-lock" color={color} size={size} />
-            ),
+            tabBarIcon: VaultTabIcon,
           }}
         />
         <Tab.Screen
@@ -110,24 +119,11 @@ export default function BottomTabNavigator() {
           component={SettingsStack}
           options={({ route }) => {
             const routeName = getFocusedRouteNameFromRoute(route) ?? 'SettingsHome';
-            // Hide bottom tab bar on sub-screens inside SettingsStack
-            const hideOnScreens = ['BankConfigScreen', 'SMSTestScreen', 'Places', 'PorterTest'];
             return {
-              tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-                <MaterialCommunityIcons name="cog" color={color} size={size} />
-              ),
-              tabBarStyle: hideOnScreens.includes(routeName)
+              tabBarIcon: SettingsTabIcon,
+              tabBarStyle: HIDDEN_SETTINGS_TAB_SCREENS.includes(routeName)
                 ? { display: 'none' as const }
-                : {
-                    backgroundColor: colors.card,
-                    borderTopColor: 'transparent',
-                    borderTopWidth: 0,
-                    height: 60 + insets.bottom,
-                    paddingBottom: insets.bottom || 8,
-                    paddingTop: 6,
-                    elevation: 8,
-                    shadowOpacity: 0,
-                  },
+                : visibleTabBarStyle,
             };
           }}
         />
@@ -137,5 +133,3 @@ export default function BottomTabNavigator() {
     </>
   );
 }
-
-const styles = StyleSheet.create({});

@@ -10,18 +10,19 @@ import {
   Alert,
   InteractionManager,
 } from 'react-native';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card } from '../../components';
 import { getBankAccounts, addBankAccount, updateBankAccount, deleteBankAccount } from '../../lib/database/financial';
-import { getAllBankNames, findBankByName } from '../../lib/services/smsParser';
+import { getAllBankNames } from '../../lib/services/smsParser';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { BankAccount } from '../../types';
 
+type AccountType = BankAccount['account_type'];
+
 export default function BankConfigScreen() {
   const { colors, typography, spacing } = useTheme();
-  const navigation = useNavigation();
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -31,7 +32,7 @@ export default function BankConfigScreen() {
   // Form state
   const [bankName, setBankName] = useState('');
   const [accountLast4, setAccountLast4] = useState('');
-  const [accountType, setAccountType] = useState<'savings' | 'checking' | 'credit_card'>('savings');
+  const [accountType, setAccountType] = useState<AccountType>('savings');
   const [startingBalance, setStartingBalance] = useState('');
   const [creditLimit, setCreditLimit] = useState('');
   const [upiIds, setUpiIds] = useState('');
@@ -56,12 +57,29 @@ export default function BankConfigScreen() {
     }
   }, [bankSearchQuery]);
 
+  const loadAccountsSilently = useCallback(async () => {
+    try {
+      const data = await getBankAccounts();
+      const dataStr = JSON.stringify(data);
+      
+      if (lastDataStringRef.current !== dataStr) {
+        lastDataStringRef.current = dataStr;
+        setAccounts(data);
+      }
+      
+      // Save to cache for next instant load
+      setCache(CACHE_KEYS.BANK_ACCOUNTS, data);
+    } catch (error) {
+      console.error('Error loading accounts silently:', error);
+    }
+  }, []);
+
   // Load data with cache support
-  const loadAccounts = async () => {
+  const loadAccounts = useCallback(async () => {
     try {
       // Step 1: Try cache first for INSTANT display
       const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
-      if (cached?.data && cached.data.length > 0) {
+      if (cached) {
         const cachedStr = JSON.stringify(cached.data);
         if (lastDataStringRef.current !== cachedStr) {
           lastDataStringRef.current = cachedStr;
@@ -85,28 +103,11 @@ export default function BankConfigScreen() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const loadAccountsSilently = async () => {
-    try {
-      const data = await getBankAccounts();
-      const dataStr = JSON.stringify(data);
-      
-      if (lastDataStringRef.current !== dataStr) {
-        lastDataStringRef.current = dataStr;
-        setAccounts(data);
-      }
-      
-      // Save to cache for next instant load
-      setCache(CACHE_KEYS.BANK_ACCOUNTS, data);
-    } catch (error) {
-      console.error('Error loading accounts silently:', error);
-    }
-  };
+  }, [loadAccountsSilently]);
 
   // Keep ref always pointing to the latest loadAccountsSilently
   const loadAccountsSilentlyRef = useRef(loadAccountsSilently);
-  useEffect(() => { loadAccountsSilentlyRef.current = loadAccountsSilently; });
+  useEffect(() => { loadAccountsSilentlyRef.current = loadAccountsSilently; }, [loadAccountsSilently]);
 
   // Debounce ref for bulk operations
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -126,7 +127,7 @@ export default function BankConfigScreen() {
       loadAccounts();
       setIsInitialLoad(false);
     }
-  }, [isInitialLoad]);
+  }, [isInitialLoad, loadAccounts]);
 
   // Reload on focus (with debounce)
   useFocusEffect(
@@ -198,7 +199,8 @@ export default function BankConfigScreen() {
         account_type: accountType,
         starting_balance: parseFloat(startingBalance) || 0,
         credit_limit: accountType === 'credit_card' ? parseFloat(creditLimit) || 0 : 0,
-        upi_ids: upiArray.length > 0 ? upiArray : undefined,
+        loan_total: 0,
+        upi_ids: upiArray,
       };
 
       if (editingAccount) {
@@ -343,7 +345,8 @@ export default function BankConfigScreen() {
                         }}>
                           <Text style={[typography.caption, { color: iconColor, fontSize: 10, fontWeight: '600' }]}>
                             {account.account_type === 'credit_card' ? 'CREDIT CARD' : 
-                             account.account_type === 'checking' ? 'CHECKING' : 'SAVINGS'}
+                             account.account_type === 'current' ? 'CURRENT' :
+                             account.account_type === 'loan' ? 'LOAN' : 'SAVINGS'}
                           </Text>
                         </View>
                         <Text style={[typography.caption, { color: colors.subtext, marginLeft: 8 }]}>
@@ -439,7 +442,7 @@ export default function BankConfigScreen() {
                 Account Type *
               </Text>
               <View style={{ flexDirection: 'row', gap: 8, marginBottom: spacing.md }}>
-                {(['savings', 'checking', 'credit_card'] as const).map((type) => (
+                {(['savings', 'current', 'credit_card'] as const).map((type) => (
                   <TouchableOpacity
                     key={type}
                     onPress={() => setAccountType(type)}
@@ -457,7 +460,7 @@ export default function BankConfigScreen() {
                       fontWeight: accountType === type ? 'bold' : 'normal',
                     }]}>
                       {type === 'credit_card' ? 'Credit Card' : 
-                       type === 'checking' ? 'Checking' : 'Savings'}
+                       type === 'current' ? 'Current' : 'Savings'}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -486,7 +489,7 @@ export default function BankConfigScreen() {
                 ]}
               />
 
-              {/* Starting Balance (for savings/checking) */}
+              {/* Starting Balance (for savings/current) */}
               {accountType !== 'credit_card' && (
                 <>
                   <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>

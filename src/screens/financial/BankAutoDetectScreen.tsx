@@ -28,6 +28,7 @@ import {
   AutoDetectionResult,
 } from '../../lib/services/bankAutoDetection';
 import { useNavigation } from '@react-navigation/native';
+import { formatCurrency } from '../../utils/format';
 
 export default function BankAutoDetectScreen() {
   const { colors, typography, spacing } = useTheme();
@@ -136,6 +137,17 @@ export default function BankAutoDetectScreen() {
     );
   };
 
+  const formatDetectedBalances = (bank: DetectedBank): string | null => {
+    if (!bank.accountBalances || bank.accountBalances.length === 0) return null;
+
+    return bank.accountBalances
+      .map(item => {
+        const account = item.last4Digits ? `••${item.last4Digits}` : 'Account';
+        return `${account}: ${formatCurrency(item.balance)}`;
+      })
+      .join(' • ');
+  };
+
   return (
     <ScreenWrapper>
       <AppHeader title="Auto-Detect Banks" showBack={true} />
@@ -238,6 +250,11 @@ export default function BankAutoDetectScreen() {
                         Accounts: {bank.last4Digits.map(d => `••${d}`).join(', ')}
                       </Text>
                     )}
+                    {formatDetectedBalances(bank) && (
+                      <Text style={[typography.caption, { color: '#10b981', marginTop: 2, fontWeight: '600' }]}>
+                        Last known balance: {formatDetectedBalances(bank)}
+                      </Text>
+                    )}
                     <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
                       <View style={{
                         width: bank.confidence,
@@ -312,6 +329,11 @@ export default function BankAutoDetectScreen() {
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
                       {bank.transactionCount} SMS • {bank.last4Digits.length} account{bank.last4Digits.length > 1 ? 's' : ''}
                     </Text>
+                    {formatDetectedBalances(bank) && (
+                      <Text style={[typography.caption, { color: '#10b981', fontSize: 11, marginTop: 2 }]} numberOfLines={1}>
+                        Balance: {formatDetectedBalances(bank)}
+                      </Text>
+                    )}
                   </View>
                   <View style={{
                     backgroundColor: bank.confidence >= 70 ? '#10b98120' : bank.confidence >= 50 ? '#f59e0b20' : '#ef444420',

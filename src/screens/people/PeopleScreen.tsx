@@ -32,6 +32,7 @@ import {
 } from '../../lib/database/userdata';
 import { PeopleLedger, PeopleLedgerPayment } from '../../types';
 import { scheduleLedgerNotifications } from '../../lib/services/scheduledNotifications';
+import { CACHE_KEYS, getCached, scopedCacheKey, setCache, updateCache } from '../../lib/services/cache';
 
 type FilterType = 'active' | 'settled';
 
@@ -57,47 +58,77 @@ export default function PeopleScreen() {
     isDestructive: boolean;
     onConfirm: () => void;
   } | null>(null);
+  const lastDataStringRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    loadData(true); // Initial load: reschedule notifications
-    // Don't request notification permission here - user should enable it from Settings
+  const applyLedgerEntries = useCallback(async (entries: PeopleLedger[]) => {
+    const entriesStr = JSON.stringify(entries);
+    if (lastDataStringRef.current === entriesStr) return;
+
+    lastDataStringRef.current = entriesStr;
+    setLedgerEntries(entries);
+    setSummary(await getLedgerSummary(entries.filter(e => !e.is_settled)));
   }, []);
 
-  useEffect(() => {
-    applyFilter();
-  }, [filter, ledgerEntries]);
+  const loadDataSilently = useCallback(async (rescheduleNotifications = false) => {
+    const entries = await getPeopleLedger(true); // Fetch all, including settled
+    await applyLedgerEntries(entries);
+    await setCache(CACHE_KEYS.PEOPLE_LEDGER, entries);
 
-  const loadData = async (rescheduleNotifications = false) => {
+    // Only reschedule notifications when needed (initial load or after add/settle)
+    // Not on every pull-to-refresh — avoids cancelling/re-adding 50+ notifications
+    if (rescheduleNotifications) {
+      const activeEntries = entries.filter(e => !e.is_settled);
+      await scheduleLedgerNotifications(activeEntries);
+    }
+  }, [applyLedgerEntries]);
+
+  const loadData = useCallback(async (rescheduleNotifications = false, forceFresh = false) => {
     try {
-      setLoading(true);
-      const [entries, summaryData] = await Promise.all([
-        getPeopleLedger(true), // Fetch all, including settled
-        getLedgerSummary(),
-      ]);
-      setLedgerEntries(entries);
-      setSummary(summaryData);
+      if (!forceFresh) {
+        const cached = await getCached<PeopleLedger[]>(CACHE_KEYS.PEOPLE_LEDGER);
+        if (cached) {
+          await applyLedgerEntries(cached.data);
+          setLoading(false);
 
-      // Only reschedule notifications when needed (initial load or after add/settle)
-      // Not on every pull-to-refresh — avoids cancelling/re-adding 50+ notifications
-      if (rescheduleNotifications) {
-        const activeEntries = entries.filter(e => !e.is_settled);
-        await scheduleLedgerNotifications(activeEntries);
+          if (cached.isStale) {
+            loadDataSilently(rescheduleNotifications).catch(error =>
+              console.error('Error refreshing ledger:', error)
+            );
+          } else if (rescheduleNotifications) {
+            scheduleLedgerNotifications(cached.data.filter(e => !e.is_settled)).catch(error =>
+              console.error('Error scheduling ledger reminders:', error)
+            );
+          }
+          return;
+        }
       }
+
+      if (!lastDataStringRef.current) setLoading(true);
+      await loadDataSilently(rescheduleNotifications);
     } catch (error) {
       console.error('Error loading ledger:', error);
       Alert.alert('Error', 'Failed to load people ledger');
     } finally {
       setLoading(false);
     }
-  };
+  }, [applyLedgerEntries, loadDataSilently]);
 
-  const applyFilter = () => {
+  const applyFilter = useCallback(() => {
     if (filter === 'settled') {
       setFilteredEntries(ledgerEntries.filter(e => e.is_settled));
     } else {
       setFilteredEntries(ledgerEntries.filter(e => !e.is_settled));
     }
-  };
+  }, [filter, ledgerEntries]);
+
+  useEffect(() => {
+    loadData(true); // Initial load: reschedule notifications
+    // Don't request notification permission here - user should enable it from Settings
+  }, [loadData]);
+
+  useEffect(() => {
+    applyFilter();
+  }, [applyFilter]);
 
   const handleAddEntry = () => {
     setSelectedEntry(null);
@@ -118,7 +149,12 @@ export default function PeopleScreen() {
       isDestructive: false,
       onConfirm: async () => {
         setConfirmDialog(null);
-        setLedgerEntries(prev => prev.map(e => e.id === entry.id ? { ...e, is_settled: true } : e));
+        setLedgerEntries(prev => {
+          const next = prev.map(e => e.id === entry.id ? { ...e, is_settled: true, settled_at: new Date().toISOString() } : e);
+          setCache(CACHE_KEYS.PEOPLE_LEDGER, next);
+          getLedgerSummary(next.filter(e => !e.is_settled)).then(setSummary);
+          return next;
+        });
         setFilteredEntries(prev => prev.filter(e => e.id !== entry.id));
         try {
           await markAsSettled(entry.id);
@@ -130,8 +166,8 @@ export default function PeopleScreen() {
             setShowConfetti(false);
           });
           Toast.show({ type: 'success', text1: '🎉 Settled!', text2: `${entry.person_name} has been settled.` });
-        } catch (error) {
-          await loadData();
+        } catch {
+          await loadData(false, true);
           Alert.alert('Error', 'Failed to settle entry');
         }
       }
@@ -152,9 +188,9 @@ export default function PeopleScreen() {
         setFilteredEntries(prev => prev.filter(e => e.id !== entry.id));
         try {
           await deleteLedgerEntry(entry.id);
-          await loadData();
-        } catch (error) {
-          await loadData();
+          await loadData(false, true);
+        } catch {
+          await loadData(false, true);
           Alert.alert('Error', 'Failed to delete entry');
         }
       }
@@ -207,7 +243,6 @@ export default function PeopleScreen() {
         colors={colors}
         typography={typography}
         spacing={spacing}
-        borderRadius={borderRadius}
         onAddPayment={handleAddPayment}
         onSettle={handleSettle}
         onDelete={handleDelete}
@@ -383,14 +418,14 @@ export default function PeopleScreen() {
       <AddEntryModal
         visible={showAddModal}
         onClose={() => setShowAddModal(false)}
-        onSuccess={loadData}
+        onSuccess={() => loadData(false, true)}
       />
 
       <PaymentModal
         visible={showPaymentModal}
         entry={selectedEntry}
         onClose={() => setShowPaymentModal(false)}
-        onSuccess={loadData}
+        onSuccess={() => loadData(false, true)}
       />
 
       <PaymentHistoryModal
@@ -482,7 +517,6 @@ const LedgerCard = React.memo(({
   colors,
   typography,
   spacing,
-  borderRadius,
   onAddPayment,
   onSettle,
   onDelete,
@@ -505,7 +539,7 @@ const LedgerCard = React.memo(({
       duration: 800,
       useNativeDriver: false, // width cannot use native driver
     }).start();
-  }, [item.paid_amount, item.total_amount]);
+  }, [item.paid_amount, item.total_amount, progress, progressAnim]);
 
   return (
     <Card style={{ marginBottom: spacing.md }}>
@@ -683,7 +717,7 @@ function AddEntryModal({ visible, onClose, onSuccess }: { visible: boolean; onCl
       onClose();
       onSuccess();
       setFormData({ type: 'lent', repayment_type: 'one_time', installment_days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'] });
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Failed to add entry');
     } finally {
       setLoading(false);
@@ -821,13 +855,17 @@ function PaymentModal({ visible, entry, onClose, onSuccess }: { visible: boolean
 
     try {
       setLoading(true);
-      await addPayment(entry.id, payAmount, notes);
+      const payment = await addPayment(entry.id, payAmount, notes);
+      await updateCache<PeopleLedgerPayment[]>(
+        scopedCacheKey(CACHE_KEYS.LEDGER_PAYMENTS, entry.id),
+        current => [payment, ...(current || [])]
+      );
       Alert.alert('Success', 'Payment added successfully');
       onClose();
       onSuccess();
       setAmount('');
       setNotes('');
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Failed to add payment');
     } finally {
       setLoading(false);
@@ -888,25 +926,36 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
   const [payments, setPayments] = useState<PeopleLedgerPayment[]>([]);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (visible && entry) {
-      loadPayments();
-    }
-  }, [visible, entry]);
-
-  const loadPayments = async () => {
+  const loadPayments = useCallback(async () => {
     if (!entry) return;
 
     try {
-      setLoading(true);
+      const cacheKey = scopedCacheKey(CACHE_KEYS.LEDGER_PAYMENTS, entry.id);
+      const cached = await getCached<PeopleLedgerPayment[]>(cacheKey);
+
+      if (cached) {
+        setPayments(cached.data);
+        setLoading(false);
+        if (!cached.isStale) return;
+      } else {
+        setLoading(true);
+      }
+
       const data = await getPayments(entry.id);
       setPayments(data);
+      await setCache(cacheKey, data);
     } catch (error) {
       console.error('Error loading payments:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [entry]);
+
+  useEffect(() => {
+    if (visible && entry) {
+      loadPayments();
+    }
+  }, [visible, entry, loadPayments]);
 
   if (!entry) return null;
 

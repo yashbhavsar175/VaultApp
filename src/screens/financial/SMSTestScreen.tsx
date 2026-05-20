@@ -12,7 +12,6 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -96,6 +95,7 @@ export default function SMSTestScreen() {
       `Confidence: ${parsed.confidence}%\n\n` +
       `Bank: ${parsed.bankName || 'Not detected'}\n` +
       `Amount: ${parsed.amount ? `₹${parsed.amount}` : 'Not detected'}\n` +
+      `Balance: ${parsed.balance !== null ? `₹${parsed.balance}` : 'Not detected'}\n` +
       `Last 4: ${parsed.last4Digits || 'Not detected'}\n` +
       `Type: ${parsed.transactionType}\n` +
       `Merchant: ${parsed.merchant || 'Not detected'}`,
@@ -270,7 +270,7 @@ export default function SMSTestScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            {bugReports.map((report, index) => (
+            {bugReports.map((report) => (
               <Card key={report.id} style={{ marginBottom: spacing.sm }}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
                   <Text style={[typography.caption, { 
@@ -328,6 +328,12 @@ export default function SMSTestScreen() {
                 </Text>
               </View>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm }}>
+                <Text style={[typography.caption, { color: colors.subtext }]}>Balance</Text>
+                <Text style={[typography.body, { color: colors.text }]}>
+                  {parseResult.balance !== null ? `₹${parseResult.balance}` : 'Not detected'}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm }}>
                 <Text style={[typography.caption, { color: colors.subtext }]}>Last 4 Digits</Text>
                 <Text style={[typography.body, { color: colors.text }]}>
                   {parseResult.last4Digits || 'Not detected'}
@@ -352,5 +358,3 @@ export default function SMSTestScreen() {
     </ScreenWrapper>
   );
 }
-
-const styles = StyleSheet.create({});

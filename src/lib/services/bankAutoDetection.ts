@@ -9,8 +9,8 @@
 
 import { PermissionsAndroid, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { parseSMS, detectBankFromSender, detectBankFromContent, extractLast4Digits, INDIAN_BANKS } from './smsParser';
-import { getBankAccounts, addBankAccount } from '../database/financial';
+import { parseSMS, detectBankFromSender, detectBankFromContent, extractLast4Digits } from './smsParser';
+import { getBankAccounts, addBankAccount, updateBankAccount } from '../database/financial';
 
 // Dynamically import SMS module to handle cases where it's not available
 let SmsAndroid: any = null;
@@ -28,11 +28,20 @@ export interface DetectedBank {
   bankName: string;
   senderIds: string[];
   last4Digits: string[];
+  accountBalances?: DetectedAccountBalance[];
+  lastKnownBalance?: number | null;
+  balanceLastSeen?: string | null;
   sampleSMS: string;
   confidence: number;
   firstSeen: string;
   lastSeen: string;
   transactionCount: number;
+}
+
+export interface DetectedAccountBalance {
+  last4Digits: string | null;
+  balance: number;
+  lastSeen: string;
 }
 
 export interface AutoDetectionResult {
@@ -44,6 +53,65 @@ export interface AutoDetectionResult {
 // ═══════════════════════════════════════════════════════════════════════════════
 // SMS HISTORY SCANNING
 // ═══════════════════════════════════════════════════════════════════════════════
+
+function isNewerDate(nextDate: string, currentDate?: string | null): boolean {
+  if (!currentDate) return true;
+  return new Date(nextDate).getTime() > new Date(currentDate).getTime();
+}
+
+function recordDetectedBalance(
+  detectedBank: DetectedBank,
+  last4Digits: string | null,
+  balance: number | null,
+  seenAt: string
+) {
+  if (balance === null || balance === undefined) return;
+
+  if (!detectedBank.accountBalances) {
+    detectedBank.accountBalances = [];
+  }
+
+  const existing = detectedBank.accountBalances.find(item => item.last4Digits === last4Digits);
+  if (!existing) {
+    detectedBank.accountBalances.push({ last4Digits, balance, lastSeen: seenAt });
+  } else if (isNewerDate(seenAt, existing.lastSeen)) {
+    existing.balance = balance;
+    existing.lastSeen = seenAt;
+  }
+
+  if (isNewerDate(seenAt, detectedBank.balanceLastSeen)) {
+    detectedBank.lastKnownBalance = balance;
+    detectedBank.balanceLastSeen = seenAt;
+  }
+}
+
+function getDetectedBalanceForLast4(detectedBank: DetectedBank, last4Digits?: string | null): number | null {
+  const accountBalance = detectedBank.accountBalances?.find(item => item.last4Digits === (last4Digits || null));
+  return accountBalance?.balance ?? detectedBank.lastKnownBalance ?? null;
+}
+
+async function syncDetectedBalancesToExistingAccounts(detectedBanks: DetectedBank[]) {
+  try {
+    const accounts = await getBankAccounts();
+
+    for (const account of accounts) {
+      const detectedBank = detectedBanks.find(bank => {
+        const sameBank = bank.bankName.toLowerCase() === account.bank_name.toLowerCase();
+        const hasAccount = bank.last4Digits.includes(account.account_last4);
+        return sameBank || hasAccount;
+      });
+
+      if (!detectedBank) continue;
+
+      const detectedBalance = getDetectedBalanceForLast4(detectedBank, account.account_last4);
+      if (detectedBalance === null) continue;
+
+      await updateBankAccount(account.id, { balance: detectedBalance });
+    }
+  } catch (error) {
+    console.warn('[BankAutoDetection] Could not sync detected balances:', error);
+  }
+}
 
 /**
  * Request SMS permission
@@ -104,9 +172,9 @@ export async function scanSMSHistory(): Promise<AutoDetectionResult> {
         (fail: any) => reject(new Error(fail || 'Failed to read SMS')),
         (count: number, smsList: string) => {
           try {
-            const messages = JSON.parse(smsList);
-            resolve(messages);
-          } catch (error) {
+            const smsMessages = JSON.parse(smsList);
+            resolve(smsMessages);
+          } catch {
             reject(new Error('Failed to parse SMS data'));
           }
         }
@@ -118,6 +186,7 @@ export async function scanSMSHistory(): Promise<AutoDetectionResult> {
 
     for (const msg of messages) {
       const { address, body, date } = msg;
+      const seenAt = new Date(date).toISOString();
       
       // Detect bank
       const bankFromSender = detectBankFromSender(address);
@@ -139,7 +208,9 @@ export async function scanSMSHistory(): Promise<AutoDetectionResult> {
       if (bankMap.has(bankName)) {
         const existing = bankMap.get(bankName)!;
         existing.transactionCount++;
-        existing.lastSeen = new Date(date).toISOString();
+        if (isNewerDate(seenAt, existing.lastSeen)) {
+          existing.lastSeen = seenAt;
+        }
         
         // Add sender ID if new
         if (!existing.senderIds.includes(address)) {
@@ -153,17 +224,23 @@ export async function scanSMSHistory(): Promise<AutoDetectionResult> {
         
         // Update confidence (average)
         existing.confidence = (existing.confidence + parsed.confidence) / 2;
+        recordDetectedBalance(existing, last4, parsed.balance, seenAt);
       } else {
-        bankMap.set(bankName, {
+        const detectedBank: DetectedBank = {
           bankName,
           senderIds: [address],
           last4Digits: last4 ? [last4] : [],
+          accountBalances: [],
+          lastKnownBalance: null,
+          balanceLastSeen: null,
           sampleSMS: body.substring(0, 200),
           confidence: parsed.confidence,
-          firstSeen: new Date(date).toISOString(),
-          lastSeen: new Date(date).toISOString(),
+          firstSeen: seenAt,
+          lastSeen: seenAt,
           transactionCount: 1,
-        });
+        };
+        recordDetectedBalance(detectedBank, last4, parsed.balance, seenAt);
+        bankMap.set(bankName, detectedBank);
       }
     }
 
@@ -180,6 +257,7 @@ export async function scanSMSHistory(): Promise<AutoDetectionResult> {
     // Cache result
     await AsyncStorage.setItem('bank_auto_detection_result', JSON.stringify(result));
     await AsyncStorage.setItem('bank_auto_detection_date', new Date().toISOString());
+    await syncDetectedBalancesToExistingAccounts(detectedBanks);
 
     return result;
   } catch (error) {
@@ -232,10 +310,19 @@ export async function getUnaddedBanks(): Promise<DetectedBank[]> {
 
     const userAccounts = await getBankAccounts();
     const userBankNames = new Set(userAccounts.map(acc => acc.bank_name.toLowerCase()));
-
-    return detected.detectedBanks.filter(bank => 
-      !userBankNames.has(bank.bankName.toLowerCase())
+    const userAccountKeys = new Set(
+      userAccounts.map(acc => `${acc.bank_name.toLowerCase()}|${acc.account_last4}`)
     );
+
+    return detected.detectedBanks.filter(bank => {
+      if (bank.last4Digits.length === 0) {
+        return !userBankNames.has(bank.bankName.toLowerCase());
+      }
+
+      return bank.last4Digits.some(last4 =>
+        !userAccountKeys.has(`${bank.bankName.toLowerCase()}|${last4}`)
+      );
+    });
   } catch {
     return [];
   }
@@ -246,28 +333,42 @@ export async function getUnaddedBanks(): Promise<DetectedBank[]> {
  */
 export async function autoAddBank(detectedBank: DetectedBank): Promise<boolean> {
   try {
-    // Use most common last 4 digits
-    const last4 = detectedBank.last4Digits[0] || '0000';
-    
     // Determine account type based on keywords in sample SMS
-    let accountType: 'savings' | 'checking' | 'credit_card' = 'savings';
+    let accountType: 'savings' | 'current' | 'credit_card' = 'savings';
     const sampleLower = detectedBank.sampleSMS.toLowerCase();
     
     if (sampleLower.includes('credit card') || sampleLower.includes('card')) {
       accountType = 'credit_card';
     } else if (sampleLower.includes('current')) {
-      accountType = 'checking';
+      accountType = 'current';
     }
 
-    await addBankAccount({
-      bank_name: detectedBank.bankName,
-      account_last4: last4,
-      account_type: accountType,
-      starting_balance: 0,
-      upi_ids: [],
-    });
+    const existingAccounts = await getBankAccounts();
+    const existingKeys = new Set(
+      existingAccounts.map(acc => `${acc.bank_name.toLowerCase()}|${acc.account_last4}`)
+    );
+    const last4Digits = detectedBank.last4Digits.length > 0 ? detectedBank.last4Digits : ['0000'];
+    let addedCount = 0;
 
-    return true;
+    for (const last4 of last4Digits) {
+      const accountKey = `${detectedBank.bankName.toLowerCase()}|${last4}`;
+      if (existingKeys.has(accountKey)) continue;
+
+      const detectedBalance = getDetectedBalanceForLast4(detectedBank, last4);
+
+      await addBankAccount({
+        bank_name: detectedBank.bankName,
+        account_last4: last4,
+        account_type: accountType,
+        starting_balance: detectedBalance ?? 0,
+        credit_limit: 0,
+        loan_total: 0,
+        upi_ids: [],
+      });
+      addedCount++;
+    }
+
+    return addedCount > 0;
   } catch (error) {
     console.error('Error auto-adding bank:', error);
     return false;
@@ -314,12 +415,16 @@ export async function detectAndSuggestBank(
       bankName: parsed.bankName,
       senderIds: [senderId],
       last4Digits: parsed.last4Digits ? [parsed.last4Digits] : [],
+      accountBalances: [],
+      lastKnownBalance: null,
+      balanceLastSeen: null,
       sampleSMS: smsText.substring(0, 200),
       confidence: parsed.confidence,
       firstSeen: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
       transactionCount: 1,
     };
+    recordDetectedBalance(detectedBank, parsed.last4Digits, parsed.balance, detectedBank.lastSeen);
 
     return { shouldSuggest: true, detectedBank };
   } catch (error) {

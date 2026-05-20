@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { PermissionsAndroid, Platform, Alert } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { PermissionsAndroid, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import notifee from '@notifee/react-native';
 import { checkNotificationPermission, requestNotificationPermission } from '../../utils/permissions';
@@ -19,11 +19,7 @@ export default function PermissionPrompt({ onAllPermissionsGranted }: Permission
   const [currentStep, setCurrentStep] = useState<PermissionStep>('done');
   const [checking, setChecking] = useState(true);
 
-  useEffect(() => {
-    checkNextPermission();
-  }, []);
-
-  const checkNextPermission = async () => {
+  const checkNextPermission = useCallback(async () => {
     try {
       setChecking(true);
       
@@ -106,7 +102,11 @@ export default function PermissionPrompt({ onAllPermissionsGranted }: Permission
       console.error('Error checking permissions:', error);
       setChecking(false);
     }
-  };
+  }, [onAllPermissionsGranted]);
+
+  useEffect(() => {
+    checkNextPermission();
+  }, [checkNextPermission]);
 
   const handleGrant = async () => {
     if (Platform.OS !== 'android') return;
@@ -219,4 +219,3 @@ export default function PermissionPrompt({ onAllPermissionsGranted }: Permission
     />
   );
 }
-

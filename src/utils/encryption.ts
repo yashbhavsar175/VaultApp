@@ -21,7 +21,7 @@ async function getDerivedKey(): Promise<string> {
   const baseKey = user.id;
   
   // Generate a 256-bit key using PBKDF2
-  const key = await Aes.pbkdf2(baseKey, 'vault-salt-v1', 5000, 256);
+  const key = await Aes.pbkdf2(baseKey, 'vault-salt-v1', 5000, 256, 'sha256');
   return key;
 }
 

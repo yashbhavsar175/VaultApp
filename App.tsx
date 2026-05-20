@@ -2,7 +2,7 @@ import 'react-native-gesture-handler';
 import React, { useState, useEffect, useRef } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { ActivityIndicator, View, StyleSheet, AppState, Alert, Text, Animated, Easing } from 'react-native';
+import { ActivityIndicator, View, StyleSheet, AppState, Text, Animated, Easing } from 'react-native';
 import { Session } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
@@ -12,7 +12,7 @@ import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
 import ProfileScreen from './src/screens/user/ProfileScreen';
 import { supabase, configureGoogleSignIn, syncOfflineTransactions } from './src/lib/core';
 import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/services/notifications';
-import { initPorterDistanceCalculator, stopPorterDistanceCalculator } from './src/lib/services/porter';
+import { initPorterDistanceCalculator } from './src/lib/services/porter';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
@@ -99,7 +99,7 @@ function App() {
         }),
       ])
     ).start();
-  }, []);
+  }, [logoOpacity, logoScale, pulseAnim, textOpacity]);
 
   // Configure Google Sign-In once on app start
   useEffect(() => {
@@ -188,33 +188,33 @@ function App() {
           const parsed = JSON.parse(cachedToken);
           if (parsed?.access_token) {
             // Quick set — user sees app right away
-            const { data: { session } } = await supabase.auth.getSession();
-            setSession(session);
-            if (session?.user) {
-              checkProfile(session.user.id);
+            const { data: { session: cachedSession } } = await supabase.auth.getSession();
+            setSession(cachedSession);
+            if (cachedSession?.user) {
+              checkProfile(cachedSession.user.id);
               prefetchAllData(); // Prefetch all data for instant screen loads
               AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-                access_token: session.access_token,
-                refresh_token: session.refresh_token,
+                access_token: cachedSession.access_token,
+                refresh_token: cachedSession.refresh_token,
               }));
             }
             setLoading(false);
             return;
           }
         }
-      } catch (e) {
+      } catch {
         console.log('Cache read failed, falling back to normal auth');
       }
 
       // No cached session — normal flow
-      const { data: { session } } = await supabase.auth.getSession();
-      setSession(session);
-      if (session?.user) {
-        checkProfile(session.user.id);
+      const { data: { session: initialSession } } = await supabase.auth.getSession();
+      setSession(initialSession);
+      if (initialSession?.user) {
+        checkProfile(initialSession.user.id);
         prefetchAllData(); // Prefetch all data for instant screen loads
         AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token,
+          access_token: initialSession.access_token,
+          refresh_token: initialSession.refresh_token,
         }));
       }
       setLoading(false);
@@ -222,14 +222,14 @@ function App() {
 
     initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session?.user) {
-        checkProfile(session.user.id);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (nextSession?.user) {
+        checkProfile(nextSession.user.id);
         // Save session to AsyncStorage for background tasks
         AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token,
+          access_token: nextSession.access_token,
+          refresh_token: nextSession.refresh_token,
         }));
       } else {
         setNeedsProfile(false);
@@ -295,7 +295,13 @@ function App() {
             <LoginScreen onNavigateToSignup={() => setShowSignup(true)} />
           )}
         </NavigationContainer>
-        <Toast config={toastConfig} />
+        <Toast
+          config={toastConfig}
+          autoHide
+          visibilityTime={3000}
+          swipeable={false}
+          onPress={() => Toast.hide()}
+        />
         
         {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
         {session && !needsProfile && <PermissionPrompt />}

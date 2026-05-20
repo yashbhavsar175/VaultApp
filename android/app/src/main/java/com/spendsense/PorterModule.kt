@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 
 class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+    private var currentToast: Toast? = null
 
     init {
         PorterAccessibilityService.reactContext = reactContext
@@ -36,12 +37,62 @@ class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         reactApplicationContext.startActivity(intent)
     }
+
+    @ReactMethod
+    fun isVolumeGuardEnabled(promise: Promise) {
+        try {
+            promise.resolve(PorterAccessibilityService.isVolumeGuardEnabled(reactApplicationContext))
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun setVolumeGuardEnabled(enabled: Boolean, promise: Promise) {
+        try {
+            PorterAccessibilityService.setVolumeGuardEnabled(reactApplicationContext, enabled)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun refreshVolumeGuardCaps(promise: Promise) {
+        try {
+            PorterAccessibilityService.captureCurrentVolumeCaps(reactApplicationContext)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun getPorterNativeDebugLogs(promise: Promise) {
+        try {
+            promise.resolve(PorterAccessibilityService.getNativeDebugLogs(reactApplicationContext))
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun clearPorterNativeDebugLogs(promise: Promise) {
+        try {
+            PorterAccessibilityService.clearNativeDebugLogs(reactApplicationContext)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
     
     @ReactMethod
     fun showToastOverlay(message: String) {
-        // A simple native toast to show distance on top of Porter app
+        // Replace the previous toast instead of queueing many Porter updates.
         Handler(Looper.getMainLooper()).post {
-            Toast.makeText(reactApplicationContext, message, Toast.LENGTH_LONG).show()
+            currentToast?.cancel()
+            currentToast = Toast.makeText(reactApplicationContext, message, Toast.LENGTH_LONG)
+            currentToast?.show()
         }
     }
 }

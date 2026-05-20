@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager, AppState, AppStateStatus, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager, AppState, AppStateStatus, Animated } from 'react-native';
 import { formatCurrency as formatAmount } from '../utils/format';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -107,7 +107,7 @@ export default function Dashboard() {
   };
 
   // Helper to compute people summary from ledger data
-  const computePeopleSummary = (ledgerData: PeopleLedger[]) => {
+  const computePeopleSummary = useCallback((ledgerData: PeopleLedger[]) => {
     const lentEntries = ledgerData.filter(e => e.type === 'lent');
     const borrowedEntries = ledgerData.filter(e => e.type === 'borrowed');
     const lentTotal = lentEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
@@ -118,47 +118,13 @@ export default function Dashboard() {
       lentCount: lentEntries.length,
       borrowedCount: borrowedEntries.length,
     };
-  };
-
-  const loadData = async () => {
-    try {
-      // Step 1: Try cache first for INSTANT display (no skeleton)
-      const [cachedTxns, cachedLedger] = await Promise.all([
-        getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS),
-        getCached<PeopleLedger[]>(CACHE_KEYS.PEOPLE_LEDGER),
-      ]);
-
-      if (cachedTxns?.data && cachedTxns.data.length > 0) {
-        // Cache hit! Show data instantly — no skeleton needed
-        setTransactions(cachedTxns.data);
-        if (cachedLedger?.data) {
-          setPeopleLedger(cachedLedger.data);
-          setPeopleSummary(computePeopleSummary(cachedLedger.data));
-        }
-        setLoading(false); // Skip skeleton entirely!
-
-        // Step 2: Silently refresh in background if stale
-        if (cachedTxns.isStale || cachedLedger?.isStale) {
-          loadDataSilently();
-        }
-        return;
-      }
-
-      // No cache — show skeleton and fetch
-      setLoading(true);
-      await loadDataSilently();
-    } catch (error) {
-      console.error('Error in loadData:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, []);
 
   // Deep equality tracking
   const lastTransactionsStringRef = useRef<string | null>(null);
   const lastPeopleStringRef = useRef<string | null>(null);
 
-  const loadDataSilently = async () => {
+  const loadDataSilently = useCallback(async () => {
     try {
       // Load transactions
       try {
@@ -176,12 +142,13 @@ export default function Dashboard() {
       
       // Load people ledger data
       try {
-        const ledgerData = await getPeopleLedger(false);
+        const ledgerData = await getPeopleLedger(true);
+        const activeLedger = ledgerData.filter(entry => !entry.is_settled);
         const ledgerStr = JSON.stringify(ledgerData);
         if (lastPeopleStringRef.current !== ledgerStr) {
           lastPeopleStringRef.current = ledgerStr;
-          setPeopleLedger(ledgerData);
-          setPeopleSummary(computePeopleSummary(ledgerData));
+          setPeopleLedger(activeLedger);
+          setPeopleSummary(computePeopleSummary(activeLedger));
           // Save to cache
           setCache(CACHE_KEYS.PEOPLE_LEDGER, ledgerData);
         }
@@ -191,11 +158,46 @@ export default function Dashboard() {
     } catch (error) {
       console.error('Error in loadDataSilently:', error);
     }
-  };
+  }, [computePeopleSummary]);
+
+  const loadData = useCallback(async () => {
+    try {
+      // Step 1: Try cache first for INSTANT display (no skeleton)
+      const [cachedTxns, cachedLedger] = await Promise.all([
+        getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS),
+        getCached<PeopleLedger[]>(CACHE_KEYS.PEOPLE_LEDGER),
+      ]);
+
+      if (cachedTxns || cachedLedger) {
+        // Cache hit! Show data instantly — no skeleton needed
+        setTransactions(cachedTxns?.data || []);
+        if (cachedLedger?.data) {
+          const activeLedger = cachedLedger.data.filter(entry => !entry.is_settled);
+          setPeopleLedger(activeLedger);
+          setPeopleSummary(computePeopleSummary(activeLedger));
+        }
+        setLoading(false); // Skip skeleton entirely!
+
+        // Step 2: Silently refresh in background if stale
+        if (cachedTxns?.isStale || cachedLedger?.isStale) {
+          loadDataSilently();
+        }
+        return;
+      }
+
+      // No cache — show skeleton and fetch
+      setLoading(true);
+      await loadDataSilently();
+    } catch (error) {
+      console.error('Error in loadData:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [computePeopleSummary, loadDataSilently]);
 
   // Keep ref always pointing to the latest loadDataSilently — prevents stale closure in debounce
   const loadDataSilentlyRef = useRef(loadDataSilently);
-  useEffect(() => { loadDataSilentlyRef.current = loadDataSilently; });
+  useEffect(() => { loadDataSilentlyRef.current = loadDataSilently; }, [loadDataSilently]);
 
   // Debounce ref — prevents rapid back-to-back loads during bulk operations
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,7 +217,7 @@ export default function Dashboard() {
     if (!isInitialLoad) {
       loadData();
     }
-  }, [selectedDate]);
+  }, [selectedDate, isInitialLoad, loadData]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -230,7 +232,7 @@ export default function Dashboard() {
         }
       });
       return () => task.cancel();
-    }, [isInitialLoad, debouncedLoadSilently])
+    }, [isInitialLoad, debouncedLoadSilently, loadData])
   );
 
   // Cleanup debounce timer on unmount

@@ -8,11 +8,17 @@ export interface Transaction {
   note: string;
   category: string;
   created_at: string;
-  account_id?: string;
-  account_last4?: string;
-  sms_source?: string;
-  sms_sender?: string;
-  upi_id?: string;  // UPI ID used for transaction (e.g., user@paytm)
+  account_id?: string | null;
+  account_last4?: string | null;
+  sms_source?: string | null;
+  sms_sender?: string | null;
+  upi_id?: string | null;  // UPI ID used for transaction (e.g., user@paytm)
+  reference_number?: string | null;
+  raw_sms?: string | null;
+  balance?: number | null;
+  from_account_id?: string | null;
+  to_account_id?: string | null;
+  is_transfer_pending?: boolean | null;
 }
 
 export interface BankAccount {

@@ -21,12 +21,12 @@ BEGIN
   IF p_transaction_type = 'debit' THEN
     -- Debit: subtract from balance
     UPDATE bank_accounts
-    SET starting_balance = starting_balance - p_amount
+    SET balance = COALESCE(balance, starting_balance) - p_amount
     WHERE id = p_account_id;
   ELSE
     -- Credit: add to balance
     UPDATE bank_accounts
-    SET starting_balance = starting_balance + p_amount
+    SET balance = COALESCE(balance, starting_balance) + p_amount
     WHERE id = p_account_id;
   END IF;
 

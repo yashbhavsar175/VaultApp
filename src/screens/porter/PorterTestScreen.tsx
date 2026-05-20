@@ -17,7 +17,11 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import Geolocation from 'react-native-geolocation-service';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card } from '../../components';
-import { showToastOverlay } from '../../lib/services/porter';
+import {
+  clearPorterNativeDebugLogs,
+  getPorterNativeDebugLogs,
+  showToastOverlay,
+} from '../../lib/services/porter';
 import Config from 'react-native-config';
 
 const { PorterModule } = NativeModules;
@@ -146,7 +150,9 @@ export default function PorterTestScreen() {
     nominatim: ''
   });
   const [debugHistory, setDebugHistory] = useState<any[]>([]);
+  const [nativeInbox, setNativeInbox] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showNativeInbox, setShowNativeInbox] = useState(true);
 
   const eventEmitter = useRef(new NativeEventEmitter(PorterModule)).current;
 
@@ -160,7 +166,7 @@ export default function PorterTestScreen() {
     requestLocation();
     loadDebugLogs();
     return () => subscription.remove();
-  }, []);
+  }, [eventEmitter]);
 
   const loadDebugLogs = async () => {
     try {
@@ -178,7 +184,10 @@ export default function PorterTestScreen() {
       const historyJson = await AsyncStorage.getItem('debug_porter_history');
       const history = historyJson ? JSON.parse(historyJson) : [];
       setDebugHistory(history);
-    } catch (e) {
+
+      const nativeLogs = await getPorterNativeDebugLogs();
+      setNativeInbox(nativeLogs);
+    } catch {
       console.log('Failed to load debug logs');
     }
   };
@@ -195,6 +204,7 @@ export default function PorterTestScreen() {
       'debug_porter_api_response',
       'debug_porter_history'
     ]);
+    await clearPorterNativeDebugLogs();
     loadDebugLogs();
   };
 
@@ -238,6 +248,15 @@ export default function PorterTestScreen() {
     setDistances({ toPickup: null, tripDistance: null });
     setCapturedText(null);
     setLoadingDistance(true);
+    const startedAt = new Date().toISOString();
+    const mockText = `Mock Porter Popup || Pickup || ${trip.pickup} || Drop || ${trip.drop}`;
+    await AsyncStorage.multiSet([
+      ['debug_porter_last_time', startedAt],
+      ['debug_porter_last_raw_text', mockText],
+      ['debug_porter_last_event_type', 'MANUAL_SIMULATION'],
+      ['debug_porter_status', `Manual simulation: calculating\nPickup: ${trip.pickup}\nDrop: ${trip.drop}`],
+    ]);
+    loadDebugLogs();
 
     const lat = currentLocation?.lat ?? 19.076;  // fallback: Mumbai
     const lng = currentLocation?.lng ?? 72.8777;
@@ -245,6 +264,11 @@ export default function PorterTestScreen() {
     const result = await getDistancesKm(lat, lng, trip.pickup, trip.drop);
     setDistances(result);
     setLoadingDistance(false);
+    await AsyncStorage.multiSet([
+      ['debug_porter_result', JSON.stringify(result)],
+      ['debug_porter_status', 'Manual simulation: overlay shown'],
+    ]);
+    loadDebugLogs();
 
     // Show native toast overlay (same as it would appear over Porter)
     showToastOverlay(
@@ -334,7 +358,7 @@ export default function PorterTestScreen() {
 
       Clipboard.setString(exportText);
       showToastOverlay('✅ History copied to clipboard');
-    } catch (e) {
+    } catch {
       showToastOverlay('❌ Failed to export history');
     }
   };
@@ -353,7 +377,7 @@ export default function PorterTestScreen() {
       loadDebugLogs();
       
       showToastOverlay('🗑️ Event deleted');
-    } catch (e) {
+    } catch {
       showToastOverlay('❌ Failed to delete event');
     }
   };
@@ -363,7 +387,7 @@ export default function PorterTestScreen() {
       await AsyncStorage.setItem('debug_porter_history', JSON.stringify([]));
       loadDebugLogs();
       showToastOverlay('🗑️ All history deleted');
-    } catch (e) {
+    } catch {
       showToastOverlay('❌ Failed to delete history');
     }
   };
@@ -746,6 +770,89 @@ export default function PorterTestScreen() {
               </Text>
             </View>
           </Card>
+        </View>
+
+        {/* Native Diagnostics Inbox */}
+        <View style={{ marginTop: spacing.lg }}>
+          <TouchableOpacity
+            onPress={() => setShowNativeInbox(!showNativeInbox)}
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: spacing.sm,
+              padding: spacing.sm,
+              backgroundColor: colors.card,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: '#f59e0b60',
+            }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+              <MaterialCommunityIcons
+                name={showNativeInbox ? 'chevron-down' : 'chevron-right'}
+                size={20}
+                color="#f59e0b"
+              />
+              <Text style={[typography.caption, { color: '#f59e0b', textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1, marginLeft: spacing.xs }]}>
+                Native Inbox ({nativeInbox.length})
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+              <TouchableOpacity onPress={loadDebugLogs}>
+                <MaterialCommunityIcons name="refresh" size={18} color={colors.accent} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={async () => {
+                  await clearPorterNativeDebugLogs();
+                  setNativeInbox([]);
+                  loadDebugLogs();
+                }}>
+                <MaterialCommunityIcons name="delete-sweep-outline" size={18} color="#ef4444" />
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+
+          {showNativeInbox && (
+            <Card style={{ borderColor: '#f59e0b50', borderWidth: 1 }}>
+              {nativeInbox.length === 0 ? (
+                <Text style={[typography.caption, { color: colors.subtext }]}>
+                  No native logs yet. Open real Porter app and wait for an order, then come back and tap refresh.
+                </Text>
+              ) : (
+                nativeInbox.slice(0, 20).map((log, index) => (
+                  <View
+                    key={`${log.time}-${index}`}
+                    style={{
+                      paddingVertical: spacing.sm,
+                      borderBottomWidth: index === Math.min(nativeInbox.length, 20) - 1 ? 0 : 1,
+                      borderBottomColor: colors.border,
+                    }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
+                      <Text style={[typography.caption, { color: '#f59e0b', fontWeight: 'bold', flex: 1 }]}>
+                        {log.stage || 'log'}
+                      </Text>
+                      <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
+                        {log.time ? new Date(log.time).toLocaleTimeString() : ''}
+                      </Text>
+                    </View>
+                    <Text style={[typography.caption, { color: colors.text, marginTop: 2 }]}>
+                      {log.message || ''}
+                    </Text>
+                    {!!log.packageName && (
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 2, fontFamily: 'monospace', fontSize: 10 }]}>
+                        {log.packageName} • {log.eventType || 'event'} • len {log.textLength || 0}
+                      </Text>
+                    )}
+                    {!!log.sample && (
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontFamily: 'monospace', fontSize: 10 }]} numberOfLines={3}>
+                        {log.sample}
+                      </Text>
+                    )}
+                  </View>
+                ))
+              )}
+            </Card>
+          )}
         </View>
 
         {/* Event History */}

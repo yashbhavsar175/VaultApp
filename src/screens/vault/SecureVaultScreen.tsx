@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView,
-  TextInput, Alert, RefreshControl, Clipboard, ActivityIndicator,
+  TextInput, RefreshControl, Clipboard, ActivityIndicator,
   AppState, AppStateStatus,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -79,7 +79,10 @@ export default function SecureVaultScreen() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const isUnlockedRef = useRef(isUnlocked);
+  const isAuthenticatingRef = useRef(isAuthenticating);
+  const loadItemsRef = useRef<() => Promise<void>>(async () => {});
   useEffect(() => { isUnlockedRef.current = isUnlocked; }, [isUnlocked]);
+  useEffect(() => { isAuthenticatingRef.current = isAuthenticating; }, [isAuthenticating]);
 
   // Auto-lock when app goes to background
   useEffect(() => {
@@ -94,26 +97,9 @@ export default function SecureVaultScreen() {
     return () => subscription.remove();
   }, []);
 
-  // Lock vault when navigating away from screen
-  useFocusEffect(
-    useCallback(() => {
-      // When screen comes into focus, lock and require auth
-      setIsUnlocked(false);
-      setRevealedFields(new Set());
-      setViewingItem(null);
-      authenticateUser();
-
-      // Cleanup when leaving screen
-      return () => {
-        setIsUnlocked(false);
-        setRevealedFields(new Set());
-        setViewingItem(null);
-      };
-    }, [])
-  );
-
-  const authenticateUser = async () => {
-    if (isAuthenticating) return;
+  const authenticateUser = useCallback(async () => {
+    if (isAuthenticatingRef.current) return;
+    isAuthenticatingRef.current = true;
     setIsAuthenticating(true);
     try {
       const rnBiometrics = new ReactNativeBiometrics();
@@ -122,7 +108,7 @@ export default function SecureVaultScreen() {
       if (!available) {
         // Emulator or device with no biometrics enrolled — allow access directly
         setIsUnlocked(true);
-        loadItems();
+        await loadItemsRef.current();
         return;
       }
 
@@ -134,22 +120,41 @@ export default function SecureVaultScreen() {
       if (success) {
         HapticFeedback.trigger('notificationSuccess');
         setIsUnlocked(true);
-        loadItems();
+        await loadItemsRef.current();
       } else {
         HapticFeedback.trigger('notificationError');
-        Toast.show({ type: 'error', text1: 'Authentication Failed', text2: 'Please try again' });
+        Toast.hide();
+        Toast.show({
+          type: 'error',
+          text1: 'Authentication Failed',
+          text2: 'Please try again',
+          autoHide: true,
+          visibilityTime: 2500,
+          swipeable: false,
+          onPress: () => Toast.hide(),
+        });
       }
     } catch (e: any) {
       // User cancelled — don't show error toast for deliberate cancels
       const msg: string = e?.message || '';
       if (!msg.includes('cancel') && !msg.includes('Cancel')) {
         console.error('Biometric auth error:', e);
-        Toast.show({ type: 'error', text1: 'Auth Error', text2: 'Could not verify identity' });
+        Toast.hide();
+        Toast.show({
+          type: 'error',
+          text1: 'Auth Error',
+          text2: 'Could not verify identity',
+          autoHide: true,
+          visibilityTime: 2500,
+          swipeable: false,
+          onPress: () => Toast.hide(),
+        });
       }
     } finally {
+      isAuthenticatingRef.current = false;
       setIsAuthenticating(false);
     }
-  };
+  }, []);
   // ───────────────────────────────────────────────────────────────────────────
 
   const [items, setItems] = useState<VaultItem[]>([]);
@@ -170,7 +175,7 @@ export default function SecureVaultScreen() {
   const [formFields, setFormFields] = useState<{ label: string; value: string; isSecret: boolean }[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
-  const mapToVaultItem = (d: any): VaultItem => ({
+  const mapToVaultItem = useCallback((d: any): VaultItem => ({
     id: d.id,
     title: d.title,
     category: d.category as VaultCategory,
@@ -178,18 +183,20 @@ export default function SecureVaultScreen() {
     notes: d.notes,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
-  });
+  }), []);
 
-  const loadItems = async () => {
+  const loadItems = useCallback(async (forceFresh = false) => {
     try {
       // Show cached data instantly
-      const cached = await getCached<VaultItem[]>(CACHE_KEYS.VAULT_ITEMS);
-      if (cached?.data && cached.data.length > 0) {
-        setItems(cached.data);
-        setLoading(false);
-        
-        // Skip network call if cache is fresh
-        if (!cached.isStale) return;
+      if (!forceFresh) {
+        const cached = await getCached<VaultItem[]>(CACHE_KEYS.VAULT_ITEMS);
+        if (cached) {
+          setItems(cached.data);
+          setLoading(false);
+
+          // Skip network call if cache is fresh
+          if (!cached.isStale) return;
+        }
       }
 
       // Then fetch fresh from cloud
@@ -203,7 +210,29 @@ export default function SecureVaultScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [mapToVaultItem]);
+
+  useEffect(() => {
+    loadItemsRef.current = loadItems;
+  }, [loadItems]);
+
+  // Lock vault when navigating away from screen
+  useFocusEffect(
+    useCallback(() => {
+      // When screen comes into focus, lock and require auth
+      setIsUnlocked(false);
+      setRevealedFields(new Set());
+      setViewingItem(null);
+      authenticateUser();
+
+      // Cleanup when leaving screen
+      return () => {
+        setIsUnlocked(false);
+        setRevealedFields(new Set());
+        setViewingItem(null);
+      };
+    }, [authenticateUser])
+  );
 
   // Keep cache in sync with items state (after add/edit/delete)
   useEffect(() => {
@@ -214,7 +243,7 @@ export default function SecureVaultScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadItems();
+    await loadItems(true);
     setRefreshing(false);
   };
 
@@ -253,11 +282,13 @@ export default function SecureVaultScreen() {
           fields: formFields,
           notes: formNotes,
         });
-        setItems(prev => prev.map(i =>
+        const nextItems = items.map(i =>
           i.id === editingItem.id
             ? { ...i, title: updated.title, fields: updated.fields, notes: updated.notes, updatedAt: updated.updatedAt }
             : i
-        ));
+        );
+        setItems(nextItems);
+        await setCache(CACHE_KEYS.VAULT_ITEMS, nextItems);
       } else {
         const created = await addVaultItem({
           title: formTitle.trim(),
@@ -265,7 +296,7 @@ export default function SecureVaultScreen() {
           fields: formFields,
           notes: formNotes,
         });
-        setItems(prev => [{
+        const nextItems = [{
           id: created.id,
           title: created.title,
           category: created.category as VaultCategory,
@@ -273,7 +304,9 @@ export default function SecureVaultScreen() {
           notes: created.notes,
           createdAt: created.createdAt,
           updatedAt: created.updatedAt,
-        }, ...prev]);
+        }, ...items];
+        setItems(nextItems);
+        await setCache(CACHE_KEYS.VAULT_ITEMS, nextItems);
       }
 
       setShowAddModal(false);
@@ -295,7 +328,9 @@ export default function SecureVaultScreen() {
     setIsDeleting(true);
     try {
       await deleteVaultItem(item.id);
-      setItems(prev => prev.filter(i => i.id !== item.id));
+      const nextItems = items.filter(i => i.id !== item.id);
+      setItems(nextItems);
+      await setCache(CACHE_KEYS.VAULT_ITEMS, nextItems);
       setDeleteConfirm(null);
       setViewingItem(null);
       Toast.show({ type: 'success', text1: 'Deleted', text2: `${item.title} removed from vault` });
@@ -534,7 +569,7 @@ export default function SecureVaultScreen() {
               numberOfLines={3}
             />
           </ScrollView>
-          <Toast />
+          <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
         </View>
       </Modal>
 
@@ -610,7 +645,7 @@ export default function SecureVaultScreen() {
                 Last updated: {new Date(viewingItem.updatedAt).toLocaleString()}
               </Text>
             </ScrollView>
-            <Toast />
+            <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
           </View>
         )}
       </Modal>

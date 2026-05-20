@@ -156,6 +156,12 @@ const AMOUNT_PATTERNS = [
   /\b([0-9,]+\.[0-9]{2})\b/,  // Decimal amounts like 4925.68
 ];
 
+const BALANCE_PATTERNS = [
+  /(?:available|avail|avl|clear|closing|current|new|updated)?\s*(?:bal(?:ance)?|bal\.?)\s*(?:is|:|=|-)?\s*(?:INR|Rs\.?|₹)?\s*(-?[0-9,]+(?:\.[0-9]{1,2})?)/i,
+  /(?:available balance|avl bal|avbl bal|total balance|ledger balance|effective balance)\s*(?:is|:|=|-)?\s*(?:INR|Rs\.?|₹)?\s*(-?[0-9,]+(?:\.[0-9]{1,2})?)/i,
+  /(?:balance after (?:transaction|txn)|post(?:ed)? balance)\s*(?:is|:|=|-)?\s*(?:INR|Rs\.?|₹)?\s*(-?[0-9,]+(?:\.[0-9]{1,2})?)/i,
+];
+
 // Card/Account last 4 digits patterns
 const LAST4_PATTERNS = [
   /(?:card|a\/c|account|ac|xx|xxxx)\s*(?:ending|no\.?|number)?\s*(?:with)?\s*[xX*]{2,}([0-9]{4})/i,
@@ -175,12 +181,35 @@ const MERCHANT_PATTERNS = [
   /(?:merchant|vendor|payee):\s*([A-Za-z0-9\s&'-]{2,30})/i,
 ];
 
+const NON_TRANSACTION_AMOUNT_PATTERNS = [
+  /(?:send|transfer)\s+(?:up\s*to|upto)\s+(?:INR|Rs\.?|₹)\s*[0-9,]+/i,
+  /(?:up\s*to|upto|starting\s+from|starts?\s+at|as\s+low\s+as)\s+(?:INR|Rs\.?|₹)\s*[0-9,]+/i,
+  /(?:INR|Rs\.?|₹)\s*[0-9,]+(?:\.\d{1,2})?\s*(?:off|discount|coupon|voucher|reward)/i,
+  /(?:get|save|earn|win|claim|unlock)\s+(?:up\s*to|upto|flat)?\s*(?:INR|Rs\.?|₹)\s*[0-9,]+/i,
+  /(?:offer|deal|discount|sale|promo|coupon|voucher|reward)\b/i,
+  /(?:free\s+cancellation|book\s+(?:train|flight|bus|hotel|ticket)|travel|trip|holiday)/i,
+  /\b(?:t20\s+vibes|kaafi\s+hai)\b/i,
+  /(?:add(?:ed|ing)?|beneficiary|payee).*?(?:send|transfer).*?(?:up\s*to|upto|limit|first\s+\d+\s*(?:hrs?|hours?|days?))/i,
+  /(?:\d+\s*(?:mins?|minutes?|hrs?|hours?)\s+have\s+passed).*?(?:add(?:ed|ing)?|payee|beneficiary)/i,
+  /(?:emi|loan|bill|payment)\s+(?:is\s+)?due\b/i,
+  /\bwill\s+be\s+(?:debited|deducted)\b/i,
+];
+
+const COMPLETED_TRANSACTION_PATTERNS = [
+  /\b(?:debited|credited|deducted|spent|withdrawn|withdrawal|purchased?|paid|received|deposited|refunded|transferred|sent)\b/i,
+  /\b(?:dr|cr)\.?\s*(?:INR|Rs\.?|₹)?\s*[0-9,]+/i,
+  /\bpayment\s+(?:of\s+)?(?:INR|Rs\.?|₹)?\s*[0-9,]+(?:\.\d{1,2})?\s+(?:made|successful|completed|done|received)/i,
+  /\b(?:payment|transaction|txn)\s+(?:successful|completed|done|failed|declined)\b/i,
+  /you'?ve\s+got\s+(?:INR|Rs\.?|₹)\s*[0-9,]+.*\bfrom\b/i,
+];
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PARSER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface ParsedTransaction {
   amount: number | null;
+  balance: number | null;
   last4Digits: string | null;
   bankName: string | null;
   transactionType: 'debit' | 'credit' | 'payment' | 'unknown';
@@ -238,6 +267,24 @@ export function extractAmount(text: string): number | null {
 }
 
 /**
+ * Extract account balance from SMS.
+ * This is intentionally separate from transaction amount because many messages contain both.
+ */
+export function extractBalance(text: string): number | null {
+  for (const pattern of BALANCE_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      const balanceStr = match[1].replace(/,/g, '');
+      const balance = parseFloat(balanceStr);
+      if (!isNaN(balance)) {
+        return balance;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Extract last 4 digits of card/account
  */
 export function extractLast4Digits(text: string): string | null {
@@ -272,6 +319,14 @@ export function detectTransactionType(text: string): 'debit' | 'credit' | 'payme
   }
   
   return 'unknown';
+}
+
+export function isNonTransactionalAmountMention(text: string): boolean {
+  return NON_TRANSACTION_AMOUNT_PATTERNS.some(pattern => pattern.test(text));
+}
+
+export function hasCompletedTransactionEvidence(text: string): boolean {
+  return COMPLETED_TRANSACTION_PATTERNS.some(pattern => pattern.test(text));
 }
 
 /**
@@ -325,6 +380,7 @@ function calculateConfidence(parsed: Partial<ParsedTransaction>): number {
   if (parsed.transactionType !== 'unknown') score += 15;
   if (parsed.merchant !== null) score += 10;
   if (parsed.upiId !== null) score += 5;  // Bonus for UPI ID
+  if (parsed.balance !== null) score += 5; // Bonus for balance-bearing bank alerts
   
   return score;
 }
@@ -334,6 +390,7 @@ function calculateConfidence(parsed: Partial<ParsedTransaction>): number {
  */
 export function parseSMS(smsText: string, senderId: string): ParsedTransaction {
   const amount = extractAmount(smsText);
+  const balance = extractBalance(smsText);
   const last4Digits = extractLast4Digits(smsText);
   const bankFromSender = detectBankFromSender(senderId);
   const bankFromContent = detectBankFromContent(smsText);
@@ -344,6 +401,7 @@ export function parseSMS(smsText: string, senderId: string): ParsedTransaction {
   
   const parsed: ParsedTransaction = {
     amount,
+    balance,
     last4Digits,
     bankName,
     transactionType,
@@ -367,6 +425,8 @@ export function isTransactionSMS(text: string): boolean {
   // Must have amount
   const hasAmount = extractAmount(text) !== null;
   if (!hasAmount) return false;
+
+  if (isNonTransactionalAmountMention(text)) return false;
   
   // Must have transaction keywords
   const hasTransactionKeyword = 
@@ -374,7 +434,7 @@ export function isTransactionSMS(text: string): boolean {
     CREDIT_KEYWORDS.some(k => lowerText.includes(k)) ||
     PAYMENT_KEYWORDS.some(k => lowerText.includes(k));
   
-  return hasTransactionKeyword;
+  return hasTransactionKeyword && hasCompletedTransactionEvidence(text);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,9 @@ import {
   ScrollView,
   ActivityIndicator,
   Modal,
-  KeyboardAvoidingView,
-  Platform,
   TouchableWithoutFeedback,
   Keyboard,
   InteractionManager,
-  Animated,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -21,13 +18,13 @@ import NetInfo from '@react-native-community/netinfo';
 import Toast from 'react-native-toast-message';
 import HapticFeedback from 'react-native-haptic-feedback';
 import { addTransaction, getUniqueCategories, parseTransactionWithAI, supabase } from '../../lib/core';
-import { TransactionType, BankAccount } from '../../types';
+import { Transaction, TransactionType, BankAccount } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppHeader } from '../../components';
 import { getBankAccounts, updateBankAccount } from '../../lib/database/financial';
 import { getBankColor } from '../../config';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import { formatCurrency as formatAmount } from '../../utils/format';
+import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
 
 const TYPE_OPTIONS = [
   { value: 'income', label: 'Income', icon: 'arrow-down-circle', color: '#10b981' },
@@ -39,13 +36,6 @@ const TYPE_OPTIONS = [
 
 type Mode = 'ai' | 'manual';
 
-interface ParsedData {
-  amount: number;
-  note: string;
-  type: TransactionType;
-  category: string;
-}
-
 export default function Add() {
   const navigation = useNavigation();
   const { colors, typography, spacing, borderRadius } = useTheme();
@@ -54,12 +44,9 @@ export default function Add() {
   // AI Mode state
   const [aiInput, setAiInput] = useState('');
   const [parsing, setParsing] = useState(false);
-  const [parsedData, setParsedData] = useState<ParsedData | null>(null);
-  
   // Manual Mode state
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
-  const [type, setType] = useState<TransactionType>('expense');
   const [selectedType, setSelectedType] = useState<TransactionType | null>('expense');
   const [category, setCategory] = useState('');
   const [saving, setSaving] = useState(false);
@@ -105,11 +92,18 @@ export default function Add() {
 
   const loadSavedCategories = async () => {
     try {
+      const cached = await getCached<string[]>(CACHE_KEYS.UNIQUE_CATEGORIES);
+      if (cached) {
+        setSavedCategories(cached.data);
+        if (!cached.isStale) return;
+      }
+
       // Load from database instead of AsyncStorage for consistency
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const categories = await getUniqueCategories();
         setSavedCategories(categories);
+        await setCache(CACHE_KEYS.UNIQUE_CATEGORIES, categories);
       }
     } catch (error) {
       console.error('Error loading saved categories:', error);
@@ -161,10 +155,19 @@ export default function Add() {
   };
 
   const loadBanks = async () => {
-    setLoadingBanks(true);
     try {
+      const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+      if (cached) {
+        setBanks(cached.data);
+        setLoadingBanks(false);
+        if (!cached.isStale) return;
+      } else {
+        setLoadingBanks(true);
+      }
+
       const bankAccounts = await getBankAccounts();
       setBanks(bankAccounts);
+      await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
     } catch (error) {
       console.error('Error loading banks:', error);
       Toast.show({
@@ -182,6 +185,7 @@ export default function Add() {
     try {
       const bankAccounts = await getBankAccounts();
       setBanks(bankAccounts);
+      await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
     } catch (error) {
       console.error('Error loading banks:', error);
     }
@@ -206,7 +210,6 @@ export default function Add() {
       // Auto-fill the manual form with parsed data
       setAmount(formatAmountInput(result.amount.toString()));
       setNote(result.note);
-      setType(result.type);
       setSelectedType(result.type);
       setCategory(result.category);
       
@@ -299,6 +302,15 @@ export default function Add() {
     setSaving(true);
     try {
       const transactionAmount = parseFloat(getRawAmount(amount));
+      const selectedBank = selectedAccount !== 'cash'
+        ? banks.find(b => b.id === selectedAccount)
+        : null;
+      const accountTrace = selectedBank
+        ? {
+            account_id: selectedBank.id,
+            account_last4: selectedBank.account_last4,
+          }
+        : {};
 
       // OFFLINE-FIRST: Check connectivity before attempting to save
       const netState = await NetInfo.fetch();
@@ -313,7 +325,7 @@ export default function Add() {
           category: category || (selectedType === 'lent' ? 'Unknown' : 'general'),
           reference_number: null,
           account_last4: null,
-          sms_source: 'manual',
+          ...accountTrace,
           _localId: Date.now().toString(), // For consistency with processor-generated entries
           _queued_at: new Date().toISOString(),
         });
@@ -331,22 +343,28 @@ export default function Add() {
       }
       
       // Online: save normally
-      await addTransaction({
+      const savedTransaction = await addTransaction({
         amount: transactionAmount,
         note,
         type: selectedType,
         category: category || (selectedType === 'lent' ? 'Unknown' : 'general'),
-        sms_source: 'manual',
-      });
+        ...accountTrace,
+      }) as Transaction;
+
+      await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
+        savedTransaction,
+        ...(current || []).filter(tx => tx.id !== savedTransaction.id),
+      ]);
+      await updateCache<string[]>(CACHE_KEYS.UNIQUE_CATEGORIES, current =>
+        Array.from(new Set([...(current || []), savedTransaction.category].filter(Boolean))).sort()
+      );
 
       // Reload categories to include the newly added one
       await loadSavedCategories();
 
       // Update bank balance if bank is selected (not cash)
-      if (selectedAccount !== 'cash') {
-        const selectedBank = banks.find(b => b.id === selectedAccount);
-        if (selectedBank) {
-          let newBalance = selectedBank.balance || selectedBank.starting_balance;
+      if (selectedBank) {
+          let newBalance = selectedBank.balance ?? selectedBank.starting_balance;
           
           // Debit transactions: subtract from balance
           if (selectedType === 'expense' || selectedType === 'emi' || selectedType === 'investment' || selectedType === 'lent') {
@@ -360,7 +378,12 @@ export default function Add() {
           await updateBankAccount(selectedBank.id, {
             balance: newBalance,
           });
-        }
+
+          const updatedBank = { ...selectedBank, balance: newBalance };
+          setBanks(prev => prev.map(bank => bank.id === selectedBank.id ? updatedBank : bank));
+          await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
+            (current || banks).map(bank => bank.id === selectedBank.id ? updatedBank : bank)
+          );
       }
 
       Toast.show({
@@ -386,31 +409,11 @@ export default function Add() {
     setAiInput('');
     setAmount('');
     setNote('');
-    setType('expense');
     setSelectedType('expense');
     setCategory('');
     setSelectedAccount('cash');
     setErrors({});
     setShowSuggestions(false);
-  };
-
-  const getTypeColor = (txType: TransactionType) => {
-    switch (txType) {
-      case 'income':
-        return '#10b981';
-      case 'expense':
-        return '#ef4444';
-      case 'investment':
-        return '#7c6af7';
-      case 'emi':
-        return '#f59e0b';
-      case 'lent':
-        return '#06b6d4';
-      case 'borrowed':
-        return '#ec4899';
-      default:
-        return '#7c3aed';
-    }
   };
 
   return (
@@ -762,7 +765,6 @@ export default function Add() {
                   ]}
                   onPress={() => {
                     setSelectedType(option.value as TransactionType);
-                    setType(option.value as TransactionType);
                     setShowTypeModal(false);
                     if (errors.type) {
                       setErrors({ ...errors, type: false });

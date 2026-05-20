@@ -23,7 +23,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, AppConfirmModal, MapPickerModal } from '../../components';
 import { Place, PlaceCategory } from '../../types';
 import { getPlaces, addPlace, updatePlace, deletePlace, uploadPlacePhoto } from '../../lib/database/userdata';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
 
 const CATEGORY_MAP: Record<PlaceCategory, { label: string; icon: string; color: string }> = {
   shop: { label: 'Shop', icon: 'shopping', color: '#3b82f6' },
@@ -65,16 +65,18 @@ export default function PlacesScreen() {
   const [photoBase64, setPhotoBase64] = useState<string | undefined>(undefined);
   const [showMapPicker, setShowMapPicker] = useState(false);
 
-  const loadPlaces = useCallback(async () => {
+  const loadPlaces = useCallback(async (forceFresh = false) => {
     try {
       // Show cached data instantly
-      const cached = await getCached<Place[]>(CACHE_KEYS.PLACES);
-      if (cached?.data && cached.data.length > 0) {
-        setPlaces(cached.data);
-        setLoading(false);
-        
-        // Skip network call if cache is fresh
-        if (!cached.isStale) return;
+      if (!forceFresh) {
+        const cached = await getCached<Place[]>(CACHE_KEYS.PLACES);
+        if (cached) {
+          setPlaces(cached.data);
+          setLoading(false);
+
+          // Skip network call if cache is fresh
+          if (!cached.isStale) return;
+        }
       }
 
       // Then fetch from cloud
@@ -200,14 +202,20 @@ export default function PlacesScreen() {
       };
 
       if (isEditing) {
-        await updatePlace(editId, placeData);
+        const updatedPlace = await updatePlace(editId, placeData);
+        setPlaces(prev => prev.map(place => place.id === editId ? updatedPlace : place));
+        await updateCache<Place[]>(CACHE_KEYS.PLACES, current =>
+          current ? current.map(place => place.id === editId ? updatedPlace : place) : [updatedPlace]
+        );
         Toast.show({ type: 'success', text1: 'Place updated!' });
       } else {
-        await addPlace(placeData);
+        const createdPlace = await addPlace(placeData);
+        setPlaces(prev => [createdPlace, ...prev]);
+        await updateCache<Place[]>(CACHE_KEYS.PLACES, current => [createdPlace, ...(current || [])]);
         Toast.show({ type: 'success', text1: 'Place saved to cloud! ☁️' });
       }
 
-      await loadPlaces();
+      loadPlaces(true).catch(error => console.error('Failed to refresh places after save:', error));
       closeModal();
     } catch (error: any) {
       console.error('Save error:', error);
@@ -227,10 +235,15 @@ export default function PlacesScreen() {
       onConfirm: async () => {
         setConfirmDialog(null);
         try {
+          setPlaces(prev => prev.filter(place => place.id !== placeId));
+          await updateCache<Place[]>(CACHE_KEYS.PLACES, current =>
+            current ? current.filter(place => place.id !== placeId) : current
+          );
           await deletePlace(placeId);
-          await loadPlaces();
+          loadPlaces(true).catch(error => console.error('Failed to refresh places after delete:', error));
           Toast.show({ type: 'info', text1: 'Place removed' });
         } catch (error: any) {
+          await loadPlaces(true);
           Toast.show({ type: 'error', text1: 'Delete failed', text2: error.message });
         }
       },
@@ -548,7 +561,7 @@ export default function PlacesScreen() {
               </TouchableOpacity>
             </ScrollView>
           </KeyboardAvoidingView>
-          <Toast />
+          <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
         </View>
       </Modal>
 

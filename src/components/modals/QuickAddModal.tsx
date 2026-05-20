@@ -17,7 +17,7 @@ import Voice, { SpeechResultsEvent, SpeechErrorEvent } from '@react-native-voice
 import { useTheme } from '../../context/ThemeContext';
 import { parseNaturalLanguageTxn, ParsedTransaction } from '../../utils/nlpParser';
 import { addTransaction } from '../../lib/core';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { CACHE_KEYS, updateCache } from '../../lib/services/cache';
 import { Transaction } from '../../types';
 import { GEMINI_API_KEY } from '../../lib/services/cache';
 
@@ -28,7 +28,7 @@ interface QuickAddModalProps {
 }
 
 export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddModalProps) {
-  const { colors, typography, spacing, borderRadius } = useTheme();
+  const { colors, typography, borderRadius } = useTheme();
   const [input, setInput] = useState('');
   const [parsed, setParsed] = useState<ParsedTransaction | null>(null);
   const [saving, setSaving] = useState(false);
@@ -247,7 +247,7 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
           Toast.show({ type: 'error', text1: 'Permission Denied', text2: 'Microphone access is required.' });
         }
       }
-    } catch (e: any) {
+    } catch {
       // Silently catch start/stop errors to avoid red screen LogBox
       setIsListening(false);
     }
@@ -269,10 +269,10 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
       const savedTx = await addTransaction(newTx);
 
       // Update local cache for instant UI feedback
-      const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
-      if (cached?.data) {
-        await setCache(CACHE_KEYS.TRANSACTIONS, [savedTx, ...cached.data]);
-      }
+      await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
+        savedTx,
+        ...(current || []).filter(tx => tx.id !== savedTx.id),
+      ]);
 
       Toast.show({
         type: 'success',

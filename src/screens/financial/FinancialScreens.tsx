@@ -36,8 +36,14 @@ import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { getBankColor, getBankSuggestions } from '../../config';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
 import { formatCurrency as formatAmount } from '../../utils/format';
+import {
+  getCategoryIcon,
+  getTransactionDisplayName,
+  getTransactionSourceLabel,
+  inferTransactionCategory,
+} from '../../utils/transactionPresentation';
 import { BarChart, PieChart } from 'react-native-gifted-charts';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -74,35 +80,24 @@ export function BanksScreen() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
-        loadData();
-      });
-      return () => task.cancel();
-    }, [])
-  );
-
   const lastDataStringRef = useRef<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async (forceFresh = false) => {
     try {
       // Show cached data instantly
-      const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
-      if (cached?.data && cached.data.length > 0) {
-        const cachedStr = JSON.stringify(cached.data);
-        if (lastDataStringRef.current !== cachedStr) {
-          lastDataStringRef.current = cachedStr;
-          setBanks(cached.data);
+      if (!forceFresh) {
+        const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+        if (cached) {
+          const cachedStr = JSON.stringify(cached.data);
+          if (lastDataStringRef.current !== cachedStr) {
+            lastDataStringRef.current = cachedStr;
+            setBanks(cached.data);
+          }
+          setLoading(false);
+
+          // Skip network call if cache is fresh
+          if (!cached.isStale) return;
         }
-        setLoading(false);
-        
-        // Skip network call if cache is fresh
-        if (!cached.isStale) return;
       }
 
       // Then fetch fresh from cloud
@@ -124,7 +119,20 @@ export function BanksScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadData();
+      });
+      return () => task.cancel();
+    }, [loadData])
+  );
 
   const onRefresh = async () => {
     try {
@@ -133,6 +141,7 @@ export function BanksScreen() {
       const dataStr = JSON.stringify(banksData);
       lastDataStringRef.current = dataStr;
       setBanks(banksData);
+      await setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
       Toast.show({
         type: 'success',
         text1: 'Refreshed',
@@ -151,7 +160,7 @@ export function BanksScreen() {
   };
 
   const calculateCurrentBalance = (bank: BankAccount): number => {
-    return bank.balance || bank.starting_balance;
+    return bank.balance ?? bank.starting_balance;
   };
 
   const getTotalBalance = (): number => {
@@ -169,7 +178,7 @@ export function BanksScreen() {
     setAccountLast4(bank.account_last4);
     setAccountType(bank.account_type || 'savings');
     setStartingBalance(bank.starting_balance.toString());
-    setCurrentBalance((bank.balance || bank.starting_balance).toString());
+    setCurrentBalance((bank.balance ?? bank.starting_balance).toString());
     setCreditLimit(bank.credit_limit?.toString() || '0');
     setLoanTotal(bank.loan_total?.toString() || '0');
     setShowAddModal(true);
@@ -185,6 +194,9 @@ export function BanksScreen() {
       onConfirm: async () => {
         setConfirmDialog(null);
         setBanks(prev => prev.filter(b => b.id !== bank.id));
+        updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
+          current ? current.filter(b => b.id !== bank.id) : current
+        );
         
         try {
           await deleteBankAccount(bank.id);
@@ -193,9 +205,9 @@ export function BanksScreen() {
             text1: 'Deleted',
             text2: 'Bank account deleted successfully',
           });
-          loadData();
-        } catch (error) {
-          loadData();
+          loadData(true);
+        } catch {
+          loadData(true);
           Toast.show({
             type: 'error',
             text1: 'Error',
@@ -333,8 +345,8 @@ export function BanksScreen() {
 
       setShowAddModal(false);
       resetForm();
-      loadData();
-    } catch (error) {
+      loadData(true);
+    } catch {
       Toast.show({
         type: 'error',
         text1: 'Error',
@@ -682,7 +694,7 @@ export function BanksScreen() {
             </View>
           </ScreenWrapper>
         </View>
-        <Toast />
+        <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
       </Modal>
 
       <AppConfirmModal
@@ -911,12 +923,77 @@ interface CategoryData {
   amount: number;
   color: string;
   percentage: number;
+  count: number;
+  icon: string;
+  topMerchant: string;
+}
+
+interface CategoryBucket {
+  amount: number;
+  count: number;
+  icon: string;
+  topMerchant: string;
+  topMerchantAmount: number;
+}
+
+const RANGE_DAYS: Record<TimeRange, number> = {
+  week: 7,
+  month: 30,
+  '3months': 90,
+  year: 365,
+};
+
+function getTimeRangeLabel(range: TimeRange): string {
+  if (range === '3months') return '3 Months';
+  return range.charAt(0).toUpperCase() + range.slice(1);
+}
+
+function getTrendLabel(current: number, previous: number): { text: string; color: string; icon: string } {
+  if (previous <= 0 && current <= 0) {
+    return { text: 'No movement', color: '#64748B', icon: 'minus' };
+  }
+  if (previous <= 0) {
+    return { text: 'New activity', color: '#3b82f6', icon: 'trending-up' };
+  }
+
+  const change = ((current - previous) / previous) * 100;
+  if (Math.abs(change) < 1) {
+    return { text: 'Flat vs previous', color: '#64748B', icon: 'minus' };
+  }
+
+  return {
+    text: `${Math.abs(change).toFixed(0)}% ${change > 0 ? 'up' : 'down'} vs previous`,
+    color: change > 0 ? '#ef4444' : '#10b981',
+    icon: change > 0 ? 'trending-up' : 'trending-down',
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function formatPercent(value: number): string {
+  if (!isFinite(value)) return '0%';
+  return `${value.toFixed(0)}%`;
+}
+
+function getHealthMeta(score: number): { label: string; color: string; icon: string } {
+  if (score >= 75) return { label: 'Strong', color: '#10b981', icon: 'shield-check' };
+  if (score >= 55) return { label: 'Stable', color: '#3b82f6', icon: 'shield-half-full' };
+  if (score >= 35) return { label: 'Watch', color: '#f59e0b', icon: 'shield-alert-outline' };
+  return { label: 'Tight', color: '#ef4444', icon: 'alert-octagon-outline' };
+}
+
+function getTransactionLabel(transaction: Transaction): string {
+  return getTransactionDisplayName(transaction);
 }
 
 export function AnalyticsScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [timeRange, setTimeRange] = useState<TimeRange>('month');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  const [banks, setBanks] = useState<BankAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const lastDataStringRef = useRef<string | null>(null);
 
@@ -932,34 +1009,7 @@ export function AnalyticsScreen() {
     fadeIn();
   };
 
-  useFocusEffect(
-    React.useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
-        loadData();
-      });
-      return () => task.cancel();
-    }, [timeRange])
-  );
-
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const data = await getTransactions();
-      const filtered = filterByTimeRange(data, timeRange);
-      const dataStr = JSON.stringify(filtered);
-      
-      if (lastDataStringRef.current !== dataStr) {
-        lastDataStringRef.current = dataStr;
-        setTransactions(filtered);
-      }
-    } catch (error) {
-      console.error('Error loading analytics data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const filterByTimeRange = (data: Transaction[], range: TimeRange): Transaction[] => {
+  const filterByTimeRange = useCallback((data: Transaction[], range: TimeRange): Transaction[] => {
     const now = new Date();
     const startDate = new Date();
 
@@ -979,7 +1029,67 @@ export function AnalyticsScreen() {
     }
 
     return data.filter(t => new Date(t.created_at) >= startDate);
-  };
+  }, []);
+
+  const applyAnalyticsData = useCallback((data: Transaction[], bankData: BankAccount[]) => {
+    const filtered = filterByTimeRange(data, timeRange);
+    const dataStr = JSON.stringify({ filtered, bankData });
+
+    if (lastDataStringRef.current !== dataStr) {
+      lastDataStringRef.current = dataStr;
+      setAllTransactions(data);
+      setTransactions(filtered);
+      setBanks(bankData);
+    }
+  }, [filterByTimeRange, timeRange]);
+
+  const loadDataSilently = useCallback(async () => {
+    const [data, bankData] = await Promise.all([
+      getTransactions(),
+      getBankAccounts().catch(() => [] as BankAccount[]),
+    ]);
+
+    applyAnalyticsData(data, bankData);
+    await Promise.all([
+      setCache(CACHE_KEYS.TRANSACTIONS, data),
+      setCache(CACHE_KEYS.BANK_ACCOUNTS, bankData),
+    ]);
+  }, [applyAnalyticsData]);
+
+  const loadData = useCallback(async () => {
+    try {
+      const [cachedTransactions, cachedBanks] = await Promise.all([
+        getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS),
+        getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS),
+      ]);
+
+      if (cachedTransactions || cachedBanks) {
+        applyAnalyticsData(cachedTransactions?.data ?? [], cachedBanks?.data ?? []);
+        setLoading(false);
+
+        if (!cachedTransactions || !cachedBanks || cachedTransactions.isStale || cachedBanks.isStale) {
+          loadDataSilently().catch(error => console.error('Error refreshing analytics data:', error));
+        }
+        return;
+      }
+
+      setLoading(true);
+      await loadDataSilently();
+    } catch (error) {
+      console.error('Error loading analytics data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [applyAnalyticsData, loadDataSilently]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadData();
+      });
+      return () => task.cancel();
+    }, [loadData])
+  );
 
   // Calculate summary
   const totalSpent = transactions
@@ -998,36 +1108,123 @@ export function AnalyticsScreen() {
     .filter(t => t.type === 'emi')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const netSavings = totalIncome - totalSpent - totalInvestment - totalEMI;
+  const totalLent = transactions
+    .filter(t => t.type === 'lent')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  // Group by category for chart
-  const categoryData: { [key: string]: number } = {};
+  const totalBorrowed = transactions
+    .filter(t => t.type === 'borrowed')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  const totalTransfers = transactions
+    .filter(t => t.type === 'transfer')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  const netSavings = totalIncome - totalSpent - totalInvestment - totalEMI;
+  const totalOutflow = totalSpent + totalInvestment + totalEMI;
+  const savingsRate = totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
+  const expenseRatio = totalIncome > 0 ? (totalSpent / totalIncome) * 100 : 0;
+  const periodDays = RANGE_DAYS[timeRange];
+  const avgDailySpend = totalSpent / periodDays;
+  const accountBalance = banks.reduce((sum, bank) => sum + (bank.balance ?? bank.starting_balance), 0);
+  const incomeCoverageDays = avgDailySpend > 0 ? accountBalance / avgDailySpend : 0;
+  const activeDays = new Set(
+    transactions
+      .filter(t => t.type === 'expense')
+      .map(t => new Date(t.created_at).toDateString())
+  ).size;
+  const txnCount = transactions.length;
+  const autoDetectedCount = transactions.filter(t => t.sms_source && t.sms_source !== 'manual').length;
+
+  const previousTransactions = (() => {
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() - periodDays);
+    const startDate = new Date(endDate);
+    startDate.setDate(endDate.getDate() - periodDays);
+
+    return allTransactions.filter(t => {
+      const date = new Date(t.created_at);
+      return date >= startDate && date < endDate;
+    });
+  })();
+
+  const previousSpent = previousTransactions
+    .filter(t => t.type === 'expense')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+  const previousIncome = previousTransactions
+    .filter(t => t.type === 'income')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+  const previousOutflow = previousTransactions
+    .filter(t => ['expense', 'investment', 'emi'].includes(t.type))
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  const spendTrend = getTrendLabel(totalSpent, previousSpent);
+  const incomeTrend = getTrendLabel(totalIncome, previousIncome);
+  const outflowTrend = getTrendLabel(totalOutflow, previousOutflow);
+
+  // Group by clean, semantic category for chart/list.
+  const categoryData: Record<string, CategoryBucket> = {};
   transactions
     .filter(t => t.type === 'expense')
     .forEach(t => {
-      const cat = t.category || 'Uncategorized';
-      categoryData[cat] = (categoryData[cat] || 0) + Number(t.amount);
+      const categoryName = inferTransactionCategory(t);
+      const merchantName = getTransactionDisplayName(t);
+      const amount = Number(t.amount);
+
+      if (!categoryData[categoryName]) {
+        categoryData[categoryName] = {
+          amount: 0,
+          count: 0,
+          icon: getCategoryIcon(categoryName),
+          topMerchant: merchantName,
+          topMerchantAmount: 0,
+        };
+      }
+
+      categoryData[categoryName].amount += amount;
+      categoryData[categoryName].count += 1;
+      if (amount > categoryData[categoryName].topMerchantAmount) {
+        categoryData[categoryName].topMerchant = merchantName;
+        categoryData[categoryName].topMerchantAmount = amount;
+      }
     });
 
   const CHART_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
   const categoryChartData: CategoryData[] = Object.entries(categoryData)
-    .sort(([, a], [, b]) => b - a)
-    .map(([name, amount], index) => ({
+    .sort(([, a], [, b]) => b.amount - a.amount)
+    .map(([name, bucket], index) => ({
       name,
-      amount,
+      amount: bucket.amount,
       color: CHART_COLORS[index % CHART_COLORS.length],
-      percentage: totalSpent > 0 ? (amount / totalSpent) * 100 : 0,
+      percentage: totalSpent > 0 ? (bucket.amount / totalSpent) * 100 : 0,
+      count: bucket.count,
+      icon: bucket.icon,
+      topMerchant: bucket.topMerchant,
     }));
+
+  const topCategory = categoryChartData[0];
+  const concentrationRisk = topCategory?.percentage || 0;
+  const healthScore = clamp(
+    50 +
+      clamp(savingsRate, -30, 40) * 0.8 -
+      clamp(expenseRatio - 60, 0, 60) * 0.45 -
+      clamp(concentrationRisk - 45, 0, 55) * 0.25 +
+      (accountBalance > 0 ? 8 : -6),
+    0,
+    100
+  );
+  const healthMeta = getHealthMeta(healthScore);
 
   // Smart Insights: dynamic text-based insight about spending
   const getSmartInsight = (): string => {
-    if (transactions.length === 0) return 'Add some transactions to see your spending insights.';
-    if (categoryChartData.length === 0) return 'No expense data for this period. You\'re doing great! 🎉';
+    if (transactions.length === 0) return 'Add some transactions to unlock spending patterns, category trends, and cashflow health.';
+    if (categoryChartData.length === 0) return 'No expense data in this period. Income and investments are still included in cashflow metrics.';
     const top = categoryChartData[0];
-    const savingsRate = totalIncome > 0 ? ((netSavings / totalIncome) * 100).toFixed(0) : '0';
-    const savingsEmoji = netSavings >= 0 ? '📈' : '⚠️';
-    return `Your highest spending is in **${top.name}**, representing ${top.percentage.toFixed(0)}% of expenses (${formatAmount(top.amount)}). ${savingsEmoji} Savings rate: ${savingsRate}% this period.`;
+    const nextBestAction = savingsRate < 20
+      ? 'Protect cashflow by lowering one flexible category this period.'
+      : 'Cashflow is in a good zone; keep recurring spends predictable.';
+    return `${top.name} leads spending at ${formatPercent(top.percentage)} (${formatAmount(top.amount)}). Savings rate is ${formatPercent(savingsRate)}, spend is ${spendTrend.text.toLowerCase()}, and coverage is ${incomeCoverageDays > 0 ? `${incomeCoverageDays.toFixed(0)} days` : 'not available'}. ${nextBestAction}`;
   };
 
   // Daily spending data for bar chart
@@ -1044,7 +1241,7 @@ export function AnalyticsScreen() {
       }
     });
 
-    const allDates = Array.from(new Set([...Object.keys(dailyExpense), ...Object.keys(dailyIncome)])).slice(-7);
+    const allDates = Array.from(new Set([...Object.keys(dailyExpense), ...Object.keys(dailyIncome)])).slice(-10);
     const maxAmount = Math.max(
       ...allDates.map(date => Math.max(dailyExpense[date] || 0, dailyIncome[date] || 0)),
       1
@@ -1059,28 +1256,57 @@ export function AnalyticsScreen() {
   };
 
   // Top categories (kept for list)
-  const topCategories = Object.entries(categoryData)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5)
-    .map(([name, amount]) => ({
-      name,
-      amount,
-      percentage: totalSpent > 0 ? (amount / totalSpent) * 100 : 0,
-    }));
+  const topCategories = categoryChartData.slice(0, 5);
+
+  const topTransactions = transactions
+    .filter(t => ['expense', 'emi', 'investment', 'lent'].includes(t.type))
+    .sort((a, b) => Number(b.amount) - Number(a.amount))
+    .slice(0, 5);
+
+  const weekdaySpend = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, index) => {
+    const amount = transactions
+      .filter(t => t.type === 'expense' && new Date(t.created_at).getDay() === index)
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+    return { day, amount };
+  });
+  const maxWeekdaySpend = Math.max(...weekdaySpend.map(item => item.amount), 1);
 
   const barData = getDailyData();
+
+  const cashflowSegments = [
+    { label: 'Expenses', value: totalSpent, color: '#ef4444', icon: 'cart-outline' },
+    { label: 'Invested', value: totalInvestment, color: '#7c3aed', icon: 'chart-line' },
+    { label: 'EMI', value: totalEMI, color: '#f59e0b', icon: 'credit-card-clock-outline' },
+    { label: 'Saved', value: Math.max(netSavings, 0), color: '#10b981', icon: 'piggy-bank-outline' },
+    { label: 'Lent', value: totalLent, color: '#06b6d4', icon: 'account-arrow-right-outline' },
+  ];
+  const cashflowBase = Math.max(totalIncome, totalOutflow, 1);
+  const largestTransaction = transactions
+    .filter(t => t.type === 'expense')
+    .sort((a, b) => Number(b.amount) - Number(a.amount))[0];
+  const largestTransactionShare = totalSpent > 0 && largestTransaction
+    ? (Number(largestTransaction.amount) / totalSpent) * 100
+    : 0;
+  const typeMix = [
+    { label: 'Income', value: totalIncome, color: '#10b981', icon: 'arrow-down-circle-outline' },
+    { label: 'Expense', value: totalSpent, color: '#ef4444', icon: 'arrow-up-circle-outline' },
+    { label: 'Investment', value: totalInvestment, color: '#7c3aed', icon: 'chart-line' },
+    { label: 'EMI', value: totalEMI, color: '#f59e0b', icon: 'credit-card-clock-outline' },
+    { label: 'Borrowed', value: totalBorrowed, color: '#ec4899', icon: 'account-arrow-left-outline' },
+    { label: 'Transfer', value: totalTransfers, color: '#3b82f6', icon: 'swap-horizontal' },
+  ].filter(item => item.value > 0);
 
   // gifted-charts BarChart data (depends on barData)
   const barChartData = barData.labels.flatMap((label, i) => ([
     {
       value: barData.expense[i],
       label,
-      frontColor: '#EAB308',
+      frontColor: '#ef4444',
       labelTextStyle: { color: colors.subtext as string, fontSize: 9 },
     },
     {
       value: barData.income[i],
-      frontColor: '#64748B',
+      frontColor: '#10b981',
       labelTextStyle: { color: colors.subtext as string, fontSize: 9 },
     },
   ]));
@@ -1099,6 +1325,10 @@ export function AnalyticsScreen() {
       <AppHeader title="Analytics" showBackButton />
 
       <View style={{ padding: spacing.lg }}>
+        {loading && (
+          <ActivityIndicator color={colors.accent} style={{ marginBottom: spacing.md }} />
+        )}
+
         {/* Time Range Selector */}
         <Card style={{ padding: spacing.xs, marginBottom: spacing.lg }}>
           <View style={styles.timeRangeContainer}>
@@ -1108,7 +1338,7 @@ export function AnalyticsScreen() {
                 style={[
                   styles.timeRangeButton,
                   { borderRadius: borderRadius.sm },
-                  timeRange === range && { backgroundColor: '#EAB308' }, // vivid yellow active
+                  timeRange === range && { backgroundColor: colors.accent },
                 ]}
                 onPress={() => handleTimeRangeChange(range)}
               >
@@ -1116,7 +1346,7 @@ export function AnalyticsScreen() {
                   style={[
                     typography.caption,
                     { color: colors.subtext },
-                    timeRange === range && { color: '#1a1a1a', fontWeight: '700' },
+                    timeRange === range && { color: '#ffffff', fontWeight: '700' },
                   ]}
                 >
                   {range === '3months' ? '3 Months' : range.charAt(0).toUpperCase() + range.slice(1)}
@@ -1127,189 +1357,366 @@ export function AnalyticsScreen() {
         </Card>
 
         <Animated.View style={{ opacity: fadeAnim }}>
-
-        {/* Smart Insights Card */}
-        <Card style={{
-          padding: spacing.lg,
-          marginBottom: spacing.lg,
-          borderLeftWidth: 4,
-          borderLeftColor: '#EAB308',
-          backgroundColor: colors.card,
-        }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
-            <MaterialCommunityIcons name="lightbulb-on" size={20} color="#EAB308" />
-            <Text style={[typography.bodyBold, { color: '#EAB308', marginLeft: 6, fontSize: 13 }]}>
-              Smart Insight
-            </Text>
-          </View>
-          <Text style={[typography.body, { color: colors.text, lineHeight: 22, fontSize: 14 }]}>
-            {getSmartInsight()}
-          </Text>
-        </Card>
-
-        {/* Summary Cards */}
-        <View style={styles.summaryRow}>
-          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#ef4444' }]}>
-            <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.xs }]}>
-              Total Spent
-            </Text>
-            <Text style={[typography.h3, { color: '#ef4444', fontSize: 18 }]}>
-              {formatAmount(totalSpent)}
-            </Text>
-          </Card>
-
-          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#64748B' }]}>
-            <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.xs }]}>
-              Total Income
-            </Text>
-            <Text style={[typography.h3, { color: '#64748B', fontSize: 18 }]}>
-              {formatAmount(totalIncome)}
-            </Text>
-          </Card>
-
-          <Card style={[styles.summaryCard, { borderLeftWidth: 4, borderLeftColor: '#EAB308' }]}>
-            <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.xs }]}>
-              Net Savings
-            </Text>
-            <Text style={[typography.h3, { color: netSavings >= 0 ? '#EAB308' : '#ef4444', fontSize: 18 }]}>
-              {formatAmount(netSavings)}
-            </Text>
-          </Card>
-        </View>
-
-        {/* Donut Chart - Spending by Category (gifted-charts PieChart) */}
-        {categoryChartData.length > 0 ? (
-          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
-            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md, alignSelf: 'flex-start' }]}>
-              Where your money goes
-            </Text>
-            <PieChart
-              donut
-              data={pieData}
-              radius={90}
-              innerRadius={56}
-              innerCircleColor={colors.card}
-              centerLabelComponent={() => (
-                <View style={{ alignItems: 'center' }}>
-                  <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>Total</Text>
-                  <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]}>
-                    {formatAmount(totalSpent)}
+          <Card style={[styles.healthCard, { padding: spacing.lg, marginBottom: spacing.lg }]}>
+            <View style={styles.healthHeader}>
+              <View style={[styles.healthScore, { borderColor: healthMeta.color, backgroundColor: healthMeta.color + '12' }]}>
+                <Text style={[typography.h2, { color: healthMeta.color }]}>{healthScore.toFixed(0)}</Text>
+                <Text style={[typography.caption, { color: healthMeta.color, fontSize: 10 }]}>score</Text>
+              </View>
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.xs }}>
+                  <MaterialCommunityIcons name={healthMeta.icon} size={20} color={healthMeta.color} />
+                  <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>
+                    {healthMeta.label} Cashflow
                   </Text>
                 </View>
-              )}
-            />
-            {/* Legend */}
-            <View style={{ marginTop: spacing.md, width: '100%' }}>
-              {categoryChartData.map((item, index) => (
-                <View key={index} style={styles.legendRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                    <View style={[styles.legendDot, { backgroundColor: item.color }]} />
-                    <Text style={[typography.body, { color: colors.text }]}>{item.name}</Text>
-                  </View>
-                  <Text style={[typography.body, { color: colors.text }]}>{formatAmount(item.amount)}</Text>
-                  <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm, minWidth: 40, textAlign: 'right' }]}>
-                    {item.percentage.toFixed(0)}%
+                <Text style={[typography.caption, { color: colors.subtext, lineHeight: 18 }]}>
+                  {getTimeRangeLabel(timeRange)} view • {txnCount} entries • {activeDays} active spend day{activeDays === 1 ? '' : 's'}
+                </Text>
+              </View>
+            </View>
+            <View style={[styles.healthMeterTrack, { backgroundColor: colors.border, marginTop: spacing.md }]}>
+              <View
+                style={[
+                  styles.healthMeterFill,
+                  {
+                    width: `${healthScore}%`,
+                    backgroundColor: healthMeta.color,
+                    borderRadius: borderRadius.sm,
+                  },
+                ]}
+              />
+            </View>
+          </Card>
+
+          <View style={styles.kpiGrid}>
+            {[
+              { label: 'Income', value: formatAmount(totalIncome), icon: 'arrow-down-circle-outline', color: '#10b981', trend: incomeTrend.text },
+              { label: 'Outflow', value: formatAmount(totalOutflow), icon: 'arrow-up-circle-outline', color: '#ef4444', trend: outflowTrend.text },
+              { label: 'Net Savings', value: formatAmount(netSavings), icon: 'piggy-bank-outline', color: netSavings >= 0 ? '#3b82f6' : '#ef4444', trend: formatPercent(savingsRate) },
+              { label: 'Avg Spend / Day', value: formatAmount(avgDailySpend), icon: 'calendar-clock', color: '#f59e0b', trend: `${activeDays}/${periodDays} days` },
+              { label: 'Bank Balance', value: formatAmount(accountBalance), icon: 'bank-outline', color: '#7c3aed', trend: incomeCoverageDays > 0 ? `${incomeCoverageDays.toFixed(0)} day cover` : 'No cover yet' },
+              { label: 'Auto Tracked', value: `${autoDetectedCount}`, icon: 'radar', color: '#06b6d4', trend: `${txnCount} total entries` },
+            ].map(item => (
+              <Card key={item.label} style={[styles.kpiCard, { padding: spacing.md }]}>
+                <View style={[styles.kpiIcon, { backgroundColor: item.color + '18', borderRadius: borderRadius.sm }]}>
+                  <MaterialCommunityIcons name={item.icon} size={18} color={item.color} />
+                </View>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]} numberOfLines={1}>
+                  {item.label}
+                </Text>
+                <Text style={[typography.bodyBold, { color: colors.text, marginTop: spacing.xs }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                  {item.value}
+                </Text>
+                <Text style={[typography.caption, { color: item.color, marginTop: 2, fontSize: 11 }]} numberOfLines={1}>
+                  {item.trend}
+                </Text>
+              </Card>
+            ))}
+          </View>
+
+          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+            <View style={styles.sectionTitleRow}>
+              <MaterialCommunityIcons name="lightbulb-on-outline" size={20} color="#f59e0b" />
+              <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Smart Insight</Text>
+            </View>
+            <Text style={[typography.body, { color: colors.text, lineHeight: 22, fontSize: 14, marginTop: spacing.sm }]}>
+              {getSmartInsight()}
+            </Text>
+            {largestTransaction && (
+              <View style={[styles.inlineInsight, { borderColor: colors.border, marginTop: spacing.md, borderRadius: borderRadius.sm }]}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={18} color={largestTransactionShare > 35 ? '#f59e0b' : '#3b82f6'} />
+                <Text style={[typography.caption, { color: colors.subtext, flex: 1, marginLeft: spacing.sm, lineHeight: 18 }]}>
+                  Largest spend is {formatAmount(Number(largestTransaction.amount))} on {getTransactionLabel(largestTransaction)}, {formatPercent(largestTransactionShare)} of period spending.
+                </Text>
+              </View>
+            )}
+          </Card>
+
+          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+            <View style={styles.sectionTitleRow}>
+              <MaterialCommunityIcons name="swap-vertical" size={20} color="#3b82f6" />
+              <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Cashflow Allocation</Text>
+            </View>
+            <View style={[styles.stackedTrack, { backgroundColor: colors.border, marginTop: spacing.md, borderRadius: borderRadius.sm }]}>
+              {cashflowSegments.filter(item => item.value > 0).map(item => (
+                <View
+                  key={item.label}
+                  style={{
+                    width: `${Math.max((item.value / cashflowBase) * 100, 4)}%`,
+                    backgroundColor: item.color,
+                  }}
+                />
+              ))}
+            </View>
+            <View style={styles.segmentGrid}>
+              {cashflowSegments.map(item => (
+                <View key={item.label} style={styles.segmentItem}>
+                  <MaterialCommunityIcons name={item.icon} size={16} color={item.color} />
+                  <Text style={[typography.caption, { color: colors.subtext, marginLeft: 4 }]}>{item.label}</Text>
+                  <Text style={[typography.caption, { color: colors.text, marginLeft: 'auto', fontWeight: '600' }]}>
+                    {formatAmount(item.value)}
                   </Text>
                 </View>
               ))}
             </View>
           </Card>
-        ) : (
-          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
-            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.sm }]}>
-              Where your money goes
-            </Text>
-            <Text style={[typography.body, { color: colors.subtext }]}>No expense data available</Text>
-          </Card>
-        )}
 
-        {/* Bar Chart - Daily Spending (gifted-charts BarChart) */}
-        {barChartData.length > 0 ? (
-          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
-            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>
-              Daily spending trend
-            </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <BarChart
-                data={barChartData}
-                barWidth={16}
-                spacing={4}
-                roundedTop
-                hideRules
-                xAxisColor={colors.border}
-                yAxisColor={colors.border}
-                yAxisTextStyle={{ color: colors.subtext, fontSize: 9 }}
-                noOfSections={4}
-                maxValue={barData.maxAmount}
-                isAnimated
-                animationDuration={500}
-                barBorderRadius={3}
-                width={Math.max(screenWidth, barChartData.length * 22)}
+          {categoryChartData.length > 0 ? (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
+              <View style={[styles.sectionTitleRow, { alignSelf: 'stretch', marginBottom: spacing.md }]}>
+                <MaterialCommunityIcons name="chart-donut" size={20} color="#7c3aed" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Spending Breakdown</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginLeft: 'auto' }]}>
+                  {categoryChartData.length} categories
+                </Text>
+              </View>
+              <PieChart
+                donut
+                data={pieData}
+                radius={88}
+                innerRadius={58}
+                innerCircleColor={colors.card}
+                centerLabelComponent={() => (
+                  <View style={{ alignItems: 'center' }}>
+                    <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>Spent</Text>
+                    <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]}>
+                      {formatAmount(totalSpent)}
+                    </Text>
+                  </View>
+                )}
               />
-            </ScrollView>
-            {/* Legend */}
-            <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: spacing.md, gap: 16 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <View style={[styles.legendDot, { backgroundColor: '#EAB308' }]} />
-                <Text style={[typography.caption, { color: colors.text }]}>Expense</Text>
+              <View style={{ marginTop: spacing.md, width: '100%' }}>
+                {categoryChartData.slice(0, 6).map((item, index) => (
+                  <View key={index} style={styles.legendRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0 }}>
+                      <View style={[styles.legendIcon, { backgroundColor: item.color + '18', borderRadius: borderRadius.sm }]}>
+                        <MaterialCommunityIcons name={item.icon} size={15} color={item.color} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>{item.name}</Text>
+                        <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]} numberOfLines={1}>
+                          {item.count} entr{item.count === 1 ? 'y' : 'ies'} • Top: {item.topMerchant}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={[typography.bodyBold, { color: colors.text, marginLeft: spacing.sm }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                      {formatAmount(item.amount)}
+                    </Text>
+                    <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm, minWidth: 40, textAlign: 'right' }]}>
+                      {formatPercent(item.percentage)}
+                    </Text>
+                  </View>
+                ))}
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <View style={[styles.legendDot, { backgroundColor: '#64748B' }]} />
-                <Text style={[typography.caption, { color: colors.text }]}>Income</Text>
-              </View>
-            </View>
-          </Card>
-        ) : (
-          <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
-            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.sm }]}>
-              Daily spending trend
-            </Text>
-            <Text style={[typography.body, { color: colors.subtext }]}>No transaction data available</Text>
-          </Card>
-        )}
+            </Card>
+          ) : (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
+              <MaterialCommunityIcons name="chart-donut" size={42} color={colors.border} />
+              <Text style={[typography.h3, { color: colors.text, marginTop: spacing.sm }]}>No expense mix yet</Text>
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, textAlign: 'center' }]}>
+                Expenses in this period will appear here.
+              </Text>
+            </Card>
+          )}
 
-        {/* Top Categories List */}
-        {topCategories.length > 0 && (
-          <Card style={{ padding: spacing.lg }}>
-            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>
-              Top spending categories
-            </Text>
-            {topCategories.map((cat, index) => (
-              <View key={index} style={styles.topCategoryRow}>
-                <View
-                  style={[
-                    styles.rankBadge,
-                    { backgroundColor: CHART_COLORS[index % CHART_COLORS.length] + '20', borderRadius: borderRadius.sm },
-                  ]}
-                >
-                  <Text style={[typography.bodyBold, { color: CHART_COLORS[index % CHART_COLORS.length] }]}>
-                    {index + 1}
-                  </Text>
+          {barChartData.length > 0 ? (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+              <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
+                <MaterialCommunityIcons name="chart-bar" size={20} color="#10b981" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Daily Trend</Text>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <BarChart
+                  data={barChartData}
+                  barWidth={14}
+                  spacing={5}
+                  roundedTop
+                  hideRules
+                  xAxisColor={colors.border}
+                  yAxisColor={colors.border}
+                  yAxisTextStyle={{ color: colors.subtext, fontSize: 9 }}
+                  noOfSections={4}
+                  maxValue={barData.maxAmount}
+                  isAnimated
+                  animationDuration={500}
+                  barBorderRadius={3}
+                  width={Math.max(screenWidth, barChartData.length * 22)}
+                />
+              </ScrollView>
+              <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: spacing.md, gap: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                  <Text style={[typography.caption, { color: colors.text }]}>Expense</Text>
                 </View>
-                <View style={{ flex: 1, marginLeft: spacing.md }}>
-                  <Text style={[typography.body, { color: colors.text, marginBottom: spacing.xs }]}>
-                    {cat.name}
-                  </Text>
-                  <View style={[styles.progressBar, { backgroundColor: colors.border, borderRadius: borderRadius.sm }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                  <Text style={[typography.caption, { color: colors.text }]}>Income</Text>
+                </View>
+              </View>
+            </Card>
+          ) : (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg, alignItems: 'center' }}>
+              <MaterialCommunityIcons name="chart-bar" size={42} color={colors.border} />
+              <Text style={[typography.h3, { color: colors.text, marginTop: spacing.sm }]}>No trend yet</Text>
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>Transactions will build a daily chart.</Text>
+            </Card>
+          )}
+
+          {totalSpent > 0 && (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+              <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
+                <MaterialCommunityIcons name="calendar-week" size={20} color="#f59e0b" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Weekday Pattern</Text>
+              </View>
+              {weekdaySpend.map(item => (
+                <View key={item.day} style={styles.weekdayRow}>
+                  <Text style={[typography.caption, { color: colors.subtext, width: 34 }]}>{item.day}</Text>
+                  <View style={[styles.weekdayTrack, { backgroundColor: colors.border, borderRadius: borderRadius.sm }]}>
                     <View
                       style={[
-                        styles.progressFill,
+                        styles.weekdayFill,
                         {
-                          width: `${cat.percentage}%`,
-                          backgroundColor: CHART_COLORS[index % CHART_COLORS.length],
+                          width: `${(item.amount / maxWeekdaySpend) * 100}%`,
+                          backgroundColor: item.amount === maxWeekdaySpend ? '#ef4444' : '#3b82f6',
                           borderRadius: borderRadius.sm,
                         },
                       ]}
                     />
                   </View>
+                  <Text style={[typography.caption, { color: colors.text, width: 82, textAlign: 'right' }]} numberOfLines={1}>
+                    {formatAmount(item.amount)}
+                  </Text>
                 </View>
-                <Text style={[typography.bodyBold, { color: colors.text, marginLeft: spacing.md }]}>
-                  {formatAmount(cat.amount)}
+              ))}
+            </Card>
+          )}
+
+          {typeMix.length > 0 && (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+              <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
+                <MaterialCommunityIcons name="view-dashboard-outline" size={20} color="#06b6d4" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Activity Mix</Text>
+              </View>
+              <View style={styles.typeMixGrid}>
+                {typeMix.map(item => (
+                  <View key={item.label} style={[styles.typeMixItem, { borderColor: colors.border, borderRadius: borderRadius.sm }]}>
+                    <MaterialCommunityIcons name={item.icon} size={18} color={item.color} />
+                    <Text style={[typography.caption, { color: colors.subtext, marginTop: 4 }]}>{item.label}</Text>
+                    <Text style={[typography.bodyBold, { color: colors.text, marginTop: 2 }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                      {formatAmount(item.value)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </Card>
+          )}
+
+          {topCategories.length > 0 && (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+              <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
+                <MaterialCommunityIcons name="format-list-numbered" size={20} color="#ef4444" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Top Categories</Text>
+              </View>
+              {topCategories.map((cat, index) => (
+                <View key={index} style={styles.topCategoryRow}>
+                  <View
+                    style={[
+                      styles.rankBadge,
+                      { backgroundColor: cat.color + '18', borderRadius: borderRadius.sm },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name={cat.icon} size={18} color={cat.color} />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: spacing.md, minWidth: 0 }}>
+                    <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>
+                      {cat.name}
+                    </Text>
+                    <Text style={[typography.caption, { color: colors.subtext, marginTop: 2, marginBottom: spacing.xs }]} numberOfLines={1}>
+                      {cat.count} entr{cat.count === 1 ? 'y' : 'ies'} • Top: {cat.topMerchant}
+                    </Text>
+                    <View style={[styles.progressBar, { backgroundColor: colors.border, borderRadius: borderRadius.sm }]}>
+                      <View
+                        style={[
+                          styles.progressFill,
+                          {
+                            width: `${cat.percentage}%`,
+                            backgroundColor: cat.color,
+                            borderRadius: borderRadius.sm,
+                          },
+                        ]}
+                      />
+                    </View>
+                  </View>
+                  <Text style={[typography.bodyBold, { color: colors.text, marginLeft: spacing.md }]} numberOfLines={1}>
+                    {formatAmount(cat.amount)}
+                  </Text>
+                </View>
+              ))}
+            </Card>
+          )}
+
+          {topTransactions.length > 0 && (
+            <Card style={{ padding: spacing.lg, marginBottom: spacing.lg }}>
+              <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
+              <MaterialCommunityIcons name="chart-bar" size={20} color="#7c3aed" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Largest Entries</Text>
+              </View>
+              {topTransactions.map((transaction, index) => {
+                const categoryName = inferTransactionCategory(transaction);
+                const sourceLabel = getTransactionSourceLabel(transaction);
+                const icon = getCategoryIcon(categoryName);
+                const color = CHART_COLORS[index % CHART_COLORS.length];
+                const date = new Date(transaction.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+
+                return (
+                  <View key={transaction.id} style={[styles.transactionRow, index < topTransactions.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+                    <View style={[styles.transactionIcon, { backgroundColor: color + '18', borderRadius: borderRadius.sm }]}>
+                      <MaterialCommunityIcons name={icon} size={18} color={color} />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
+                      <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>{getTransactionLabel(transaction)}</Text>
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]} numberOfLines={1}>
+                        {categoryName} • {sourceLabel} • {date}
+                      </Text>
+                    </View>
+                    <Text style={[typography.bodyBold, { color: colors.text, marginLeft: spacing.sm }]} numberOfLines={1}>
+                      {formatAmount(Number(transaction.amount))}
+                    </Text>
+                  </View>
+                );
+              })}
+            </Card>
+          )}
+
+          {banks.length > 0 && (
+            <Card style={{ padding: spacing.lg }}>
+              <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
+                <MaterialCommunityIcons name="bank-outline" size={20} color="#3b82f6" />
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Account Snapshot</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginLeft: 'auto' }]}>
+                  {banks.length} account{banks.length === 1 ? '' : 's'}
                 </Text>
               </View>
-            ))}
-          </Card>
-        )}
+              {banks.slice(0, 4).map((bank, index) => {
+                const bankBalance = bank.balance ?? bank.starting_balance;
+                return (
+                  <View key={bank.id} style={[styles.accountRow, index < Math.min(banks.length, 4) - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+                    <View style={[styles.bankDot, { backgroundColor: getBankColor(bank.bank_name) }]}>
+                      <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>{bank.bank_name.charAt(0).toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
+                      <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>{bank.bank_name}</Text>
+                      <Text style={[typography.caption, { color: colors.subtext }]}>••{bank.account_last4}</Text>
+                    </View>
+                    <Text style={[typography.bodyBold, { color: bankBalance >= 0 ? '#10b981' : '#ef4444' }]} numberOfLines={1}>
+                      {formatAmount(bankBalance)}
+                    </Text>
+                  </View>
+                );
+              })}
+            </Card>
+          )}
         </Animated.View>
       </View>
     </ScreenWrapper>
@@ -1363,6 +1770,114 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     alignItems: 'center',
   },
+  healthCard: {
+    overflow: 'hidden',
+  },
+  healthHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  healthScore: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  healthMeterTrack: {
+    height: 8,
+    overflow: 'hidden',
+  },
+  healthMeterFill: {
+    height: '100%',
+  },
+  kpiGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  kpiCard: {
+    width: '48%',
+    marginBottom: 12,
+  },
+  kpiIcon: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  inlineInsight: {
+    borderWidth: 1,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  stackedTrack: {
+    height: 12,
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
+  segmentGrid: {
+    marginTop: 12,
+  },
+  segmentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  weekdayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  weekdayTrack: {
+    flex: 1,
+    height: 8,
+    overflow: 'hidden',
+  },
+  weekdayFill: {
+    height: '100%',
+  },
+  typeMixGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  typeMixItem: {
+    width: '48%',
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 10,
+  },
+  transactionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  transactionIcon: {
+    width: 36,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  bankDot: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   summaryRow: {
     flexDirection: 'row',
     gap: 12,
@@ -1382,6 +1897,13 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     marginRight: 8,
+  },
+  legendIcon: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
   },
   topCategoryRow: {
     flexDirection: 'row',
