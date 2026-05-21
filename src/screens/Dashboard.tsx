@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager, AppState, AppStateStatus, Animated } from 'react-native';
 import { formatCurrency as formatAmount } from '../utils/format';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -10,6 +10,7 @@ import { useTheme } from '../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, QuickAddModal } from '../components';
 import { getPeopleLedger } from '../lib/database/userdata';
 import { getCached, setCache, CACHE_KEYS } from '../lib/services/cache';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/services/dataEvents';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -23,7 +24,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [peopleLedger, setPeopleLedger] = useState<PeopleLedger[]>([]);
-  const [peopleSummary, setPeopleSummary] = useState({ totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
 
@@ -95,43 +95,107 @@ export default function Dashboard() {
            selectedDate.getFullYear() === now.getFullYear();
   };
 
-  const filterTransactionsByMonth = (txns: Transaction[]) => {
-    const year = selectedDate.getFullYear();
-    const month = selectedDate.getMonth();
-    // Use year/month comparison to avoid UTC vs local timezone issues
-    // new Date(ISO string) converts UTC to local time automatically
-    return txns.filter(t => {
-      const txDate = new Date(t.created_at);
-      return txDate.getFullYear() === year && txDate.getMonth() === month;
-    });
-  };
-
   // Helper to compute people summary from ledger data
   const computePeopleSummary = useCallback((ledgerData: PeopleLedger[]) => {
-    const lentEntries = ledgerData.filter(e => e.type === 'lent');
-    const borrowedEntries = ledgerData.filter(e => e.type === 'borrowed');
-    const lentTotal = lentEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
-    const borrowedTotal = borrowedEntries.reduce((sum, e) => sum + Number(e.remaining_amount), 0);
-    return {
-      totalLent: lentTotal,
-      totalBorrowed: borrowedTotal,
-      lentCount: lentEntries.length,
-      borrowedCount: borrowedEntries.length,
-    };
+    return ledgerData.reduce(
+      (summary, entry) => {
+        if (entry.type === 'lent') {
+          summary.totalLent += Number(entry.remaining_amount);
+          summary.lentCount += 1;
+        } else if (entry.type === 'borrowed') {
+          summary.totalBorrowed += Number(entry.remaining_amount);
+          summary.borrowedCount += 1;
+        }
+
+        return summary;
+      },
+      { totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 }
+    );
   }, []);
 
-  // Deep equality tracking
-  const lastTransactionsStringRef = useRef<string | null>(null);
-  const lastPeopleStringRef = useRef<string | null>(null);
+  const peopleSummary = useMemo(() => computePeopleSummary(peopleLedger), [computePeopleSummary, peopleLedger]);
+  const lentPeopleEntries = useMemo(() => peopleLedger.filter(e => e.type === 'lent'), [peopleLedger]);
+
+  const monthlyTotals = useMemo(() => {
+    const year = selectedDate.getFullYear();
+    const month = selectedDate.getMonth();
+
+    return transactions.reduce(
+      (totals, transaction) => {
+        // Use year/month comparison to avoid UTC vs local timezone issues.
+        const txDate = new Date(transaction.created_at);
+        if (txDate.getFullYear() !== year || txDate.getMonth() !== month) {
+          return totals;
+        }
+
+        const amount = Number(transaction.amount);
+        if (transaction.type === 'income') {
+          totals.totalIncome += amount;
+        } else if (transaction.type === 'expense') {
+          totals.totalExpense += amount;
+        } else if (transaction.type === 'investment') {
+          totals.totalInvestment += amount;
+        } else if (transaction.type === 'emi') {
+          totals.totalEMI += amount;
+        }
+
+        return totals;
+      },
+      { totalIncome: 0, totalExpense: 0, totalInvestment: 0, totalEMI: 0 }
+    );
+  }, [selectedDate, transactions]);
+
+  const { totalIncome, totalExpense, totalInvestment, totalEMI } = monthlyTotals;
+  const monthlyBalance = totalIncome - totalExpense - totalInvestment - totalEMI;
+  const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
+
+  // Exact change tracking avoids JSON.stringify on full datasets during refresh.
+  const lastTransactionsRef = useRef<Transaction[]>([]);
+  const lastPeopleRef = useRef<PeopleLedger[]>([]);
+  const isSilentLoadInFlightRef = useRef(false);
+
+  const areTransactionsEqual = useCallback((left: Transaction[], right: Transaction[]) => {
+    if (left.length !== right.length) return false;
+
+    return left.every((tx, index) => {
+      const next = right[index];
+      return (
+        tx.id === next.id &&
+        tx.created_at === next.created_at &&
+        Number(tx.amount) === Number(next.amount) &&
+        tx.type === next.type &&
+        tx.category === next.category &&
+        tx.note === next.note &&
+        tx.account_id === next.account_id
+      );
+    });
+  }, []);
+
+  const arePeopleLedgerEqual = useCallback((left: PeopleLedger[], right: PeopleLedger[]) => {
+    if (left.length !== right.length) return false;
+
+    return left.every((entry, index) => {
+      const next = right[index];
+      return (
+        entry.id === next.id &&
+        entry.type === next.type &&
+        Number(entry.remaining_amount) === Number(next.remaining_amount) &&
+        entry.is_settled === next.is_settled &&
+        entry.person_name === next.person_name
+      );
+    });
+  }, []);
 
   const loadDataSilently = useCallback(async () => {
+    if (isSilentLoadInFlightRef.current) return;
+    isSilentLoadInFlightRef.current = true;
+
     try {
       // Load transactions
       try {
         const data = await getTransactions();
-        const dataStr = JSON.stringify(data);
-        if (lastTransactionsStringRef.current !== dataStr) {
-          lastTransactionsStringRef.current = dataStr;
+        if (!areTransactionsEqual(lastTransactionsRef.current, data)) {
+          lastTransactionsRef.current = data;
           setTransactions(data);
           // Save to cache for next instant load
           setCache(CACHE_KEYS.TRANSACTIONS, data);
@@ -144,11 +208,9 @@ export default function Dashboard() {
       try {
         const ledgerData = await getPeopleLedger(true);
         const activeLedger = ledgerData.filter(entry => !entry.is_settled);
-        const ledgerStr = JSON.stringify(ledgerData);
-        if (lastPeopleStringRef.current !== ledgerStr) {
-          lastPeopleStringRef.current = ledgerStr;
+        if (!arePeopleLedgerEqual(lastPeopleRef.current, ledgerData)) {
+          lastPeopleRef.current = ledgerData;
           setPeopleLedger(activeLedger);
-          setPeopleSummary(computePeopleSummary(activeLedger));
           // Save to cache
           setCache(CACHE_KEYS.PEOPLE_LEDGER, ledgerData);
         }
@@ -157,8 +219,10 @@ export default function Dashboard() {
       }
     } catch (error) {
       console.error('Error in loadDataSilently:', error);
+    } finally {
+      isSilentLoadInFlightRef.current = false;
     }
-  }, [computePeopleSummary]);
+  }, [arePeopleLedgerEqual, areTransactionsEqual]);
 
   const loadData = useCallback(async () => {
     try {
@@ -170,11 +234,13 @@ export default function Dashboard() {
 
       if (cachedTxns || cachedLedger) {
         // Cache hit! Show data instantly — no skeleton needed
-        setTransactions(cachedTxns?.data || []);
+        const cachedTransactions = cachedTxns?.data || [];
+        setTransactions(cachedTransactions);
+        lastTransactionsRef.current = cachedTransactions;
         if (cachedLedger?.data) {
           const activeLedger = cachedLedger.data.filter(entry => !entry.is_settled);
           setPeopleLedger(activeLedger);
-          setPeopleSummary(computePeopleSummary(activeLedger));
+          lastPeopleRef.current = cachedLedger.data;
         }
         setLoading(false); // Skip skeleton entirely!
 
@@ -193,7 +259,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [computePeopleSummary, loadDataSilently]);
+  }, [loadDataSilently]);
 
   // Keep ref always pointing to the latest loadDataSilently — prevents stale closure in debounce
   const loadDataSilentlyRef = useRef(loadDataSilently);
@@ -213,12 +279,6 @@ export default function Dashboard() {
     }, 500);
   }, []);
 
-  useEffect(() => {
-    if (!isInitialLoad) {
-      loadData();
-    }
-  }, [selectedDate, isInitialLoad, loadData]);
-
   useFocusEffect(
     React.useCallback(() => {
       const task = InteractionManager.runAfterInteractions(() => {
@@ -233,6 +293,16 @@ export default function Dashboard() {
       });
       return () => task.cancel();
     }, [isInitialLoad, debouncedLoadSilently, loadData])
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['transactions', 'ledger'])) {
+          debouncedLoadSilently();
+        }
+      });
+    }, [debouncedLoadSilently])
   );
 
   // Cleanup debounce timer on unmount
@@ -250,30 +320,6 @@ export default function Dashboard() {
     await loadDataSilently();
     setRefreshing(false);
   };
-
-  // Filter transactions for selected month
-  const monthlyTransactions = filterTransactionsByMonth(transactions);
-
-  const totalIncome = monthlyTransactions
-    .filter(t => t.type === 'income')
-    .reduce((sum, t) => sum + Number(t.amount), 0);
-
-  const totalExpense = monthlyTransactions
-    .filter(t => t.type === 'expense')
-    .reduce((sum, t) => sum + Number(t.amount), 0);
-
-  const totalInvestment = monthlyTransactions
-    .filter(t => t.type === 'investment')
-    .reduce((sum, t) => sum + Number(t.amount), 0);
-
-  const totalEMI = monthlyTransactions
-    .filter(t => t.type === 'emi')
-    .reduce((sum, t) => sum + Number(t.amount), 0);
-
-  const monthlyBalance = totalIncome - totalExpense - totalInvestment - totalEMI;
-  
-  const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
-
 
   // SECURITY: Blank privacy screen when app is in background
   if (isPrivacyMode) {
@@ -476,7 +522,7 @@ export default function Dashboard() {
           </View>
 
           {/* ACCORDION 2: People */}
-          {peopleLedger.filter(e => e.type === 'lent').length > 0 && (
+          {lentPeopleEntries.length > 0 && (
             <View style={{ marginBottom: spacing.md }}>
               <TouchableOpacity 
                 onPress={() => toggleSection('people')}
@@ -513,7 +559,7 @@ export default function Dashboard() {
                     </Text>
                   </Card>
 
-                  {peopleLedger.filter(e => e.type === 'lent').slice(0, 3).map((entry) => {
+                  {lentPeopleEntries.slice(0, 3).map((entry) => {
                     const personColor = colors.income;
                     
                     return (
@@ -542,7 +588,7 @@ export default function Dashboard() {
                     );
                   })}
 
-                  {peopleLedger.filter(e => e.type === 'lent').length > 3 && (
+                  {lentPeopleEntries.length > 3 && (
                     <TouchableOpacity onPress={() => (navigation as any).navigate('People')}>
                       <Text style={[typography.caption, { color: colors.accent, textAlign: 'center', marginTop: spacing.xs, fontWeight: '600' }]}>
                         View all →

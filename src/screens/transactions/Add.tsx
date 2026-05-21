@@ -25,6 +25,7 @@ import { getBankAccounts, updateBankAccount } from '../../lib/database/financial
 import { getBankColor } from '../../config';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
+import { emitFinanceDataChanged } from '../../lib/services/dataEvents';
 
 const TYPE_OPTIONS = [
   { value: 'income', label: 'Income', icon: 'arrow-down-circle', color: '#10b981' },
@@ -384,6 +385,11 @@ export default function Add() {
           await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
             (current || banks).map(bank => bank.id === selectedBank.id ? updatedBank : bank)
           );
+          emitFinanceDataChanged({
+            areas: ['accounts'],
+            source: 'manual:add:accountBalance',
+            transactionId: savedTransaction.id,
+          });
       }
 
       Toast.show({

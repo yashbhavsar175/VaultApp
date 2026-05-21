@@ -37,6 +37,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { getBankColor, getBankSuggestions } from '../../config';
 import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import {
   getCategoryIcon,
@@ -131,6 +132,16 @@ export function BanksScreen() {
         loadData();
       });
       return () => task.cancel();
+    }, [loadData])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['accounts'])) {
+          loadData(true);
+        }
+      });
     }, [loadData])
   );
 
@@ -1089,6 +1100,16 @@ export function AnalyticsScreen() {
       });
       return () => task.cancel();
     }, [loadData])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['transactions', 'accounts'])) {
+          loadDataSilently().catch(error => console.error('Error refreshing analytics after data event:', error));
+        }
+      });
+    }, [loadDataSilently])
   );
 
   // Calculate summary

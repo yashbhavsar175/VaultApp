@@ -11,11 +11,13 @@ import RootNavigator from './src/navigation/RootNavigator';
 import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
 import ProfileScreen from './src/screens/user/ProfileScreen';
 import { supabase, configureGoogleSignIn, syncOfflineTransactions } from './src/lib/core';
-import { initializeBackgroundListeners, initializeForegroundListener } from './src/lib/services/notifications';
+import { initializeForegroundListener } from './src/lib/services/notifications';
 import { initPorterDistanceCalculator } from './src/lib/services/porter';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
+
+const LEGACY_AUTH_TOKEN_KEY = 'supabase.auth.token';
 
 const toastConfig = {
   success: (props: any) => (
@@ -106,22 +108,13 @@ function App() {
     configureGoogleSignIn();
   }, []);
 
-  // Initialize background listeners on app start
+  // Initialize native background helpers on app start
   useEffect(() => {
-    console.log('🚀 [App] Initializing background listeners...');
-    initializeBackgroundListeners().catch(error => {
-      console.error('❌ [App] Failed to initialize background listeners:', error);
-    });
     initPorterDistanceCalculator();
 
-    // Re-initialize when app comes to foreground
+    // Sync offline queue when app comes to foreground
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
-        console.log('📱 [App] App became active - ensuring background listeners are running');
-        initializeBackgroundListeners().catch(error => {
-          console.error('❌ [App] Failed to re-initialize background listeners:', error);
-        });
-        // Sync offline queue when app comes to foreground
         syncOfflineTransactions()
           .then(() => console.log('✅ [OfflineSync] Foreground sync complete'))
           .catch(e => console.error('❌ [OfflineSync] Foreground sync error:', e));
@@ -179,43 +172,15 @@ function App() {
   };
 
   useEffect(() => {
-    // Try cached session first for instant startup
+    // Supabase persists sessions through the AsyncStorage-backed auth client.
     const initAuth = async () => {
-      try {
-        const cachedToken = await AsyncStorage.getItem('supabase.auth.token');
-        if (cachedToken) {
-          // We have a cached session — show app immediately, verify in background
-          const parsed = JSON.parse(cachedToken);
-          if (parsed?.access_token) {
-            // Quick set — user sees app right away
-            const { data: { session: cachedSession } } = await supabase.auth.getSession();
-            setSession(cachedSession);
-            if (cachedSession?.user) {
-              checkProfile(cachedSession.user.id);
-              prefetchAllData(); // Prefetch all data for instant screen loads
-              AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-                access_token: cachedSession.access_token,
-                refresh_token: cachedSession.refresh_token,
-              }));
-            }
-            setLoading(false);
-            return;
-          }
-        }
-      } catch {
-        console.log('Cache read failed, falling back to normal auth');
-      }
+      void AsyncStorage.removeItem(LEGACY_AUTH_TOKEN_KEY).catch(() => undefined);
 
-      // No cached session — normal flow
       const { data: { session: initialSession } } = await supabase.auth.getSession();
       setSession(initialSession);
       if (initialSession?.user) {
         checkProfile(initialSession.user.id);
         prefetchAllData(); // Prefetch all data for instant screen loads
-        AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-          access_token: initialSession.access_token,
-          refresh_token: initialSession.refresh_token,
-        }));
       }
       setLoading(false);
     };
@@ -226,15 +191,8 @@ function App() {
       setSession(nextSession);
       if (nextSession?.user) {
         checkProfile(nextSession.user.id);
-        // Save session to AsyncStorage for background tasks
-        AsyncStorage.setItem('supabase.auth.token', JSON.stringify({
-          access_token: nextSession.access_token,
-          refresh_token: nextSession.refresh_token,
-        }));
       } else {
         setNeedsProfile(false);
-        // Clear session from AsyncStorage on logout
-        AsyncStorage.removeItem('supabase.auth.token');
       }
     });
 

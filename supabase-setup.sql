@@ -1,5 +1,6 @@
--- VaultApp Supabase SQL Setup
--- Run this in your Supabase SQL Editor
+-- LEGACY PARTIAL SETUP.
+-- For a fresh SpendSense/VaultApp Supabase project, run supabase-fresh-setup.sql.
+-- This file only creates the base transactions table and is kept for history.
 
 -- 1. Create transactions table
 CREATE TABLE IF NOT EXISTS transactions (

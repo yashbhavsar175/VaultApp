@@ -10,6 +10,7 @@ import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
 import { Transaction, TransactionType } from '../types';
 import { showTransactionConfirmation } from './services/notifications';
+import { emitFinanceDataChanged } from './services/dataEvents';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SUPABASE CLIENT
@@ -163,6 +164,8 @@ export const signOutFromGoogle = async () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSACTIONS_CACHE_KEY = 'cache_transactions';
+const OFFLINE_TX_QUEUE_KEY = 'offline_tx_queue';
+const OFFLINE_DELETE_QUEUE_KEY = 'offline_delete_queue';
 
 async function updateTransactionsCache(
   updater: (current: Transaction[]) => Transaction[]
@@ -249,6 +252,11 @@ export async function addTransaction(
     data as Transaction,
     ...current.filter(item => item.id !== data.id),
   ]);
+  emitFinanceDataChanged({
+    areas: ['transactions'],
+    source: 'transaction:add',
+    transactionId: data.id,
+  });
 
   return data;
 }
@@ -288,6 +296,11 @@ export async function deleteTransaction(id: string): Promise<void> {
   }
 
   await updateTransactionsCache(current => current.filter(tx => tx.id !== id));
+  emitFinanceDataChanged({
+    areas: ['transactions'],
+    source: 'transaction:delete',
+    transactionId: id,
+  });
 }
 
 export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
@@ -318,6 +331,10 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
 
   const idSet = new Set(ids);
   await updateTransactionsCache(current => current.filter(tx => !idSet.has(tx.id)));
+  emitFinanceDataChanged({
+    areas: ['transactions'],
+    source: 'transaction:bulkDelete',
+  });
 }
 
 export async function updateTransaction(
@@ -344,6 +361,11 @@ export async function updateTransaction(
       ? current.map(tx => tx.id === id ? data as Transaction : tx)
       : [data as Transaction]
   );
+  emitFinanceDataChanged({
+    areas: ['transactions'],
+    source: 'transaction:update',
+    transactionId: id,
+  });
 
   return data;
 }
@@ -386,13 +408,69 @@ function isDuplicateTransactionError(error: any): boolean {
   );
 }
 
+async function syncOfflineDeleteQueue(raw: string | null, userId: string): Promise<void> {
+  if (!raw) return;
+
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed) || parsed.length === 0) return;
+
+  const remainingQueue: unknown[] = [];
+  const syncedIds = new Set<string>();
+
+  for (const item of parsed) {
+    const transactionId = typeof item === 'string' ? item.trim() : '';
+
+    if (!transactionId) {
+      console.warn('[OfflineSync] Invalid queued delete item, keeping item queued');
+      remainingQueue.push(item);
+      continue;
+    }
+
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('id', transactionId)
+      .eq('user_id', userId);
+
+    if (error) {
+      console.warn('[OfflineSync] Delete failed, keeping item queued:', error.message);
+      remainingQueue.push(item);
+      continue;
+    }
+
+    syncedIds.add(transactionId);
+  }
+
+  if (syncedIds.size > 0) {
+    await updateTransactionsCache(current => current.filter(tx => !syncedIds.has(tx.id)));
+    emitFinanceDataChanged({
+      areas: ['transactions'],
+      source: 'offline:deleteSync',
+    });
+  }
+
+  if (remainingQueue.length > 0) {
+    await AsyncStorage.setItem(OFFLINE_DELETE_QUEUE_KEY, JSON.stringify(remainingQueue));
+  } else {
+    await AsyncStorage.removeItem(OFFLINE_DELETE_QUEUE_KEY);
+  }
+
+  console.log(
+    `[OfflineSync] Synced ${syncedIds.size} queued delete(s), kept ${remainingQueue.length} queued`
+  );
+}
+
 export async function syncOfflineTransactions(): Promise<void> {
   try {
-    const raw = await AsyncStorage.getItem('offline_tx_queue');
-    if (!raw) return; // Nothing to sync
+    const raw = await AsyncStorage.getItem(OFFLINE_TX_QUEUE_KEY);
+    const deleteRaw = await AsyncStorage.getItem(OFFLINE_DELETE_QUEUE_KEY);
+    if (!raw && !deleteRaw) return; // Nothing to sync
 
-    const queue: OfflineQueueEntry[] = JSON.parse(raw);
-    if (!queue || queue.length === 0) return;
+    const parsedQueue = raw ? JSON.parse(raw) : [];
+    const queue: OfflineQueueEntry[] = Array.isArray(parsedQueue) ? parsedQueue : [];
+    if (raw && !Array.isArray(parsedQueue)) {
+      console.warn('[OfflineSync] Transaction queue is invalid, skipping transaction inserts');
+    }
 
     // Get authenticated user
     const { data: { user } } = await supabase.auth.getUser();
@@ -401,86 +479,94 @@ export async function syncOfflineTransactions(): Promise<void> {
       return;
     }
 
-    // Append user_id to every queued transaction and keep local metadata out of DB rows.
-    const queueItems = queue.map(({ _localId, _queued_at, queued_at, id, created_at, ...tx }) => {
-      const record: OfflineQueueEntry = {
-        ...tx,
-        user_id: user.id,
-      };
+    if (queue.length > 0) {
+      // Append user_id to every queued transaction and keep local metadata out of DB rows.
+      const queueItems = queue.map(({ _localId, _queued_at, queued_at, id, created_at, ...tx }) => {
+        const record: OfflineQueueEntry = {
+          ...tx,
+          user_id: user.id,
+        };
 
-      if (record.sms_source === 'manual') {
-        delete record.sms_source;
-      }
-
-      return {
-        record,
-        queuedAt: _queued_at || queued_at || null,
-        original: { _localId, _queued_at, queued_at, id, created_at, ...tx },
-      };
-    });
-
-    const remainingQueue: OfflineQueueEntry[] = [];
-    const syncedRecords: { tx: any; queuedAt: string | null }[] = [];
-    let duplicateCount = 0;
-
-    for (const item of queueItems) {
-      const { data: insertedRecord, error } = await supabase
-        .from('transactions')
-        .insert(item.record)
-        .select()
-        .single();
-
-      if (error) {
-        if (isDuplicateTransactionError(error)) {
-          duplicateCount++;
-          continue; // Already synced earlier; remove it from the local queue.
+        if (record.sms_source === 'manual') {
+          delete record.sms_source;
         }
 
-        console.error('[OfflineSync] Insert failed, keeping item queued:', error.message);
-        remainingQueue.push(item.original);
-        continue;
+        return {
+          record,
+          queuedAt: _queued_at || queued_at || null,
+          original: { _localId, _queued_at, queued_at, id, created_at, ...tx },
+        };
+      });
+
+      const remainingQueue: OfflineQueueEntry[] = [];
+      const syncedRecords: { tx: any; queuedAt: string | null }[] = [];
+      let duplicateCount = 0;
+
+      for (const item of queueItems) {
+        const { data: insertedRecord, error } = await supabase
+          .from('transactions')
+          .insert(item.record)
+          .select()
+          .single();
+
+        if (error) {
+          if (isDuplicateTransactionError(error)) {
+            duplicateCount++;
+            continue; // Already synced earlier; remove it from the local queue.
+          }
+
+          console.error('[OfflineSync] Insert failed, keeping item queued:', error.message);
+          remainingQueue.push(item.original);
+          continue;
+        }
+
+        syncedRecords.push({ tx: insertedRecord || item.record, queuedAt: item.queuedAt });
       }
 
-      syncedRecords.push({ tx: insertedRecord || item.record, queuedAt: item.queuedAt });
-    }
-
-    // Success: Show notifications for transactions that might have missed them
-    // We assume that if a transaction was queued, it should have gotten a notification
-    // when it was originally processed. If it didn't, we should show one now.
-    for (const { tx, queuedAt } of syncedRecords) {
-      try {
-        await showTransactionConfirmation(
-          tx.id, // The actual DB ID from the insert
-          tx.type as any, // Cast to match the expected type
-          tx.note || 'Transaction',
-          tx.amount,
-          tx.account_last4,
-          `Synced from offline queue (originally queued at: ${queuedAt || 'unknown'})`
-        );
-      } catch (notifyError) {
-        console.error('[OfflineSync] Failed to show notification for synced transaction:', notifyError);
-        // Don't fail the whole sync for notification issues
+      // Success: Show notifications for transactions that might have missed them
+      // We assume that if a transaction was queued, it should have gotten a notification
+      // when it was originally processed. If it didn't, we should show one now.
+      for (const { tx, queuedAt } of syncedRecords) {
+        try {
+          await showTransactionConfirmation(
+            tx.id, // The actual DB ID from the insert
+            tx.type as any, // Cast to match the expected type
+            tx.note || 'Transaction',
+            tx.amount,
+            tx.account_last4,
+            `Synced from offline queue (originally queued at: ${queuedAt || 'unknown'})`
+          );
+        } catch (notifyError) {
+          console.error('[OfflineSync] Failed to show notification for synced transaction:', notifyError);
+          // Don't fail the whole sync for notification issues
+        }
       }
+
+      if (syncedRecords.length > 0) {
+        const syncedTransactions = syncedRecords.map(({ tx }) => tx as Transaction);
+        const syncedIds = new Set(syncedTransactions.map(tx => tx.id));
+        await updateTransactionsCache(current => [
+          ...syncedTransactions,
+          ...current.filter(tx => !syncedIds.has(tx.id)),
+        ]);
+        emitFinanceDataChanged({
+          areas: ['transactions'],
+          source: 'offline:transactionSync',
+        });
+      }
+
+      if (remainingQueue.length > 0) {
+        await AsyncStorage.setItem(OFFLINE_TX_QUEUE_KEY, JSON.stringify(remainingQueue));
+      } else {
+        await AsyncStorage.removeItem(OFFLINE_TX_QUEUE_KEY);
+      }
+
+      console.log(
+        `[OfflineSync] Synced ${syncedRecords.length} transaction(s), skipped ${duplicateCount} duplicate(s), kept ${remainingQueue.length} queued`
+      );
     }
 
-    if (syncedRecords.length > 0) {
-      const syncedTransactions = syncedRecords.map(({ tx }) => tx as Transaction);
-      const syncedIds = new Set(syncedTransactions.map(tx => tx.id));
-      await updateTransactionsCache(current => [
-        ...syncedTransactions,
-        ...current.filter(tx => !syncedIds.has(tx.id)),
-      ]);
-    }
-
-    if (remainingQueue.length > 0) {
-      await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(remainingQueue));
-    } else {
-      await AsyncStorage.removeItem('offline_tx_queue');
-    }
-
-    console.log(
-      `[OfflineSync] Synced ${syncedRecords.length} transaction(s), skipped ${duplicateCount} duplicate(s), kept ${remainingQueue.length} queued`
-    );
+    await syncOfflineDeleteQueue(deleteRaw, user.id);
   } catch (e) {
     // Never crash the app — this runs silently in the background
     console.error('[OfflineSync] Unexpected error:', e);

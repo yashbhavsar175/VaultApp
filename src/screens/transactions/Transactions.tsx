@@ -25,6 +25,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import Toast from 'react-native-toast-message';
 import { getTransactions, updateTransaction, bulkDeleteTransactions } from '../../lib/core';
 import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
@@ -206,6 +207,7 @@ export default function Transactions() {
 
   // Deep equality tracking to prevent re-renders
   const lastDataStringRef = useRef<string | null>(null);
+  const eventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 120 FPS smooth bottom bar animation
   const bottomBarAnim = useRef(new Animated.Value(0)).current;
@@ -281,6 +283,34 @@ export default function Transactions() {
       };
     }, [loadTransactions])
   );
+
+  const scheduleEventRefresh = useCallback(() => {
+    if (eventRefreshTimerRef.current) {
+      clearTimeout(eventRefreshTimerRef.current);
+    }
+
+    eventRefreshTimerRef.current = setTimeout(() => {
+      loadTransactions();
+    }, 350);
+  }, [loadTransactions]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['transactions'])) {
+          scheduleEventRefresh();
+        }
+      });
+    }, [scheduleEventRefresh])
+  );
+
+  useEffect(() => {
+    return () => {
+      if (eventRefreshTimerRef.current) {
+        clearTimeout(eventRefreshTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     Animated.spring(bottomBarAnim, {

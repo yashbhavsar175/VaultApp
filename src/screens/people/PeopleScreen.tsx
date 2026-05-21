@@ -14,6 +14,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import HapticFeedback from 'react-native-haptic-feedback';
 import Toast from 'react-native-toast-message';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card, AppButton, AppInput, AppConfirmModal } from '../../components';
 import {
@@ -33,6 +34,7 @@ import {
 import { PeopleLedger, PeopleLedgerPayment } from '../../types';
 import { scheduleLedgerNotifications } from '../../lib/services/scheduledNotifications';
 import { CACHE_KEYS, getCached, scopedCacheKey, setCache, updateCache } from '../../lib/services/cache';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 
 type FilterType = 'active' | 'settled';
 
@@ -125,6 +127,16 @@ export default function PeopleScreen() {
     loadData(true); // Initial load: reschedule notifications
     // Don't request notification permission here - user should enable it from Settings
   }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['ledger'])) {
+          loadData(false, true);
+        }
+      });
+    }, [loadData])
+  );
 
   useEffect(() => {
     applyFilter();

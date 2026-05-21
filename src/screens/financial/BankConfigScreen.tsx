@@ -17,6 +17,7 @@ import { ScreenWrapper, AppHeader, Card } from '../../components';
 import { getBankAccounts, addBankAccount, updateBankAccount, deleteBankAccount } from '../../lib/database/financial';
 import { getAllBankNames } from '../../lib/services/smsParser';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { BankAccount } from '../../types';
 
 type AccountType = BankAccount['account_type'];
@@ -139,6 +140,16 @@ export default function BankConfigScreen() {
       });
       return () => task.cancel();
     }, [isInitialLoad, debouncedLoadSilently])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['accounts'])) {
+          debouncedLoadSilently();
+        }
+      });
+    }, [debouncedLoadSilently])
   );
 
   // Cleanup debounce timer

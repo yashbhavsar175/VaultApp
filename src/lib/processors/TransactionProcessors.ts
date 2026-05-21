@@ -18,6 +18,7 @@ import {
   inferTransactionCategory,
 } from '../../utils/transactionPresentation';
 import { CACHE_KEYS, updateCache } from '../services/cache';
+import { emitFinanceDataChanged } from '../services/dataEvents';
 import { BankAccount, Transaction } from '../../types';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -230,13 +231,14 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
 
     // Extract reference
     const refPatterns = [
-      /(?:for\s+)?UPI\s*-?\s*(\d+)/i,
-      /(?:UPI Ref|UPI ID|UPI|UTR|Ref No|Ref|Transaction ID|TXN ID)[\s#:]*([A-Z0-9]+)/i,
+      /\b(?:UPI\s*Ref(?:erence)?|UTR|RRN|Ref(?:erence)?|Transaction ID|TXN ID)\s*(?:no\.?|number|id)?\s*[:#-]?\s*([A-Z0-9]{6,})\b/i,
+      /(?:for\s+)?UPI\s*-?\s*(\d{6,})/i,
+      /\b(?:UPI ID|UPI)\s*[:#-]?\s*([A-Z0-9]{6,})\b/i,
     ];
     let reference: string | undefined;
     for (const pattern of refPatterns) {
       const match = body.match(pattern);
-      if (match) {
+      if (match && !/^(?:NO|ID|REF)$/i.test(match[1])) {
         reference = match[1];
         break;
       }
@@ -554,6 +556,11 @@ export const processSms = async (taskData: SmsData) => {
           newTxn as Transaction,
           ...(current || []).filter(tx => tx.id !== newTxn.id),
         ]);
+        emitFinanceDataChanged({
+          areas: parsed.accountLast4 ? ['transactions', 'accounts'] : ['transactions'],
+          source: 'sms:transaction',
+          transactionId: newTxn.id,
+        });
       }
     } catch (error) {
       // Network call failed unexpectedly — queue offline
@@ -806,6 +813,11 @@ export const processNotification = async (taskData: any) => {
           newTxn as Transaction,
           ...(current || []).filter(tx => tx.id !== newTxn.id),
         ]);
+        emitFinanceDataChanged({
+          areas: parsed.accountLast4 ? ['transactions', 'accounts'] : ['transactions'],
+          source: 'notification:transaction',
+          transactionId: newTxn.id,
+        });
       }
     } catch (error) {
       // Network call failed unexpectedly — queue offline

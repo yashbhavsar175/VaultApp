@@ -12,7 +12,7 @@ import ReactNativeBiometrics from 'react-native-biometrics';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, AppConfirmModal, AppButton } from '../../components';
 import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../../lib/database/vaultDb';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { CACHE_KEYS, removeCache } from '../../lib/services/cache';
 
 type VaultCategory = 'bank_pin' | 'upi_pin' | 'card' | 'netbanking' | 'app_password' | 'other';
 
@@ -84,19 +84,6 @@ export default function SecureVaultScreen() {
   useEffect(() => { isUnlockedRef.current = isUnlocked; }, [isUnlocked]);
   useEffect(() => { isAuthenticatingRef.current = isAuthenticating; }, [isAuthenticating]);
 
-  // Auto-lock when app goes to background
-  useEffect(() => {
-    const handleAppStateChange = (nextAppState: AppStateStatus) => {
-      if (nextAppState !== 'active' && isUnlockedRef.current) {
-        setIsUnlocked(false);
-        setRevealedFields(new Set()); // Hide any revealed secrets instantly
-        setViewingItem(null);         // Close any open detail modal
-      }
-    };
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, []);
-
   const authenticateUser = useCallback(async () => {
     if (isAuthenticatingRef.current) return;
     isAuthenticatingRef.current = true;
@@ -107,6 +94,7 @@ export default function SecureVaultScreen() {
 
       if (!available) {
         // Emulator or device with no biometrics enrolled — allow access directly
+        isUnlockedRef.current = true;
         setIsUnlocked(true);
         await loadItemsRef.current();
         return;
@@ -119,6 +107,7 @@ export default function SecureVaultScreen() {
 
       if (success) {
         HapticFeedback.trigger('notificationSuccess');
+        isUnlockedRef.current = true;
         setIsUnlocked(true);
         await loadItemsRef.current();
       } else {
@@ -175,6 +164,39 @@ export default function SecureVaultScreen() {
   const [formFields, setFormFields] = useState<{ label: string; value: string; isSecret: boolean }[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
+  const clearDecryptedState = useCallback(() => {
+    setItems([]);
+    setLoading(true);
+    setRefreshing(false);
+    setShowAddModal(false);
+    setShowCategoryPicker(false);
+    setSelectedCategory(null);
+    setEditingItem(null);
+    setViewingItem(null);
+    setRevealedFields(new Set());
+    setDeleteConfirm(null);
+    setFormTitle('');
+    setFormFields([]);
+    setFormNotes('');
+  }, []);
+
+  const lockVault = useCallback(() => {
+    isUnlockedRef.current = false;
+    setIsUnlocked(false);
+    clearDecryptedState();
+  }, [clearDecryptedState]);
+
+  // Auto-lock when app goes to background and clear decrypted values from state.
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState !== 'active' && isUnlockedRef.current) {
+        lockVault();
+      }
+    };
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [lockVault]);
+
   const mapToVaultItem = useCallback((d: any): VaultItem => ({
     id: d.id,
     title: d.title,
@@ -185,25 +207,13 @@ export default function SecureVaultScreen() {
     updatedAt: d.updatedAt,
   }), []);
 
-  const loadItems = useCallback(async (forceFresh = false) => {
+  const loadItems = useCallback(async () => {
     try {
-      // Show cached data instantly
-      if (!forceFresh) {
-        const cached = await getCached<VaultItem[]>(CACHE_KEYS.VAULT_ITEMS);
-        if (cached) {
-          setItems(cached.data);
-          setLoading(false);
-
-          // Skip network call if cache is fresh
-          if (!cached.isStale) return;
-        }
-      }
-
-      // Then fetch fresh from cloud
+      await removeCache(CACHE_KEYS.VAULT_ITEMS);
       const data = await getVaultItems();
       const mapped = data.map(mapToVaultItem);
+      if (!isUnlockedRef.current) return;
       setItems(mapped);
-      setCache(CACHE_KEYS.VAULT_ITEMS, mapped);
     } catch (e) {
       console.error('Error loading vault items:', e);
       Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to load vault items' });
@@ -220,30 +230,17 @@ export default function SecureVaultScreen() {
   useFocusEffect(
     useCallback(() => {
       // When screen comes into focus, lock and require auth
-      setIsUnlocked(false);
-      setRevealedFields(new Set());
-      setViewingItem(null);
+      lockVault();
       authenticateUser();
 
       // Cleanup when leaving screen
-      return () => {
-        setIsUnlocked(false);
-        setRevealedFields(new Set());
-        setViewingItem(null);
-      };
-    }, [authenticateUser])
+      return lockVault;
+    }, [authenticateUser, lockVault])
   );
-
-  // Keep cache in sync with items state (after add/edit/delete)
-  useEffect(() => {
-    if (items.length > 0) {
-      setCache(CACHE_KEYS.VAULT_ITEMS, items);
-    }
-  }, [items]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadItems(true);
+    await loadItems();
     setRefreshing(false);
   };
 
@@ -287,8 +284,8 @@ export default function SecureVaultScreen() {
             ? { ...i, title: updated.title, fields: updated.fields, notes: updated.notes, updatedAt: updated.updatedAt }
             : i
         );
+        if (!isUnlockedRef.current) return;
         setItems(nextItems);
-        await setCache(CACHE_KEYS.VAULT_ITEMS, nextItems);
       } else {
         const created = await addVaultItem({
           title: formTitle.trim(),
@@ -305,8 +302,8 @@ export default function SecureVaultScreen() {
           createdAt: created.createdAt,
           updatedAt: created.updatedAt,
         }, ...items];
+        if (!isUnlockedRef.current) return;
         setItems(nextItems);
-        await setCache(CACHE_KEYS.VAULT_ITEMS, nextItems);
       }
 
       setShowAddModal(false);
@@ -329,8 +326,8 @@ export default function SecureVaultScreen() {
     try {
       await deleteVaultItem(item.id);
       const nextItems = items.filter(i => i.id !== item.id);
+      if (!isUnlockedRef.current) return;
       setItems(nextItems);
-      await setCache(CACHE_KEYS.VAULT_ITEMS, nextItems);
       setDeleteConfirm(null);
       setViewingItem(null);
       Toast.show({ type: 'success', text1: 'Deleted', text2: `${item.title} removed from vault` });

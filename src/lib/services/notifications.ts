@@ -22,6 +22,7 @@ import {
 } from '../../utils/transactionPresentation';
 import { BankAccount, Transaction } from '../../types';
 import { CACHE_KEYS, updateCache } from './cache';
+import { emitFinanceDataChanged } from './dataEvents';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SPAM FILTERING
@@ -236,6 +237,14 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
             console.error('Error deleting transaction:', error);
           } else {
             console.log('Transaction deleted successfully');
+            await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+              current ? current.filter(tx => tx.id !== transactionId) : current
+            );
+            emitFinanceDataChanged({
+              areas: ['transactions'],
+              source: 'notificationAction:delete',
+              transactionId,
+            });
             await notifee.cancelNotification(notification.id);
           }
         } else {
@@ -481,6 +490,13 @@ export async function processTransactionSMS(
       transaction as Transaction,
       ...(current || []).filter(tx => tx.id !== transaction.id),
     ]);
+    emitFinanceDataChanged({
+      areas: parsed.balance !== null && parsed.balance !== undefined
+        ? ['transactions', 'accounts']
+        : ['transactions'],
+      source: 'smsParser:transaction',
+      transactionId: transaction.id,
+    });
 
     // Step 6: Show confirmation notification
     await showTransactionConfirmation(

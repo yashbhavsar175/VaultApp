@@ -12,7 +12,6 @@
 import { Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getBankAccounts } from '../database/financial';
-import { getVaultItems } from '../database/vaultDb';
 import { getPlaces, getPeopleLedger } from '../database/userdata';
 import { getTransactions } from '../core';
 import { supabase } from '../core';
@@ -149,7 +148,7 @@ export async function prefetchAllData(): Promise<void> {
   const results = await Promise.allSettled([
     prefetchProfile(),
     prefetchBanks(),
-    prefetchVault(),
+    purgeVaultCache(),
     prefetchPlaces(),
     prefetchTransactions(),    // ← Added: core financial data
     prefetchPeopleLedger(),    // ← Added: people ledger for Dashboard summary
@@ -191,24 +190,9 @@ async function prefetchBanks() {
   }
 }
 
-async function prefetchVault() {
-  try {
-    const data = await getVaultItems();
-    const mapped = data.map(d => ({
-      id: d.id,
-      title: d.title,
-      category: d.category,
-      fields: d.fields,
-      notes: d.notes,
-      createdAt: d.createdAt,
-      updatedAt: d.updatedAt,
-    }));
-    // SECURITY: Vault items go to EncryptedStorage via setCache
-    await setCache(CACHE_KEYS.VAULT_ITEMS, mapped);
-    console.log('🚀 [Prefetch] ✅ Vault:', mapped.length, 'items (encrypted)');
-  } catch (e) {
-    console.warn('🚀 [Prefetch] ❌ Vault failed:', e);
-  }
+async function purgeVaultCache() {
+  await removeCache(CACHE_KEYS.VAULT_ITEMS);
+  console.log('🚀 [Prefetch] ✅ Vault cache purged');
 }
 
 async function prefetchPlaces() {

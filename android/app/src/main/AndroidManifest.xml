@@ -74,6 +74,13 @@
         </intent-filter>
       </receiver>
 
+      <!-- The third-party notification-listener boot receiver starts its listener as a
+           foreground service, but that listener never calls startForeground(), causing
+           Android ANRs. Keep the listener service itself; remove only this bad boot path. -->
+      <receiver
+        android:name="com.lesimoes.androidnotificationlistener.BootUpReceiver"
+        tools:node="remove" />
+
       <!-- Headless JS Service -->
       <service
         android:name=".SmsProcessorService"
