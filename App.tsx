@@ -1,8 +1,8 @@
 import 'react-native-gesture-handler';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { ActivityIndicator, View, StyleSheet, AppState, Text, Animated, Easing } from 'react-native';
+import { ActivityIndicator, AppState, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Session } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
@@ -10,14 +10,45 @@ import Toast, { BaseToast, ErrorToast, InfoToast } from 'react-native-toast-mess
 import RootNavigator from './src/navigation/RootNavigator';
 import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
 import ProfileScreen from './src/screens/user/ProfileScreen';
+import AppIntroScreen from './src/screens/intro/AppIntroScreen';
 import { supabase, configureGoogleSignIn, syncOfflineTransactions } from './src/lib/core';
 import { initializeForegroundListener } from './src/lib/services/notifications';
 import { initPorterDistanceCalculator } from './src/lib/services/porter';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
-import { prefetchAllData } from './src/lib/services/cache';
+import { CACHE_KEYS, getCached, prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
 
+declare const process: { env?: { NODE_ENV?: string } };
+
 const LEGACY_AUTH_TOKEN_KEY = 'supabase.auth.token';
+const AUTH_STARTUP_TIMEOUT_MS = 4500;
+const PROFILE_STARTUP_TIMEOUT_MS = 6000;
+const INTRO_EXIT_FALLBACK_MS = 700;
+const SKIP_INTRO_FALLBACK = process.env?.NODE_ENV === 'test';
+
+type ProfileStatus = 'unknown' | 'checking' | 'complete' | 'incomplete' | 'error';
+
+interface CachedProfile {
+  email?: string;
+  name?: string;
+  full_name?: string;
+}
+
+const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
 
 const toastConfig = {
   success: (props: any) => (
@@ -51,57 +82,11 @@ const toastConfig = {
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+  const [introDone, setIntroDone] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
-  const [needsProfile, setNeedsProfile] = useState(false);
-
-  // Splash screen animations
-  const logoScale = useRef(new Animated.Value(0.3)).current;
-  const logoOpacity = useRef(new Animated.Value(0)).current;
-  const textOpacity = useRef(new Animated.Value(0)).current;
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    // Entrance animation sequence
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(logoScale, {
-          toValue: 1,
-          duration: 600,
-          easing: Easing.out(Easing.back(1.5)),
-          useNativeDriver: true,
-        }),
-        Animated.timing(logoOpacity, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.timing(textOpacity, {
-        toValue: 1,
-        duration: 400,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    // Continuous pulse on the logo glow
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.08,
-          duration: 1200,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1200,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
-  }, [logoOpacity, logoScale, pulseAnim, textOpacity]);
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus>('unknown');
+  const authRouteRevisionRef = useRef(0);
 
   // Configure Google Sign-In once on app start
   useEffect(() => {
@@ -149,92 +134,179 @@ function App() {
     };
   }, []);
 
-  const checkProfile = async (userId: string) => {
+  const getCachedProfileStatus = useCallback(async (nextSession: Session): Promise<ProfileStatus | null> => {
+    try {
+      const cached = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
+      const cachedProfile = cached?.data;
+      const cachedEmailMatches = cachedProfile?.email && cachedProfile.email === nextSession.user.email;
+      const cachedName = (cachedProfile?.full_name || cachedProfile?.name || '').trim();
+
+      if (cachedEmailMatches && cachedName) {
+        return 'complete';
+      }
+    } catch {
+      // Cache is only a route hint. Ignore corrupt or missing entries.
+    }
+
+    return null;
+  }, []);
+
+  const resolveProfileStatus = useCallback(async (nextSession: Session): Promise<ProfileStatus> => {
     try {
       const { data: profile } = await supabase
         .from('profiles')
         .select('full_name')
-        .eq('id', userId)
-        .single();
+        .eq('id', nextSession.user.id)
+        .maybeSingle();
 
-      // Only require profile setup if no name exists
-      if (profile?.full_name) {
-        // Profile exists → go to main app
-        setNeedsProfile(false);
-      } else {
-        // No profile → go to profile setup
-        setNeedsProfile(true);
+      if (profile?.full_name?.trim()) {
+        return 'complete';
       }
+
+      // Only a successful profile response with no usable name is treated as incomplete.
+      return 'incomplete';
     } catch (error) {
       console.error('Error checking profile:', error);
-      setNeedsProfile(true);
+      return await getCachedProfileStatus(nextSession) ?? 'error';
     }
-  };
+  }, [getCachedProfileStatus]);
 
   useEffect(() => {
     // Supabase persists sessions through the AsyncStorage-backed auth client.
-    const initAuth = async () => {
-      void AsyncStorage.removeItem(LEGACY_AUTH_TOKEN_KEY).catch(() => undefined);
+    let isMounted = true;
 
-      const { data: { session: initialSession } } = await supabase.auth.getSession();
-      setSession(initialSession);
-      if (initialSession?.user) {
-        checkProfile(initialSession.user.id);
-        prefetchAllData(); // Prefetch all data for instant screen loads
+    const resolveProfileRoute = async (nextSession: Session) => {
+      try {
+        return await withStartupTimeout(
+          resolveProfileStatus(nextSession),
+          PROFILE_STARTUP_TIMEOUT_MS,
+          'Profile check',
+        );
+      } catch (error) {
+        console.warn('[AuthStartup] Profile check unavailable:', error);
+        return await getCachedProfileStatus(nextSession) ?? 'error';
       }
-      setLoading(false);
+    };
+
+    const initAuth = async () => {
+      try {
+        void AsyncStorage.removeItem(LEGACY_AUTH_TOKEN_KEY).catch(() => undefined);
+
+        const initialSessionPromise = supabase.auth.getSession();
+        const initialSessionResult = await withStartupTimeout(
+          initialSessionPromise,
+          AUTH_STARTUP_TIMEOUT_MS,
+          'Supabase session load',
+        ).catch(error => {
+          console.warn('[AuthStartup] Session load fallback shows logged-out route:', error);
+
+          void initialSessionPromise
+            .then(async ({ data: { session: lateSession } }) => {
+              if (!isMounted || !lateSession?.user) return;
+              const routeRevision = ++authRouteRevisionRef.current;
+              setSession(lateSession);
+              setProfileStatus('checking');
+              const nextProfileStatus = await resolveProfileRoute(lateSession);
+              if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
+              setProfileStatus(nextProfileStatus);
+              prefetchAllData();
+            })
+            .catch(lateError => {
+              console.warn('[AuthStartup] Late session recovery failed:', lateError);
+            });
+
+          return null;
+        });
+        if (!isMounted) return;
+
+        const initialSession = initialSessionResult?.data.session ?? null;
+        if (initialSession?.user) {
+          setSession(initialSession);
+          setProfileStatus('checking');
+          const nextProfileStatus = await resolveProfileRoute(initialSession);
+          if (!isMounted) return;
+          setProfileStatus(nextProfileStatus);
+          prefetchAllData(); // Prefetch all data for instant screen loads
+        } else {
+          setProfileStatus('unknown');
+          setSession(null);
+        }
+      } catch (error) {
+        console.warn('[AuthStartup] Falling back to logged-out route:', error);
+        if (!isMounted) return;
+        setProfileStatus('unknown');
+        setSession(null);
+      }
+      if (isMounted) {
+        setAuthReady(true);
+      }
     };
 
     initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      const routeRevision = ++authRouteRevisionRef.current;
       if (nextSession?.user) {
-        checkProfile(nextSession.user.id);
+        setSession(nextSession);
+        setProfileStatus('checking');
+        const nextProfileStatus = await resolveProfileRoute(nextSession);
+        if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
+        setProfileStatus(nextProfileStatus);
+        prefetchAllData();
       } else {
-        setNeedsProfile(false);
+        if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
+        setProfileStatus('unknown');
+        setSession(null);
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, []);
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [getCachedProfileStatus, resolveProfileStatus]);
 
   const handleProfileComplete = () => {
-    setNeedsProfile(false);
+    setProfileStatus('complete');
   };
 
-  if (loading) {
-    return (
-      <View style={styles.splashContainer}>
-        {/* Glow effect behind logo */}
-        <Animated.View style={[
-          styles.glowCircle,
-          { transform: [{ scale: pulseAnim }], opacity: logoOpacity }
-        ]} />
-        
-        {/* Logo icon */}
-        <Animated.View style={[
-          styles.logoContainer,
-          { transform: [{ scale: logoScale }], opacity: logoOpacity }
-        ]}>
-          <Text style={styles.logoEmoji}>💰</Text>
-        </Animated.View>
+  const retryProfileCheck = useCallback(async () => {
+    if (!session?.user) return;
 
-        {/* App name */}
-        <Animated.Text style={[styles.splashTitle, { opacity: textOpacity }]}>
-          SpendSense
-        </Animated.Text>
-        <Animated.Text style={[styles.splashSubtitle, { opacity: textOpacity }]}>
-          Smart Financial Tracking
-        </Animated.Text>
+    const routeRevision = ++authRouteRevisionRef.current;
+    setProfileStatus('checking');
 
-        {/* Loading dots */}
-        <Animated.View style={[styles.loadingRow, { opacity: textOpacity }]}>
-          <ActivityIndicator size="small" color="#7c6af7" />
-          <Text style={styles.loadingText}>Loading your data...</Text>
-        </Animated.View>
-      </View>
-    );
+    const nextProfileStatus = await withStartupTimeout(
+      resolveProfileStatus(session),
+      PROFILE_STARTUP_TIMEOUT_MS,
+      'Profile check',
+    ).catch(async error => {
+      console.warn('[AuthStartup] Profile retry unavailable:', error);
+      return await getCachedProfileStatus(session) ?? 'error';
+    });
+
+    if (routeRevision === authRouteRevisionRef.current) {
+      setProfileStatus(nextProfileStatus);
+    }
+  }, [getCachedProfileStatus, resolveProfileStatus, session]);
+
+  const handleIntroComplete = useCallback(() => {
+    setIntroDone(true);
+  }, []);
+
+  useEffect(() => {
+    if (SKIP_INTRO_FALLBACK) return;
+    if (!authReady || introDone) return;
+
+    const fallbackTimer = setTimeout(() => {
+      setIntroDone(true);
+    }, INTRO_EXIT_FALLBACK_MS);
+
+    return () => clearTimeout(fallbackTimer);
+  }, [authReady, introDone]);
+
+  if (!authReady || !introDone) {
+    return <AppIntroScreen readyToExit={authReady} onIntroComplete={handleIntroComplete} />;
   }
 
   return (
@@ -242,10 +314,12 @@ function App() {
       <SafeAreaProvider>
         <NavigationContainer>
           {session ? (
-            needsProfile ? (
+            profileStatus === 'complete' ? (
+              <RootNavigator />
+            ) : profileStatus === 'incomplete' ? (
               <ProfileScreen onProfileComplete={handleProfileComplete} />
             ) : (
-              <RootNavigator />
+              <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
             )
           ) : showSignup ? (
             <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
@@ -262,66 +336,74 @@ function App() {
         />
         
         {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
-        {session && !needsProfile && <PermissionPrompt />}
+        {session && profileStatus === 'complete' && <PermissionPrompt />}
       </SafeAreaProvider>
     </ThemeProvider>
   );
 }
 
+function ProfileRouteStatusScreen({
+  status,
+  onRetry,
+}: {
+  status: ProfileStatus;
+  onRetry: () => void;
+}) {
+  const isError = status === 'error';
+
+  return (
+    <View style={styles.routeStatusContainer}>
+      {!isError && <ActivityIndicator size="large" color="#8b5cf6" />}
+      <Text style={styles.routeStatusTitle}>
+        {isError ? 'Profile check needs a retry' : 'Checking your profile'}
+      </Text>
+      <Text style={styles.routeStatusText}>
+        {isError
+          ? 'We could not confirm your profile status. Retry once your connection is stable.'
+          : 'Preparing the right screen for your account.'}
+      </Text>
+      {isError && (
+        <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  splashContainer: {
+  routeStatusContainer: {
     flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0a0a0f',
-  },
-  glowCircle: {
-    position: 'absolute',
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: '#7c6af720',
-    shadowColor: '#7c6af7',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 40,
-    elevation: 20,
-  },
-  logoContainer: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#7c6af715',
-    borderWidth: 2,
-    borderColor: '#7c6af740',
     justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
+    padding: 28,
+    backgroundColor: '#050509',
   },
-  logoEmoji: {
-    fontSize: 48,
-  },
-  splashTitle: {
-    fontSize: 28,
+  routeStatusTitle: {
+    color: '#f8fafc',
+    fontSize: 22,
     fontWeight: '800',
-    color: '#ffffff',
-    letterSpacing: 1,
+    marginTop: 18,
+    textAlign: 'center',
   },
-  splashSubtitle: {
+  routeStatusText: {
+    color: '#94a3b8',
     fontSize: 14,
-    color: '#888',
-    marginTop: 6,
-    letterSpacing: 0.5,
+    lineHeight: 21,
+    marginTop: 10,
+    textAlign: 'center',
   },
-  loadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 40,
-    gap: 10,
+  retryButton: {
+    marginTop: 22,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#7c3aed',
   },
-  loadingText: {
-    color: '#666',
-    fontSize: 13,
+  retryButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
 

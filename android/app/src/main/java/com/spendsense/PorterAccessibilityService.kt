@@ -36,11 +36,20 @@ class PorterAccessibilityService : AccessibilityService() {
         private const val DUPLICATE_REFRESH_MS = 2500L
         private const val OCR_MIN_INTERVAL_MS = 900L
         private const val OCR_DUPLICATE_REFRESH_MS = 2500L
+        private const val PORTER_EVENT_MIN_INTERVAL_MS = 120L
+        private const val VOLUME_CLAMP_MIN_INTERVAL_MS = 2500L
+        private const val MAX_TEXT_NODE_DEPTH = 40
+        private const val MAX_TEXT_NODES = 450
+        private const val MAX_LOG_MESSAGE_LENGTH = 240
         private const val PREFS_NAME = "spendsense_volume_guard"
         private const val NATIVE_LOG_PREFS_NAME = "spendsense_porter_native_logs"
         private const val KEY_NATIVE_LOGS = "logs"
+        private const val KEY_NATIVE_INCIDENTS = "incidents"
         private const val KEY_ENABLED = "enabled"
-        private const val MAX_NATIVE_LOGS = 250
+        private const val MAX_NATIVE_LOGS = 400
+        private const val MAX_NATIVE_INCIDENTS = 10
+        private const val MAX_NATIVE_INCIDENT_EVENTS = 80
+        private const val INCIDENT_CONTEXT_MS = 10 * 60 * 1000L
         private val VOLUME_GUARD_PACKAGES = listOf(
             "porter",
             "swiggy",
@@ -53,15 +62,19 @@ class PorterAccessibilityService : AccessibilityService() {
             "uber",
             "ola"
         )
+        private val PORTER_EVENT_TYPES = setOf(
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+        )
+
+        private var cachedNativeLogs: JSONArray? = null
 
         fun captureCurrentVolumeCaps(context: Context) {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit()
                 .putInt("stream_${AudioManager.STREAM_MUSIC}", audioManager.getStreamVolume(AudioManager.STREAM_MUSIC))
-                .putInt("stream_${AudioManager.STREAM_ALARM}", audioManager.getStreamVolume(AudioManager.STREAM_ALARM))
-                .putInt("stream_${AudioManager.STREAM_RING}", audioManager.getStreamVolume(AudioManager.STREAM_RING))
-                .putInt("stream_${AudioManager.STREAM_NOTIFICATION}", audioManager.getStreamVolume(AudioManager.STREAM_NOTIFICATION))
                 .apply()
         }
 
@@ -87,16 +100,16 @@ class PorterAccessibilityService : AccessibilityService() {
         ) {
             try {
                 val prefs = context.getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
-                val existing = JSONArray(prefs.getString(KEY_NATIVE_LOGS, "[]") ?: "[]")
+                val existing = cachedNativeLogs ?: JSONArray(prefs.getString(KEY_NATIVE_LOGS, "[]") ?: "[]")
                 val next = JSONArray()
                 val entry = JSONObject()
                     .put("time", System.currentTimeMillis())
                     .put("stage", stage)
-                    .put("message", message)
+                    .put("message", compactLogMessage(message))
                     .put("packageName", packageName)
                     .put("eventType", eventType)
                     .put("textLength", textLength)
-                    .put("sample", sample)
+                    .put("sample", compactTextSample(sample))
 
                 next.put(entry)
                 val limit = minOf(existing.length(), MAX_NATIVE_LOGS - 1)
@@ -104,19 +117,134 @@ class PorterAccessibilityService : AccessibilityService() {
                     next.put(existing.getJSONObject(i))
                 }
 
+                cachedNativeLogs = next
                 prefs.edit().putString(KEY_NATIVE_LOGS, next.toString()).apply()
+
+                if (shouldPinIncident(stage)) {
+                    pinNativeIncident(context, "auto:$stage", entry, next)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not append native Porter log", e)
             }
         }
 
+        private fun shouldPinIncident(stage: String): Boolean {
+            val normalized = stage.lowercase()
+            return normalized == "event_error" ||
+                normalized == "service_disabled" ||
+                normalized == "service_crash" ||
+                normalized == "audio_route_anomaly" ||
+                normalized == "volume_route_anomaly" ||
+                normalized.contains("crash")
+        }
+
+        private fun compactLogMessage(message: String): String {
+            return if (message.length <= MAX_LOG_MESSAGE_LENGTH) {
+                message
+            } else {
+                "${message.take(MAX_LOG_MESSAGE_LENGTH)}..."
+            }
+        }
+
+        private fun compactTextSample(sample: String): String {
+            if (sample.isBlank()) return ""
+            if (sample.startsWith("redacted len=")) return sample
+            return "redacted len=${sample.length} hash=${sample.hashCode()}"
+        }
+
+        private fun sanitizeStoredNativeLogs(context: Context) {
+            try {
+                val prefs = context.getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+                val existing = cachedNativeLogs ?: JSONArray(prefs.getString(KEY_NATIVE_LOGS, "[]") ?: "[]")
+                var changed = false
+
+                for (i in 0 until existing.length()) {
+                    val entry = existing.optJSONObject(i) ?: continue
+                    val message = entry.optString("message", "")
+                    val sample = entry.optString("sample", "")
+                    val compactMessage = compactLogMessage(message)
+                    val compactSample = compactTextSample(sample)
+
+                    if (compactMessage != message) {
+                        entry.put("message", compactMessage)
+                        changed = true
+                    }
+                    if (compactSample != sample) {
+                        entry.put("sample", compactSample)
+                        changed = true
+                    }
+                }
+
+                if (changed) {
+                    cachedNativeLogs = existing
+                    prefs.edit().putString(KEY_NATIVE_LOGS, existing.toString()).apply()
+                } else {
+                    cachedNativeLogs = existing
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not sanitize native Porter logs", e)
+            }
+        }
+
         fun getNativeDebugLogs(context: Context): String {
+            sanitizeStoredNativeLogs(context)
             return context
                 .getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
                 .getString(KEY_NATIVE_LOGS, "[]") ?: "[]"
         }
 
+        fun markDeliveryIssue(context: Context): String {
+            val prefs = context.getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+            val logs = cachedNativeLogs ?: JSONArray(prefs.getString(KEY_NATIVE_LOGS, "[]") ?: "[]")
+            val marker = JSONObject()
+                .put("time", System.currentTimeMillis())
+                .put("stage", "incident")
+                .put("message", "User marked delivery issue")
+                .put("packageName", "")
+                .put("eventType", "MANUAL")
+                .put("textLength", 0)
+                .put("sample", "")
+
+            pinNativeIncident(context, "manual", marker, logs)
+            return getDeliveryDebugBlackBox(context)
+        }
+
+        fun getDeliveryDebugBlackBox(context: Context): String {
+            sanitizeStoredNativeLogs(context)
+            val prefs = context.getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+            val volumePrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val logs = cachedNativeLogs ?: JSONArray(prefs.getString(KEY_NATIVE_LOGS, "[]") ?: "[]")
+            val incidents = JSONArray(prefs.getString(KEY_NATIVE_INCIDENTS, "[]") ?: "[]")
+            val now = System.currentTimeMillis()
+
+            val recentEvents = JSONArray()
+            for (i in 0 until logs.length()) {
+                val entry = logs.optJSONObject(i) ?: continue
+                if (now - entry.optLong("time", 0L) <= INCIDENT_CONTEXT_MS) {
+                    recentEvents.put(entry)
+                }
+                if (recentEvents.length() >= MAX_NATIVE_INCIDENT_EVENTS) break
+            }
+
+            val snapshot = JSONObject()
+                .put("version", 1)
+                .put("generatedAt", now)
+                .put("serviceRunning", isServiceRunning)
+                .put("volumeGuardEnabled", volumePrefs.getBoolean(KEY_ENABLED, false))
+                .put("limits", JSONObject()
+                    .put("maxNativeLogs", MAX_NATIVE_LOGS)
+                    .put("maxPinnedIncidents", MAX_NATIVE_INCIDENTS)
+                    .put("incidentContextMinutes", INCIDENT_CONTEXT_MS / 60000)
+                )
+                .put("normalEvents", logs)
+                .put("recentEvents", recentEvents)
+                .put("pinnedIncidents", incidents)
+
+            return snapshot.toString()
+        }
+
         fun clearNativeDebugLogs(context: Context) {
+            cachedNativeLogs = JSONArray()
             context
                 .getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
@@ -124,55 +252,175 @@ class PorterAccessibilityService : AccessibilityService() {
                 .apply()
         }
 
+        fun clearDeliveryDebugBlackBox(context: Context) {
+            cachedNativeLogs = JSONArray()
+            context
+                .getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_NATIVE_LOGS, "[]")
+                .putString(KEY_NATIVE_INCIDENTS, "[]")
+                .apply()
+        }
+
+        private fun pinNativeIncident(
+            context: Context,
+            reason: String,
+            trigger: JSONObject,
+            availableLogs: JSONArray
+        ) {
+            try {
+                val prefs = context.getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+                val existingIncidents = JSONArray(prefs.getString(KEY_NATIVE_INCIDENTS, "[]") ?: "[]")
+                val contextEvents = JSONArray()
+                val now = System.currentTimeMillis()
+
+                contextEvents.put(trigger)
+                for (i in 0 until availableLogs.length()) {
+                    val entry = availableLogs.optJSONObject(i) ?: continue
+                    if (entry.optLong("time", 0L) <= 0L) continue
+                    if (now - entry.optLong("time", 0L) > INCIDENT_CONTEXT_MS) continue
+                    if (contextEvents.length() >= MAX_NATIVE_INCIDENT_EVENTS) break
+                    contextEvents.put(entry)
+                }
+
+                val incident = JSONObject()
+                    .put("id", "native-${now}-${reason.hashCode()}")
+                    .put("time", now)
+                    .put("source", "native")
+                    .put("reason", compactLogMessage(reason))
+                    .put("serviceRunning", isServiceRunning)
+                    .put("volumeGuardEnabled", context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .getBoolean(KEY_ENABLED, false))
+                    .put("eventCount", contextEvents.length())
+                    .put("events", contextEvents)
+
+                val next = JSONArray()
+                next.put(incident)
+                val limit = minOf(existingIncidents.length(), MAX_NATIVE_INCIDENTS - 1)
+                for (i in 0 until limit) {
+                    next.put(existingIncidents.getJSONObject(i))
+                }
+
+                prefs.edit().putString(KEY_NATIVE_INCIDENTS, next.toString()).apply()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not pin native delivery incident", e)
+            }
+        }
+
         fun clampAudioForGuard(context: Context) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (!prefs.getBoolean(KEY_ENABLED, false)) return
 
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val streams = listOf(
-                AudioManager.STREAM_MUSIC,
-                AudioManager.STREAM_ALARM,
-                AudioManager.STREAM_RING,
-                AudioManager.STREAM_NOTIFICATION
-            )
-
-            for (stream in streams) {
-                val cap = prefs.getInt("stream_$stream", audioManager.getStreamVolume(stream))
-                val current = audioManager.getStreamVolume(stream)
-                if (current > cap) {
-                    try {
-                        audioManager.setStreamVolume(stream, cap, 0)
-                    } catch (e: SecurityException) {
-                        Log.w(TAG, "Volume guard could not clamp stream $stream", e)
-                    }
-                }
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            val cap = getSafeMusicCap(prefs, audioManager) ?: return
+            val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (current <= cap) {
+                Log.d(TAG, "Volume guard skipped music current=$current cap=$cap route=${getAudioRouteSummary(audioManager)}")
+                return
             }
 
-            preferNonSpeakerRoute(audioManager)
+            try {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, cap, 0)
+                Log.d(TAG, "Volume guard clamped music $current->$cap route=${getAudioRouteSummary(audioManager)}")
+                appendNativeLog(
+                    context,
+                    "volume_clamp",
+                    "Clamped music volume $current->$cap. ${getAudioRouteSummary(audioManager)}"
+                )
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Volume guard could not clamp music stream", e)
+            }
         }
 
-        private fun preferNonSpeakerRoute(audioManager: AudioManager) {
-            try {
-                audioManager.isSpeakerphoneOn = false
+        private fun getSafeMusicCap(
+            prefs: android.content.SharedPreferences,
+            audioManager: AudioManager
+        ): Int? {
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            if (maxVolume <= 0) return null
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val bluetoothDevice = audioManager
-                        .getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                        .firstOrNull { device ->
-                            device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-                        }
+            val savedCap = prefs.getInt(
+                "stream_${AudioManager.STREAM_MUSIC}",
+                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            )
+            if (savedCap < 0) return null
 
-                    if (bluetoothDevice != null) {
-                        audioManager.setCommunicationDevice(bluetoothDevice)
-                    }
+            val minFloor = minOf(maxVolume, maxOf(2, (maxVolume + 4) / 5))
+            return savedCap.coerceIn(minFloor, maxVolume)
+        }
+
+        private fun getAudioRouteSummary(audioManager: AudioManager): String {
+            return "${getActiveAudioRouteSummary(audioManager)}; ${getAvailableAudioOutputsSummary(audioManager)}"
+        }
+
+        @Suppress("DEPRECATION")
+        private fun getActiveAudioRouteSummary(audioManager: AudioManager): String {
+            val mediaSignals = mutableListOf<String>()
+            return try {
+                if (audioManager.isBluetoothA2dpOn) mediaSignals.add("bluetooth_a2dp")
+                if (audioManager.isWiredHeadsetOn) mediaSignals.add("wired_headset")
+                if (audioManager.isSpeakerphoneOn) mediaSignals.add("speakerphone")
+
+                val mediaRoute = if (mediaSignals.isEmpty()) {
+                    "speaker_or_unknown"
+                } else {
+                    mediaSignals.joinToString("+")
                 }
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Volume guard could not prefer Bluetooth route", e)
+
+                val communicationRoute =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        audioManager.communicationDevice?.let { simpleAudioDeviceType(it.type) } ?: "none"
+                    } else {
+                        "unsupported"
+                    }
+
+                "activeAudioRoute=media:$mediaRoute,communication:$communicationRoute"
             } catch (e: Exception) {
-                Log.w(TAG, "Volume guard route preference failed", e)
+                "activeAudioRoute=unknown:${e.javaClass.simpleName}"
+            }
+        }
+
+        private fun getAvailableAudioOutputsSummary(audioManager: AudioManager): String {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return "availableAudioOutputs=unknown"
+
+            return try {
+                val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val hasWired = outputs.any { device ->
+                    device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        device.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                }
+                val hasBluetooth = outputs.any { device ->
+                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                            device.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+                }
+                val hasSpeaker = outputs.any { device ->
+                    device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+
+                "availableAudioOutputs=wired:$hasWired,bt:$hasBluetooth,speaker:$hasSpeaker,count:${outputs.size}"
+            } catch (e: Exception) {
+                "availableAudioOutputs=unknown:${e.javaClass.simpleName}"
+            }
+        }
+
+        private fun simpleAudioDeviceType(type: Int): String {
+            return when (type) {
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "wired_headphones"
+                AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired_headset"
+                AudioDeviceInfo.TYPE_USB_HEADSET -> "usb_headset"
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bluetooth_a2dp"
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "bluetooth_sco"
+                else -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                ) {
+                    "ble_headset"
+                } else {
+                    "type_$type"
+                }
             }
         }
     }
@@ -193,11 +441,14 @@ class PorterAccessibilityService : AccessibilityService() {
     private var lastOcrDispatchTime: Long = 0
     private var lastOcrTextHash: Int = 0
     private var lastVolumeLogTime: Long = 0
+    private var lastVolumeClampRequestTime: Long = 0
     private var lastEmptyLogTime: Long = 0
+    private var lastPorterProcessTime: Long = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         isServiceRunning = true
+        sanitizeStoredNativeLogs(applicationContext)
         val info = AccessibilityServiceInfo()
         // Listen to ALL event types to catch popups, dialogs, overlays, and content changes
         info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
@@ -211,23 +462,49 @@ class PorterAccessibilityService : AccessibilityService() {
         appendNativeLog(applicationContext, "service", "Accessibility service connected with TYPES_ALL_MASK")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (event.packageName == null) return
-        val packageName = event.packageName.toString()
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        try {
+            handleAccessibilityEvent(event)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Accessibility event handling failed safely", t)
+            appendNativeLog(
+                applicationContext,
+                "event_error",
+                "Accessibility event failed safely: ${t.javaClass.simpleName}: ${t.message}",
+                event?.packageName?.toString() ?: "",
+                safeEventType(event)
+            )
+        }
+    }
+
+    private fun handleAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        val packageName = event.packageName?.toString()?.trim().orEmpty()
+        if (packageName.isEmpty()) return
+        val eventType = safeEventType(event)
         
         // Only process Porter app events
         val isPorterPackage = packageName.contains("porter", ignoreCase = true)
         val isVolumeGuardPackage = VOLUME_GUARD_PACKAGES.any { packageName.contains(it, ignoreCase = true) }
         if (isVolumeGuardPackage) {
-            clampVolumeBurst()
-            appendThrottledVolumeLog(packageName, AccessibilityEvent.eventTypeToString(event.eventType))
+            requestVolumeClampBurst()
+            appendThrottledVolumeLog(packageName, eventType)
         }
 
         if (!isPorterPackage) {
             return
         }
 
-        val eventType = AccessibilityEvent.eventTypeToString(event.eventType)
+        if (!isUsefulPorterEvent(event)) {
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        if (now - lastPorterProcessTime < PORTER_EVENT_MIN_INTERVAL_MS) {
+            return
+        }
+        lastPorterProcessTime = now
+
         appendNativeLog(applicationContext, "event", "Porter event received", packageName, eventType)
 
         // Try to get text from the Porter event source first, then Porter-owned windows.
@@ -238,21 +515,36 @@ class PorterAccessibilityService : AccessibilityService() {
         var hasPorterOwnedSource = false
         
         // 1. Extract from event source node (catches popup/dialog content)
-        val sourceNode = event.source
+        val sourceNode = try {
+            event.source
+        } catch (e: Exception) {
+            windowDiagnostics.add("source_error=${e.javaClass.simpleName}")
+            null
+        }
         if (sourceNode != null) {
-            val sourcePackage = sourceNode.packageName?.toString() ?: ""
-            val sourceClass = sourceNode.className?.toString() ?: ""
-            windowDiagnostics.add("source=$sourcePackage/$sourceClass")
-            if (isPorterOwnedPackage(sourcePackage)) {
-                hasPorterOwnedSource = true
-                allTextList.addAll(extractAllText(sourceNode))
+            try {
+                val sourcePackage = sourceNode.packageName?.toString() ?: ""
+                val sourceClass = sourceNode.className?.toString() ?: ""
+                windowDiagnostics.add("source=$sourcePackage/$sourceClass")
+                if (isPorterOwnedPackage(sourcePackage)) {
+                    hasPorterOwnedSource = true
+                    allTextList.addAll(extractAllText(sourceNode))
+                }
+            } catch (e: Exception) {
+                windowDiagnostics.add("source_read_error=${e.javaClass.simpleName}")
             }
         }
         
         // 2. Also extract from event text, but only when it looks like a ride.
         // Porter/SystemUI sometimes sends app labels like "Application icon" with Porter as the
         // event package; dispatching those overwrites the last useful debug state.
-        for (charSeq in event.text) {
+        val eventTexts = try {
+            event.text ?: emptyList<CharSequence>()
+        } catch (e: Exception) {
+            windowDiagnostics.add("event_text_error=${e.javaClass.simpleName}")
+            emptyList()
+        }
+        for (charSeq in eventTexts) {
             val t = charSeq?.toString()?.trim() ?: ""
             if (
                 t.isNotEmpty() &&
@@ -265,22 +557,31 @@ class PorterAccessibilityService : AccessibilityService() {
         }
         
         // 3. Fall back to reading ALL windows (to catch overlays/dialogs that might be in separate windows)
-        val windowsList = this.windows
+        val windowsList = try {
+            this.windows ?: emptyList()
+        } catch (e: Exception) {
+            windowDiagnostics.add("windows_error=${e.javaClass.simpleName}")
+            emptyList()
+        }
         for (window in windowsList) {
-            val rootNode = window.root
-            if (rootNode != null) {
-                val rootPackage = rootNode.packageName?.toString() ?: ""
-                val rootClass = rootNode.className?.toString() ?: ""
-                windowDiagnostics.add("windowType=${window.type} root=$rootPackage/$rootClass")
+            try {
+                val rootNode = window.root
+                if (rootNode != null) {
+                    val rootPackage = rootNode.packageName?.toString() ?: ""
+                    val rootClass = rootNode.className?.toString() ?: ""
+                    windowDiagnostics.add("windowType=${window.type} root=$rootPackage/$rootClass")
 
-                if (isPorterOwnedPackage(rootPackage)) {
-                    val rootTexts = extractAllText(rootNode)
-                    for (t in rootTexts) {
-                        if (!allTextList.contains(t)) {
-                            allTextList.add(t)
+                    if (isPorterOwnedPackage(rootPackage)) {
+                        val rootTexts = extractAllText(rootNode)
+                        for (t in rootTexts) {
+                            if (!allTextList.contains(t)) {
+                                allTextList.add(t)
+                            }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                windowDiagnostics.add("window_read_error=${e.javaClass.simpleName}")
             }
         }
         
@@ -344,10 +645,27 @@ class PorterAccessibilityService : AccessibilityService() {
         appendNativeLog(
             applicationContext,
             "volume_guard",
-            "Matched guarded app package; clamped volume burst",
+            "Matched guarded app package; requested music volume clamp. ${getAudioRouteSummaryForService()}",
             packageName,
             eventType
         )
+    }
+
+    private fun safeEventType(event: AccessibilityEvent?): String {
+        if (event == null) return "TYPE_UNKNOWN"
+        return try {
+            AccessibilityEvent.eventTypeToString(event.eventType)
+        } catch (_: Exception) {
+            "TYPE_UNKNOWN"
+        }
+    }
+
+    private fun isUsefulPorterEvent(event: AccessibilityEvent): Boolean {
+        return try {
+            PORTER_EVENT_TYPES.contains(event.eventType)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun appendThrottledEmptyLog(packageName: String, eventType: String, diagnostics: String) {
@@ -428,61 +746,72 @@ class PorterAccessibilityService : AccessibilityService() {
             eventType
         )
 
-        takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            ocrExecutor,
-            object : TakeScreenshotCallback {
-                override fun onSuccess(screenshot: ScreenshotResult) {
-                    try {
-                        val hardwareBitmap = Bitmap.wrapHardwareBuffer(
-                            screenshot.hardwareBuffer,
-                            screenshot.colorSpace
-                        )
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                ocrExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        try {
+                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(
+                                screenshot.hardwareBuffer,
+                                screenshot.colorSpace
+                            )
 
-                        if (hardwareBitmap == null) {
-                            isOcrInFlight = false
+                            if (hardwareBitmap == null) {
+                                isOcrInFlight = false
+                                screenshot.hardwareBuffer.close()
+                                appendNativeLog(
+                                    applicationContext,
+                                    "ocr_empty",
+                                    "Screenshot bitmap was unavailable",
+                                    packageName,
+                                    eventType
+                                )
+                                return
+                            }
+
+                            val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
                             screenshot.hardwareBuffer.close()
+                            runTextRecognition(bitmap, packageName, eventType)
+                        } catch (e: Exception) {
+                            isOcrInFlight = false
+                            try {
+                                screenshot.hardwareBuffer.close()
+                            } catch (_: Exception) {
+                            }
                             appendNativeLog(
                                 applicationContext,
-                                "ocr_empty",
-                                "Screenshot bitmap was unavailable",
+                                "ocr_failed",
+                                "Screenshot OCR setup failed: ${e.message}",
                                 packageName,
                                 eventType
                             )
-                            return
                         }
+                    }
 
-                        val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                        screenshot.hardwareBuffer.close()
-                        runTextRecognition(bitmap, packageName, eventType)
-                    } catch (e: Exception) {
+                    override fun onFailure(errorCode: Int) {
                         isOcrInFlight = false
-                        try {
-                            screenshot.hardwareBuffer.close()
-                        } catch (_: Exception) {
-                        }
                         appendNativeLog(
                             applicationContext,
                             "ocr_failed",
-                            "Screenshot OCR setup failed: ${e.message}",
+                            "takeScreenshot failed with code $errorCode",
                             packageName,
                             eventType
                         )
                     }
                 }
-
-                override fun onFailure(errorCode: Int) {
-                    isOcrInFlight = false
-                    appendNativeLog(
-                        applicationContext,
-                        "ocr_failed",
-                        "takeScreenshot failed with code $errorCode",
-                        packageName,
-                        eventType
-                    )
-                }
-            }
-        )
+            )
+        } catch (e: Exception) {
+            isOcrInFlight = false
+            appendNativeLog(
+                applicationContext,
+                "ocr_failed",
+                "takeScreenshot request failed: ${e.message}",
+                packageName,
+                eventType
+            )
+        }
     }
 
     private fun runTextRecognition(bitmap: Bitmap, packageName: String, eventType: String) {
@@ -592,13 +921,35 @@ class PorterAccessibilityService : AccessibilityService() {
         return hasSystemSignal && !hasRideSignal
     }
 
+    private fun requestVolumeClampBurst() {
+        val now = System.currentTimeMillis()
+        if (now - lastVolumeClampRequestTime < VOLUME_CLAMP_MIN_INTERVAL_MS) return
+        lastVolumeClampRequestTime = now
+        clampVolumeBurst()
+    }
+
     private fun clampVolumeBurst() {
-        val delays = longArrayOf(0L, 150L, 350L, 700L, 1200L, 2000L, 3200L)
+        val delays = longArrayOf(0L, 1200L)
         for (delay in delays) {
             handler.postDelayed({
-                PorterAccessibilityService.clampAudioForGuard(applicationContext)
+                try {
+                    PorterAccessibilityService.clampAudioForGuard(applicationContext)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Volume guard clamp failed safely", e)
+                    appendNativeLog(
+                        applicationContext,
+                        "volume_guard_error",
+                        "Volume guard clamp failed safely: ${e.message}"
+                    )
+                }
             }, delay)
         }
+    }
+
+    private fun getAudioRouteSummaryForService(): String {
+        val audioManager = applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return "route=unknown"
+        return getAudioRouteSummary(audioManager)
     }
 
     private fun dispatchPendingEvent() {
@@ -635,49 +986,85 @@ class PorterAccessibilityService : AccessibilityService() {
 
     private fun extractAllText(node: AccessibilityNodeInfo): List<String> {
         val texts = mutableListOf<String>()
-        
-        // Capture text from the node
-        if (node.text != null && node.text.toString().trim().isNotEmpty()) {
-            texts.add(node.text.toString().trim())
-        }
-        
-        // Also capture contentDescription (some apps use this for addresses/labels)
-        if (node.contentDescription != null && node.contentDescription.toString().trim().isNotEmpty()) {
-            val desc = node.contentDescription.toString().trim()
-            if (!texts.contains(desc)) {
-                texts.add(desc)
-            }
-        }
-        
-        // Recurse into children
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i)
-            if (child != null) {
-                texts.addAll(extractAllText(child))
-            }
-        }
+        extractAllTextSafely(node, texts, 0, intArrayOf(0))
         return texts
     }
 
+    private fun extractAllTextSafely(
+        node: AccessibilityNodeInfo,
+        texts: MutableList<String>,
+        depth: Int,
+        visitedCount: IntArray
+    ) {
+        if (depth > MAX_TEXT_NODE_DEPTH || visitedCount[0] >= MAX_TEXT_NODES) return
+        visitedCount[0] += 1
+
+        try {
+            val text = node.text?.toString()?.trim().orEmpty()
+            if (text.isNotEmpty() && !texts.contains(text)) {
+                texts.add(text)
+            }
+
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            if (desc.isNotEmpty() && !texts.contains(desc)) {
+                texts.add(desc)
+            }
+
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                if (visitedCount[0] >= MAX_TEXT_NODES) return
+                val child = try {
+                    node.getChild(i)
+                } catch (_: Exception) {
+                    null
+                }
+
+                if (child != null) {
+                    extractAllTextSafely(child, texts, depth + 1, visitedCount)
+                }
+            }
+        } catch (e: Exception) {
+            appendNativeLog(
+                applicationContext,
+                "extract_error",
+                "Node text extraction failed safely: ${e.message}"
+            )
+        }
+    }
+
     private fun sendEventToJS(packageName: String, textContent: String, eventType: String) {
-        if (reactContext != null && reactContext!!.hasActiveReactInstance()) {
+        val currentReactContext = reactContext
+        if (currentReactContext != null && currentReactContext.hasActiveReactInstance()) {
             val params: WritableMap = Arguments.createMap()
             params.putString("packageName", packageName)
             params.putString("textContent", textContent)
             params.putString("eventType", eventType)
-            
-            reactContext!!
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                .emit("onPorterScreenChange", params)
-            appendNativeLog(
-                applicationContext,
-                "dispatch",
-                "Dispatched Porter event to React Native",
-                packageName,
-                eventType,
-                textContent.length,
-                textContent
-            )
+
+            try {
+                currentReactContext
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    .emit("onPorterScreenChange", params)
+                appendNativeLog(
+                    applicationContext,
+                    "dispatch",
+                    "Dispatched Porter event to React Native",
+                    packageName,
+                    eventType,
+                    textContent.length,
+                    textContent
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "ReactContext dispatch failed safely", e)
+                appendNativeLog(
+                    applicationContext,
+                    "dispatch_failed",
+                    "ReactContext dispatch failed safely: ${e.message}",
+                    packageName,
+                    eventType,
+                    textContent.length,
+                    textContent
+                )
+            }
         } else {
             Log.w(TAG, "ReactContext not available, cannot send event to JS")
             appendNativeLog(

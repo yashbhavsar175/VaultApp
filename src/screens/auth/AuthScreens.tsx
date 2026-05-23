@@ -18,6 +18,24 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput } from '../../components';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 
+const AUTH_ACTION_TIMEOUT_MS = 15000;
+
+const withAuthActionTimeout = async <T,>(promise: Promise<T>, label: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out. Please check your connection and try again.`));
+    }, AUTH_ACTION_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOGIN SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -96,31 +114,45 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
     setLoading(true);
     setError('');
 
-    const { data, error: authError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const { data, error: authError } = await withAuthActionTimeout(
+        supabase.auth.signInWithPassword({
+          email,
+          password,
+        }),
+        'Login',
+      );
 
-    setLoading(false);
-
-    if (authError) {
-      setError(authError.message);
+      if (authError) {
+        setError(authError.message);
+        shake();
+        Toast.show({
+          type: 'error',
+          text1: 'Login Failed',
+          text2: authError.message,
+        });
+      } else if (data.user) {
+        // Save user ID + login flag for biometric quick login
+        await AsyncStorage.setItem('app_user_id', data.user.id);
+        await AsyncStorage.setItem('has_logged_in_before', '1');
+        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        Toast.show({
+          type: 'success',
+          text1: 'Welcome Back',
+          text2: 'Login successful',
+        });
+      }
+    } catch (loginError) {
+      const message = loginError instanceof Error ? loginError.message : 'Login failed';
+      setError(message);
       shake();
       Toast.show({
         type: 'error',
         text1: 'Login Failed',
-        text2: authError.message,
+        text2: message,
       });
-    } else if (data.user) {
-      // Save user ID + login flag for biometric quick login
-      await AsyncStorage.setItem('app_user_id', data.user.id);
-      await AsyncStorage.setItem('has_logged_in_before', '1');
-      HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-      Toast.show({
-        type: 'success',
-        text1: 'Welcome Back',
-        text2: 'Login successful',
-      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -129,11 +161,32 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
     setGoogleLoading(true);
     setError('');
 
-    const { error: googleError, data } = await signInWithGoogle();
+    try {
+      const { error: googleError, data } = await withAuthActionTimeout(
+        signInWithGoogle(),
+        'Google Sign-In',
+      );
 
-    setGoogleLoading(false);
-
-    if (googleError) {
+      if (googleError) {
+        const errorMessage = googleError instanceof Error ? googleError.message : 'Google Sign-In failed';
+        setError(errorMessage);
+        shake();
+        Toast.show({
+          type: 'error',
+          text1: 'Login Failed',
+          text2: errorMessage,
+        });
+      } else if (data?.user) {
+        await AsyncStorage.setItem('app_user_id', data.user.id);
+        await AsyncStorage.setItem('has_logged_in_before', '1');
+        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        Toast.show({
+          type: 'success',
+          text1: 'Welcome Back',
+          text2: 'Login successful',
+        });
+      }
+    } catch (googleError) {
       const errorMessage = googleError instanceof Error ? googleError.message : 'Google Sign-In failed';
       setError(errorMessage);
       shake();
@@ -142,15 +195,8 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
         text1: 'Login Failed',
         text2: errorMessage,
       });
-    } else if (data?.user) {
-      await AsyncStorage.setItem('app_user_id', data.user.id);
-      await AsyncStorage.setItem('has_logged_in_before', '1');
-      HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-      Toast.show({
-        type: 'success',
-        text1: 'Welcome Back',
-        text2: 'Login successful',
-      });
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -323,30 +369,44 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
 
     setLoading(true);
 
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+    try {
+      const { data, error } = await withAuthActionTimeout(
+        supabase.auth.signUp({
+          email,
+          password,
+        }),
+        'Signup',
+      );
 
-    setLoading(false);
-
-    if (error) {
-      setEmailError(error.message);
+      if (error) {
+        setEmailError(error.message);
+        shake();
+        Toast.show({
+          type: 'error',
+          text1: 'Signup Failed',
+          text2: error.message,
+        });
+      } else if (data.user) {
+        await AsyncStorage.setItem('app_user_id', data.user.id);
+        await AsyncStorage.setItem('has_logged_in_before', '1');
+        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        Toast.show({
+          type: 'success',
+          text1: 'Account Created',
+          text2: 'Welcome to SpendSense!',
+        });
+      }
+    } catch (signupError) {
+      const message = signupError instanceof Error ? signupError.message : 'Signup failed';
+      setEmailError(message);
       shake();
       Toast.show({
         type: 'error',
         text1: 'Signup Failed',
-        text2: error.message,
+        text2: message,
       });
-    } else if (data.user) {
-      await AsyncStorage.setItem('app_user_id', data.user.id);
-      await AsyncStorage.setItem('has_logged_in_before', '1');
-      HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-      Toast.show({
-        type: 'success',
-        text1: 'Account Created',
-        text2: 'Welcome to SpendSense!',
-      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -362,27 +422,40 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
 
     setGoogleLoading(true);
 
-    const { error: googleError, data } = await signInWithGoogle();
+    try {
+      const { error: googleError, data } = await withAuthActionTimeout(
+        signInWithGoogle(),
+        'Google Sign-Up',
+      );
 
-    setGoogleLoading(false);
+      if (googleError) {
+        const errorMessage = googleError instanceof Error ? googleError.message : 'Google Sign-Up failed';
+        Toast.show({
+          type: 'error',
+          text1: 'Signup Failed',
+          text2: errorMessage,
+        });
+      } else if (data?.user) {
+        // Save user ID for background tasks
+        await AsyncStorage.setItem('app_user_id', data.user.id);
+        await AsyncStorage.setItem('has_logged_in_before', '1');
+        console.log('User ID saved for background tasks:', data.user.id);
 
-    if (googleError) {
+        Toast.show({
+          type: 'success',
+          text1: 'Account Created',
+          text2: 'Welcome to SpendSense!',
+        });
+      }
+    } catch (googleError) {
       const errorMessage = googleError instanceof Error ? googleError.message : 'Google Sign-Up failed';
       Toast.show({
         type: 'error',
         text1: 'Signup Failed',
         text2: errorMessage,
       });
-    } else if (data?.user) {
-      // Save user ID for background tasks
-      await AsyncStorage.setItem('app_user_id', data.user.id);
-      console.log('User ID saved for background tasks:', data.user.id);
-      
-      Toast.show({
-        type: 'success',
-        text1: 'Account Created',
-        text2: 'Welcome to SpendSense!',
-      });
+    } finally {
+      setGoogleLoading(false);
     }
   };
 

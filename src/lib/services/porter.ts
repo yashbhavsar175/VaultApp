@@ -13,6 +13,14 @@ import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Config from 'react-native-config';
+import {
+  buildDeliveryDebugExport,
+  clearDeliveryDebugBlackBoxStore,
+  markDeliveryIssueInBlackBox,
+  NativeDeliveryDebugSnapshot,
+  recordDeliveryDebugEvent,
+  redactedTextSummary,
+} from './deliveryDebugBlackBox';
 
 const { PorterModule } = NativeModules;
 // SECURITY: Key loaded from .env via react-native-config — never hardcode in source
@@ -31,11 +39,19 @@ function requirePorterNativeMethod(methodName: string) {
 }
 
 let subscription: any = null;
+let bubbleIssueSubscription: any = null;
 let lastProcessedHash = 0;
 let activeRideRunId = 0;
 let activeRideSignature: string | null = null;
 
 const MAX_RESULT_WAIT_MS = 5200;
+const LEGACY_PORTER_DEBUG_KEYS = [
+  'debug_porter_last_raw_text',
+  'debug_porter_api_response',
+  'debug_porter_nominatim',
+  'debug_porter_history',
+];
+let legacyDebugPurgeStarted = false;
 
 // ─── Active Overlay State ──────────────────────────────────────────────────
 let activeTripOverlay: {
@@ -47,7 +63,6 @@ let activeTripOverlay: {
 
 // ─── Debug History Storage ──────────────────────────────────────────────────────
 // Store a deeper history for offline debugging (Porter blocks screen during orders).
-const MAX_DEBUG_HISTORY = 150;
 
 interface DebugEvent {
   timestamp: string;
@@ -62,28 +77,37 @@ interface DebugEvent {
   location: { lat: number; lng: number } | null;
 }
 
+function summarizeSensitiveValue(value: string): string {
+  return redactedTextSummary(value || '');
+}
+
+function summarizeLocationLookup(value: unknown): string {
+  if (!value) return 'missing';
+  if (Array.isArray(value)) return `array len=${value.length}`;
+  if (typeof value === 'object') return 'object';
+  return typeof value;
+}
+
+function sanitizeNativeSnapshot(raw: unknown): NativeDeliveryDebugSnapshot | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  return raw as NativeDeliveryDebugSnapshot;
+}
+
+async function purgeLegacySensitivePorterDebugStorage(): Promise<void> {
+  await AsyncStorage.multiRemove(LEGACY_PORTER_DEBUG_KEYS);
+}
+
+function scheduleLegacySensitivePorterDebugPurge(): void {
+  if (legacyDebugPurgeStarted) return;
+  legacyDebugPurgeStarted = true;
+  purgeLegacySensitivePorterDebugStorage().catch((error) => {
+    console.warn('[Porter] Failed to purge legacy debug storage:', error);
+  });
+}
+
 interface DistanceResult {
   toPickup: string;
   tripDistance: string;
-}
-
-async function saveDebugEvent(event: DebugEvent) {
-  try {
-    const historyJson = await AsyncStorage.getItem('debug_porter_history');
-    const history: DebugEvent[] = historyJson ? JSON.parse(historyJson) : [];
-    
-    // Add new event at the beginning
-    history.unshift(event);
-    
-    // Keep only last 10 events
-    if (history.length > MAX_DEBUG_HISTORY) {
-      history.splice(MAX_DEBUG_HISTORY);
-    }
-    
-    await AsyncStorage.setItem('debug_porter_history', JSON.stringify(history));
-  } catch (e) {
-    console.error('[Porter] Failed to save debug history:', e);
-  }
 }
 
 // ─── Location Cache ─────────────────────────────────────────────────────────────
@@ -159,6 +183,58 @@ export const clearPorterNativeDebugLogs = async (): Promise<void> => {
   await PorterModule.clearPorterNativeDebugLogs();
 };
 
+export const getDeliveryDebugBlackBox = async (): Promise<NativeDeliveryDebugSnapshot | undefined> => {
+  if (Platform.OS !== 'android') return undefined;
+  if (typeof PorterModule?.getDeliveryDebugBlackBox !== 'function') return undefined;
+  const raw = await PorterModule.getDeliveryDebugBlackBox();
+  if (typeof raw !== 'string') return undefined;
+  try {
+    return sanitizeNativeSnapshot(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+};
+
+export const markDeliveryIssue = async (): Promise<void> => {
+  await purgeLegacySensitivePorterDebugStorage();
+  let nativeSnapshot: NativeDeliveryDebugSnapshot | undefined;
+  if (Platform.OS === 'android' && typeof PorterModule?.markDeliveryIssue === 'function') {
+    const raw = await PorterModule.markDeliveryIssue();
+    if (typeof raw === 'string') {
+      try {
+        nativeSnapshot = sanitizeNativeSnapshot(JSON.parse(raw));
+      } catch {
+        nativeSnapshot = undefined;
+      }
+    }
+  }
+
+  await markDeliveryIssueInBlackBox('User marked delivery issue', nativeSnapshot, 'manual');
+};
+
+export const exportDeliveryDebugLogs = async (): Promise<string> => {
+  await purgeLegacySensitivePorterDebugStorage();
+  const nativeSnapshot = await getDeliveryDebugBlackBox();
+  return buildDeliveryDebugExport(nativeSnapshot);
+};
+
+export const clearDeliveryDebugLogs = async (): Promise<void> => {
+  await clearDeliveryDebugBlackBoxStore();
+  await AsyncStorage.multiRemove([
+    'debug_porter_last_time',
+    'debug_porter_status',
+    'debug_porter_result',
+    'debug_porter_last_event_type',
+    'debug_porter_api_error',
+    ...LEGACY_PORTER_DEBUG_KEYS,
+  ]);
+  if (Platform.OS === 'android' && typeof PorterModule?.clearDeliveryDebugBlackBox === 'function') {
+    await PorterModule.clearDeliveryDebugBlackBox();
+  } else {
+    await clearPorterNativeDebugLogs();
+  }
+};
+
 export const showToastOverlay = (message: string, longDuration: boolean = false) => {
   if (Platform.OS === 'android') {
     PorterModule.showToastOverlay(message);
@@ -170,6 +246,39 @@ export const showToastOverlay = (message: string, longDuration: boolean = false)
       setTimeout(() => PorterModule.showToastOverlay(message), 6000);
       setTimeout(() => PorterModule.showToastOverlay(message), 9000);
     }
+  }
+};
+
+// ─── Floating Issue Bubble ──────────────────────────────────────────────────
+export const canDrawOverlays = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return false;
+  if (typeof PorterModule?.canDrawOverlays !== 'function') return false;
+  return await PorterModule.canDrawOverlays();
+};
+
+export const openOverlaySettings = async (): Promise<void> => {
+  if (Platform.OS !== 'android') return;
+  if (typeof PorterModule?.openOverlaySettings !== 'function') return;
+  await PorterModule.openOverlaySettings();
+};
+
+export const showIssueBubble = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return false;
+  if (typeof PorterModule?.showIssueBubble !== 'function') return false;
+  try {
+    return await PorterModule.showIssueBubble();
+  } catch {
+    return false;
+  }
+};
+
+export const hideIssueBubble = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return false;
+  if (typeof PorterModule?.hideIssueBubble !== 'function') return false;
+  try {
+    return await PorterModule.hideIssueBubble();
+  } catch {
+    return false;
   }
 };
 
@@ -237,10 +346,10 @@ async function geocode(location: string): Promise<{ lat: number; lng: number } |
     const data = await res.json();
     if (data.length > 0) {
       const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-      console.log('[Porter] Nominatim geocoded:', location, '→', coords);
+      console.log('[Porter] Nominatim geocoded an address →', coords);
       return coords;
     }
-    console.warn('[Porter] Nominatim: No results for', location);
+    console.warn('[Porter] Nominatim: No results for an address');
     return null;
   } catch (error: any) {
     console.warn('[Porter] Nominatim error:', error.message);
@@ -264,7 +373,10 @@ async function getDistancesKm(
 ): Promise<DistanceResult> {
   // API QUOTA PROTECTION: Reject clearly invalid addresses before making network calls
   if (!isValidAddressString(pickup) || !isValidAddressString(drop)) {
-    console.warn('[Porter] Invalid address strings — skipping API call:', { pickup, drop });
+    console.warn('[Porter] Invalid address strings — skipping API call:', {
+      pickup: summarizeSensitiveValue(pickup),
+      drop: summarizeSensitiveValue(drop),
+    });
     await AsyncStorage.setItem('debug_porter_api_error', 'Invalid address format');
     return { toPickup: porterPickupDistance || 'Invalid Address', tripDistance: 'Invalid Address' };
   }
@@ -272,7 +384,11 @@ async function getDistancesKm(
   if (GOOGLE_MAPS_API_KEY) {
     try {
       const origin = `${currentLat},${currentLng}`;
-      console.log('[Porter] Calling Google Maps API with:', { origin, pickup, drop });
+      console.log('[Porter] Calling Google Maps API with:', {
+        origin: summarizeSensitiveValue(origin),
+        pickup: summarizeSensitiveValue(pickup),
+        drop: summarizeSensitiveValue(drop),
+      });
 
       const tripData = await fetchJsonWithTimeout(
         `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(pickup)}&destinations=${encodeURIComponent(drop)}&mode=driving&key=${GOOGLE_MAPS_API_KEY}`,
@@ -295,8 +411,10 @@ async function getDistancesKm(
       
       // Save API response for debugging
       await AsyncStorage.setItem('debug_porter_api_response', JSON.stringify({
-        toPickup: toPickupData,
-        trip: tripData,
+        toPickupStatus: toPickupData?.status || 'SKIPPED',
+        tripStatus: tripData.status,
+        toPickupRows: summarizeLocationLookup(toPickupData?.rows),
+        tripRows: summarizeLocationLookup(tripData.rows),
       }));
       
       // Check for API errors
@@ -336,12 +454,21 @@ async function getDistancesKm(
   }
 
   // Fallback: Free Nominatim geocoding + Haversine
-  console.log('[Porter] Using Nominatim fallback for:', { pickup, drop });
+  console.log('[Porter] Using Nominatim fallback for:', {
+    pickup: summarizeSensitiveValue(pickup),
+    drop: summarizeSensitiveValue(drop),
+  });
   const ROAD_FACTOR = 1.25;
   const [pickupCoords, dropCoords] = await Promise.all([geocode(pickup), geocode(drop)]);
   
-  console.log('[Porter] Nominatim results:', { pickupCoords, dropCoords });
-  await AsyncStorage.setItem('debug_porter_nominatim', JSON.stringify({ pickupCoords, dropCoords }));
+  console.log('[Porter] Nominatim results:', {
+    pickupFound: !!pickupCoords,
+    dropFound: !!dropCoords,
+  });
+  await AsyncStorage.setItem('debug_porter_nominatim', JSON.stringify({
+    pickupFound: !!pickupCoords,
+    dropFound: !!dropCoords,
+  }));
   
   const toPickup = porterPickupDistance || (pickupCoords ? `~${(haversineKm(currentLat, currentLng, pickupCoords.lat, pickupCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A');
   const tripDistance = pickupCoords && dropCoords ? `~${(haversineKm(pickupCoords.lat, pickupCoords.lng, dropCoords.lat, dropCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A';
@@ -523,14 +650,30 @@ function extractAddresses(text: string): { pickup: string; drop: string } | null
 
 export const initPorterDistanceCalculator = () => {
   if (subscription) return; // Already initialized
+  scheduleLegacySensitivePorterDebugPurge();
 
   console.log('🚛 [Porter] Distance calculator initialized');
 
+  bubbleIssueSubscription = eventEmitter.addListener('onDeliveryIssueBubbleTap', async (event) => {
+    let nativeSnapshot: NativeDeliveryDebugSnapshot | undefined;
+    if (typeof event?.nativeSnapshot === 'string') {
+      try {
+        nativeSnapshot = sanitizeNativeSnapshot(JSON.parse(event.nativeSnapshot));
+      } catch {
+        nativeSnapshot = undefined;
+      }
+    }
+
+    await markDeliveryIssueInBlackBox('User marked delivery issue', nativeSnapshot, 'manual');
+  });
+
   subscription = eventEmitter.addListener('onPorterScreenChange', async (event) => {
+    const rawText = event.textContent || '';
+    const textSummary = summarizeSensitiveValue(rawText);
     const debugEvent: DebugEvent = {
       timestamp: new Date().toISOString(),
       eventType: event.eventType || 'unknown',
-      textContent: event.textContent || '',
+      textContent: textSummary,
       pickup: '',
       drop: '',
       status: '',
@@ -542,8 +685,20 @@ export const initPorterDistanceCalculator = () => {
 
     try {
       const now = Date.now();
-      const text = event.textContent || '';
+      const text = rawText;
       const eventType = event.eventType || 'unknown';
+
+      await recordDeliveryDebugEvent({
+        category: 'delivery_app',
+        feature: 'porter_accessibility_event',
+        packageName: event.packageName,
+        eventType,
+        message: 'Porter screen event reached JS',
+        data: {
+          textLength: text.length,
+          textSummary,
+        },
+      });
       
       // 1. KEEPALIVE TOAST OVERLAY (Background Safe)
       // React Native background timers pause when app is minimized.
@@ -558,7 +713,7 @@ export const initPorterDistanceCalculator = () => {
       }
 
       // Save every raw capture for debugging
-      await AsyncStorage.setItem('debug_porter_last_raw_text', text);
+      await AsyncStorage.setItem('debug_porter_last_raw_text', textSummary);
       await AsyncStorage.setItem('debug_porter_last_time', debugEvent.timestamp);
       await AsyncStorage.setItem('debug_porter_last_event_type', eventType);
 
@@ -569,6 +724,14 @@ export const initPorterDistanceCalculator = () => {
       
       if (textHash === lastProcessedHash) {
         debugEvent.status = 'Skipped: Duplicate text';
+        await recordDeliveryDebugEvent({
+          category: 'porter_distance',
+          feature: 'duplicate_guard',
+          packageName: event.packageName,
+          eventType,
+          message: 'Skipped duplicate Porter text',
+          data: { textLength: text.length, textSummary },
+        });
         return; // Same text, skip
       }
 
@@ -611,8 +774,21 @@ export const initPorterDistanceCalculator = () => {
           `unparsed:${textHash}`,
           'Porter order detected\nReading pickup/drop...'
         );
-        debugEvent.status = `Failed: Could not extract addresses.\nParts found: ${text.split(/\|\||[\r\n]+|•/).length}\nRaw text:\n${text}`;
+        debugEvent.status = `Failed: Could not extract addresses. Parts found: ${text.split(/\|\||[\r\n]+|•/).length}. ${textSummary}`;
         await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+        await recordDeliveryDebugEvent({
+          category: 'porter_distance',
+          feature: 'address_parse',
+          packageName: event.packageName,
+          eventType,
+          level: 'warn',
+          message: 'Could not extract pickup/drop from Porter text',
+          data: {
+            parts: text.split(/\|\||[\r\n]+|•/).length,
+            textLength: text.length,
+            textSummary,
+          },
+        });
         return;
       }
 
@@ -630,15 +806,27 @@ export const initPorterDistanceCalculator = () => {
       activeRideSignature = tripSig;
       const resultDeadlineAt = extractAcceptDeadline(text, now);
 
-      debugEvent.pickup = addresses.pickup;
-      debugEvent.drop = addresses.drop;
-      debugEvent.status = `Order detected, calculating distance...\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`;
+      debugEvent.pickup = summarizeSensitiveValue(addresses.pickup);
+      debugEvent.drop = summarizeSensitiveValue(addresses.drop);
+      debugEvent.status = `Order detected, calculating distance. Pickup ${debugEvent.pickup}. Drop ${debugEvent.drop}`;
       await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+      await recordDeliveryDebugEvent({
+        category: 'porter_distance',
+        feature: 'address_parse',
+        packageName: event.packageName,
+        eventType,
+        message: 'Pickup/drop extracted from Porter order',
+        data: {
+          pickup: debugEvent.pickup,
+          drop: debugEvent.drop,
+          pickupDistance: porterPickupDistance || null,
+        },
+      });
       showActivePorterOverlay(
         tripSig,
         porterPickupDistance
           ? 'Porter order detected\nCalculating trip distance...'
-          : `Porter order detected\nCalculating distance...\nPickup: ${addresses.pickup.slice(0, 40)}`
+          : 'Porter order detected\nCalculating distance...'
       );
 
       // BATTERY OPTIMIZATION: use cached GPS coordinates (re-fetched only if > 60s old)
@@ -665,6 +853,13 @@ export const initPorterDistanceCalculator = () => {
         if (!isStillCurrentOrder) {
           debugEvent.status = 'Skipped: Late distance result after order popup disappeared';
           await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+          await recordDeliveryDebugEvent({
+            category: 'porter_distance',
+            feature: 'distance_result',
+            packageName: event.packageName,
+            eventType,
+            message: 'Skipped late distance result after order changed',
+          });
           return;
         }
 
@@ -685,28 +880,64 @@ export const initPorterDistanceCalculator = () => {
             ? 'Success: Overlay shown'
             : 'Partial: Pickup distance shown, trip distance unavailable';
           await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+          await recordDeliveryDebugEvent({
+            category: 'porter_distance',
+            feature: 'distance_result',
+            packageName: event.packageName,
+            eventType,
+            message: debugEvent.status,
+            data: {
+              toPickup: distances.toPickup,
+              tripDistance: distances.tripDistance,
+            },
+          });
         } else {
           const fallbackMessage = `Porter order detected\nDistance unavailable\nCheck Maps API/location`;
           showActivePorterOverlay(tripSig, fallbackMessage);
-          debugEvent.status = `Partial: Order popup shown, but distance calc returned N/A or invalid address\nPickup: ${addresses.pickup}\nDrop: ${addresses.drop}`;
+          debugEvent.status = `Partial: Order popup shown, but distance calc returned N/A or invalid address. Pickup ${debugEvent.pickup}. Drop ${debugEvent.drop}`;
           await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+          await recordDeliveryDebugEvent({
+            category: 'porter_distance',
+            feature: 'distance_result',
+            packageName: event.packageName,
+            eventType,
+            level: 'warn',
+            message: 'Distance unavailable after Porter order parse',
+            data: {
+              pickup: debugEvent.pickup,
+              drop: debugEvent.drop,
+            },
+          });
         }
       } catch (geoError: any) {
         console.log('Geolocation error in Porter calculator:', geoError);
-        const fallbackMessage = `Porter order detected\nLocation unavailable\nPickup: ${addresses.pickup.slice(0, 40)}`;
+        const fallbackMessage = 'Porter order detected\nLocation unavailable';
         showActivePorterOverlay(tripSig, fallbackMessage);
         debugEvent.status = `Geo Error: ${geoError.message}. Order popup still shown.`;
         await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+        await recordDeliveryDebugEvent({
+          category: 'error',
+          feature: 'porter_location',
+          packageName: event.packageName,
+          eventType,
+          level: 'error',
+          message: `Geolocation error: ${geoError.message}`,
+        });
       }
     } catch (e: any) {
       console.error('Error in Porter distance calculation:', e);
       debugEvent.status = `Critical Error: ${e.message}`;
       AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+      await recordDeliveryDebugEvent({
+        category: 'error',
+        feature: 'porter_distance',
+        packageName: event.packageName,
+        eventType: event.eventType || 'unknown',
+        level: 'error',
+        message: `Critical Porter distance error: ${e.message}`,
+      });
     } finally {
-      // Only save to history if it's a success or a real failure (not ignored/skipped)
-      if (!debugEvent.status.startsWith('Ignored') && !debugEvent.status.startsWith('Skipped')) {
-        await saveDebugEvent(debugEvent);
-      }
+      // Legacy saveDebugEvent removed in favor of Black Box
     }
   });
 };
@@ -715,5 +946,9 @@ export const stopPorterDistanceCalculator = () => {
   if (subscription) {
     subscription.remove();
     subscription = null;
+  }
+  if (bubbleIssueSubscription) {
+    bubbleIssueSubscription.remove();
+    bubbleIssueSubscription = null;
   }
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, AppState, AppStateStatus, Share, ScrollView, Switch, Platform, PermissionsAndroid } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, AppState, AppStateStatus, Share, ScrollView, Switch, Platform, PermissionsAndroid, NativeModules } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -11,9 +11,16 @@ import { runAllNotificationTests } from '../../utils/testUtils';
 import {
   isAccessibilityServiceEnabled,
   isVolumeGuardEnabled,
+  clearDeliveryDebugLogs,
+  exportDeliveryDebugLogs,
+  markDeliveryIssue,
   openAccessibilitySettings,
   refreshVolumeGuardCaps,
   setVolumeGuardEnabled,
+  canDrawOverlays,
+  openOverlaySettings,
+  showIssueBubble,
+  hideIssueBubble,
 } from '../../lib/services/porter';
 import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
 
@@ -34,6 +41,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [porterServiceEnabled, setPorterServiceEnabled] = useState(false);
   const [volumeGuardEnabled, setVolumeGuardState] = useState(false);
+  const [floatingBubbleEnabled, setFloatingBubbleEnabled] = useState(false);
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -63,6 +71,19 @@ export default function Settings() {
       setPorterServiceEnabled(enabled);
       const guardEnabled = await isVolumeGuardEnabled();
       setVolumeGuardState(guardEnabled);
+      
+      const bubbleStr = await AsyncStorage.getItem('debug_floating_bubble');
+      const bubbleEnabled = bubbleStr === 'true';
+      if (bubbleEnabled) {
+        const canDraw = await canDrawOverlays();
+        if (canDraw) {
+          setFloatingBubbleEnabled(true);
+          await showIssueBubble();
+        } else {
+          setFloatingBubbleEnabled(false);
+          await AsyncStorage.setItem('debug_floating_bubble', 'false');
+        }
+      }
     } catch (error) {
       console.log('Error checking Porter service', error);
     }
@@ -74,7 +95,7 @@ export default function Settings() {
     const permission = PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT;
     const granted = await PermissionsAndroid.request(permission, {
       title: 'Bluetooth Route Permission',
-      message: 'SpendSense needs nearby device access to prefer Bluetooth when delivery apps force speaker audio.',
+      message: 'SpendSense uses nearby device access only to detect Bluetooth audio route state for Volume Guard diagnostics.',
       buttonPositive: 'Allow',
       buttonNegative: 'Not now',
     });
@@ -90,7 +111,7 @@ export default function Settings() {
           Toast.show({
             type: 'info',
             text1: 'Volume Guard On',
-            text2: 'Volume clamp will work, but Bluetooth route guard needs nearby device permission',
+            text2: 'Media volume clamp will work, but Bluetooth route diagnostics may be limited',
           });
         }
       }
@@ -100,7 +121,7 @@ export default function Settings() {
         type: enabled ? 'success' : 'info',
         text1: enabled ? 'Volume Guard On' : 'Volume Guard Off',
         text2: enabled
-          ? 'Current media, alarm, ring and notification volumes are locked as max'
+          ? 'Current media volume is locked as the delivery-app maximum'
           : 'Delivery apps can control volume normally again',
       });
     } catch (error) {
@@ -112,13 +133,43 @@ export default function Settings() {
     }
   };
 
+  const toggleFloatingBubble = async (enabled: boolean) => {
+    try {
+      if (enabled) {
+        const canDraw = await canDrawOverlays();
+        if (!canDraw) {
+          Alert.alert(
+            'Permission Required',
+            'SpendSense needs "Display over other apps" permission to show the floating issue marker during deliveries.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => openOverlaySettings() }
+            ]
+          );
+          return;
+        }
+        await showIssueBubble();
+      } else {
+        await hideIssueBubble();
+      }
+      setFloatingBubbleEnabled(enabled);
+      await AsyncStorage.setItem('debug_floating_bubble', String(enabled));
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Could not toggle bubble',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const lockCurrentVolumes = async () => {
     try {
       await refreshVolumeGuardCaps();
       Toast.show({
         type: 'success',
         text1: 'Volumes locked',
-        text2: 'Current media, alarm, ring and notification levels saved',
+        text2: 'Current media volume saved as the delivery-app maximum',
       });
     } catch (error) {
       Toast.show({
@@ -127,6 +178,84 @@ export default function Settings() {
         text2: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const handleMarkDeliveryIssue = async () => {
+    try {
+      await markDeliveryIssue();
+      Toast.show({
+        type: 'success',
+        text1: 'Delivery issue marked',
+        text2: 'Recent safe diagnostics are pinned for export',
+      });
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Could not mark issue',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleExportDeliveryDebugLogs = async () => {
+    try {
+      const payload = await exportDeliveryDebugLogs();
+      const fileName = `spendsense_debug_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+
+      // Use native file-based sharing on Android to bypass Binder size limit
+      if (Platform.OS === 'android' && typeof NativeModules.PorterModule?.shareTextFile === 'function') {
+        await NativeModules.PorterModule.shareTextFile(
+          payload,
+          fileName,
+          'SpendSense Delivery Debug Logs'
+        );
+        return;
+      }
+
+      // Fallback: Share.share() (works on iOS, or if native method unavailable)
+      let sharePayload = payload;
+      if (Platform.OS === 'android' && payload.length > 100000) {
+        sharePayload = payload.substring(0, 100000) + '\n\n...[TRUNCATED due to Android share limits. Rebuild the native app to enable full file exports.]';
+      }
+
+      await Share.share({
+        title: 'SpendSense Delivery Debug Logs',
+        message: sharePayload,
+      });
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Export failed',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleClearDeliveryDebugLogs = () => {
+    setConfirmDialog({
+      visible: true,
+      title: 'Clear Delivery Debug Logs',
+      message: 'Clear local delivery diagnostics and pinned incidents? This does not affect transactions or app data.',
+      confirmText: 'Clear Logs',
+      isDestructive: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          await clearDeliveryDebugLogs();
+          Toast.show({
+            type: 'success',
+            text1: 'Delivery logs cleared',
+            text2: 'Local debug black box was reset',
+          });
+        } catch (error) {
+          Toast.show({
+            type: 'error',
+            text1: 'Clear failed',
+            text2: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    });
   };
 
   useEffect(() => {
@@ -447,7 +576,25 @@ export default function Settings() {
         Toast.show({ type: 'info', text1: 'Empty', text2: 'No bug reports found' });
         return;
       }
-      await Share.share({ title: 'VaultApp Bug Reports', message: logsStr });
+
+      const fileName = `spendsense_bugs_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+
+      // Use native file-based sharing on Android to bypass Binder size limit
+      if (Platform.OS === 'android' && typeof NativeModules.PorterModule?.shareTextFile === 'function') {
+        await NativeModules.PorterModule.shareTextFile(
+          logsStr,
+          fileName,
+          'VaultApp Bug Reports'
+        );
+        return;
+      }
+
+      // Fallback: Share.share() (works on iOS, or if native method unavailable)
+      let sharePayload = logsStr;
+      if (Platform.OS === 'android' && logsStr.length > 100000) {
+        sharePayload = logsStr.substring(0, 100000) + '\n\n...[TRUNCATED due to Android share limits. Rebuild the native app to enable full file exports.]';
+      }
+      await Share.share({ title: 'VaultApp Bug Reports', message: sharePayload });
     } catch (error) {
       console.error('Error sharing bug reports:', error);
       Toast.show({ type: 'error', text1: 'Error', text2: 'Could not export bug reports' });
@@ -789,7 +936,7 @@ export default function Settings() {
               <View style={{ flex: 1, marginLeft: spacing.md, marginRight: spacing.sm }}>
                 <Text style={[typography.bodyBold, { color: colors.text }]}>Delivery Volume Guard</Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Keep Porter, Swiggy, Zomato and similar delivery alerts from raising volume above your locked levels
+                  Keep Porter, Swiggy, Zomato and similar delivery apps from raising media volume above your locked level
                 </Text>
                 <TouchableOpacity
                   onPress={lockCurrentVolumes}
@@ -806,7 +953,7 @@ export default function Settings() {
                     opacity: volumeGuardEnabled ? 1 : 0.5,
                   }}>
                   <Text style={[typography.caption, { color: volumeGuardEnabled ? colors.accent : colors.subtext, fontWeight: 'bold' }]}>
-                    Lock Current Volume
+                    Lock Current Media Volume
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -815,6 +962,80 @@ export default function Settings() {
                 onValueChange={toggleVolumeGuard}
                 trackColor={{ false: colors.border, true: '#10b98155' }}
                 thumbColor={volumeGuardEnabled ? '#10b981' : colors.subtext}
+              />
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
+
+            <View style={[styles.accountRow, { alignItems: 'flex-start', paddingBottom: spacing.sm }]}>
+              <MaterialCommunityIcons name="black-mesa" size={24} color="#8b5cf6" style={{ marginTop: 2 }} />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>Delivery Debug Black Box</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Pin and export privacy-safe delivery diagnostics for Porter, Swiggy and Zomato issues
+                </Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm }}>
+                  <TouchableOpacity
+                    onPress={handleMarkDeliveryIssue}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 16,
+                      borderWidth: 1,
+                      borderColor: '#8b5cf6',
+                      backgroundColor: '#8b5cf6' + '15',
+                    }}>
+                    <Text style={[typography.caption, { color: '#8b5cf6', fontWeight: 'bold' }]}>
+                      Mark Delivery Issue
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleExportDeliveryDebugLogs}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 16,
+                      borderWidth: 1,
+                      borderColor: colors.accent,
+                      backgroundColor: colors.accent + '15',
+                    }}>
+                    <Text style={[typography.caption, { color: colors.accent, fontWeight: 'bold' }]}>
+                      Export Logs
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleClearDeliveryDebugLogs}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 16,
+                      borderWidth: 1,
+                      borderColor: '#ef4444',
+                      backgroundColor: '#ef4444' + '10',
+                    }}>
+                    <Text style={[typography.caption, { color: '#ef4444', fontWeight: 'bold' }]}>
+                      Clear Logs
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
+
+            <View style={[styles.accountRow, { alignItems: 'flex-start', paddingBottom: spacing.sm }]}>
+              <MaterialCommunityIcons name="chat-alert" size={24} color="#8b5cf6" style={{ marginTop: 2 }} />
+              <View style={{ flex: 1, marginLeft: spacing.md, marginRight: spacing.sm }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>Floating Issue Marker</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Show a draggable bubble to quickly mark delivery issues over other apps
+                </Text>
+              </View>
+              <Switch
+                value={floatingBubbleEnabled}
+                onValueChange={toggleFloatingBubble}
+                trackColor={{ false: colors.border, true: '#8b5cf655' }}
+                thumbColor={floatingBubbleEnabled ? '#8b5cf6' : colors.subtext}
               />
             </View>
           </Card>

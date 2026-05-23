@@ -1,0 +1,352 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Animated,
+  Easing,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
+
+declare const process: { env?: { NODE_ENV?: string } };
+
+interface AppIntroScreenProps {
+  readyToExit: boolean;
+  onIntroComplete: () => void;
+}
+
+const MIN_INTRO_MS = 900;
+const MAX_INTRO_MS = 1800;
+const SKIP_INTRO_ANIMATION = process.env?.NODE_ENV === 'test';
+
+export default function AppIntroScreen({ readyToExit, onIntroComplete }: AppIntroScreenProps) {
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const completeRef = useRef(false);
+  const introReadyRef = useRef(false);
+  const readyToExitRef = useRef(readyToExit);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const sceneOpacity = useRef(new Animated.Value(0)).current;
+  const sceneLift = useRef(new Animated.Value(18)).current;
+  const brandOpacity = useRef(new Animated.Value(0)).current;
+  const brandLift = useRef(new Animated.Value(10)).current;
+  const exitOpacity = useRef(new Animated.Value(1)).current;
+
+  const finishIntro = useCallback(() => {
+    if (completeRef.current || !readyToExitRef.current) return;
+    completeRef.current = true;
+
+    Animated.timing(exitOpacity, {
+      toValue: 0,
+      duration: reduceMotion ? 80 : 180,
+      easing: Easing.out(Easing.ease),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) onIntroComplete();
+    });
+  }, [exitOpacity, onIntroComplete, reduceMotion]);
+
+  const markIntroReady = useCallback(() => {
+    introReadyRef.current = true;
+    finishIntro();
+  }, [finishIntro]);
+
+  useEffect(() => {
+    if (SKIP_INTRO_ANIMATION) return;
+
+    let isMounted = true;
+
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then(enabled => {
+        if (isMounted) setReduceMotion(enabled);
+      })
+      .catch(() => undefined);
+
+    const subscription = AccessibilityInfo.addEventListener?.('reduceMotionChanged', enabled => {
+      setReduceMotion(enabled);
+    });
+
+    return () => {
+      isMounted = false;
+      subscription?.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (SKIP_INTRO_ANIMATION) return;
+
+    readyToExitRef.current = readyToExit;
+    if (introReadyRef.current) {
+      finishIntro();
+    }
+  }, [finishIntro, readyToExit]);
+
+  useEffect(() => {
+    if (SKIP_INTRO_ANIMATION) {
+      sceneOpacity.setValue(1);
+      sceneLift.setValue(0);
+      brandOpacity.setValue(1);
+      brandLift.setValue(0);
+      return;
+    }
+
+    if (reduceMotion) {
+      sceneOpacity.setValue(1);
+      sceneLift.setValue(0);
+      brandOpacity.setValue(1);
+      brandLift.setValue(0);
+      timersRef.current.push(setTimeout(markIntroReady, MIN_INTRO_MS));
+      timersRef.current.push(setTimeout(markIntroReady, MAX_INTRO_MS));
+      return () => {
+        timersRef.current.forEach(timer => clearTimeout(timer));
+        timersRef.current = [];
+      };
+    }
+
+    const introAnimation = Animated.stagger(120, [
+      Animated.parallel([
+        Animated.timing(sceneOpacity, {
+          toValue: 1,
+          duration: 420,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(sceneLift, {
+          toValue: 0,
+          duration: 520,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.parallel([
+        Animated.timing(brandOpacity, {
+          toValue: 1,
+          duration: 340,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(brandLift, {
+          toValue: 0,
+          duration: 340,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    ]);
+
+    introAnimation.start();
+    timersRef.current.push(setTimeout(markIntroReady, MIN_INTRO_MS));
+    timersRef.current.push(setTimeout(markIntroReady, MAX_INTRO_MS));
+
+    return () => {
+      introAnimation.stop();
+      timersRef.current.forEach(timer => clearTimeout(timer));
+      timersRef.current = [];
+    };
+  }, [
+    brandLift,
+    brandOpacity,
+    markIntroReady,
+    reduceMotion,
+    sceneLift,
+    sceneOpacity,
+  ]);
+
+  return (
+    <Animated.View style={[styles.container, { opacity: exitOpacity }]}>
+      <LinearGradient
+        colors={['#050509', '#070b14', '#101827']}
+        locations={[0, 0.58, 1]}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.softGlow} />
+      <View style={styles.lowerGlow} />
+
+      <Animated.View
+        style={[
+          styles.cardStack,
+          {
+            opacity: sceneOpacity,
+            transform: [{ translateY: sceneLift }],
+          },
+        ]}
+      >
+        <View style={styles.backPlate} />
+        <LinearGradient
+          colors={['#161b2d', '#0d1320', '#05070d']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.frontPlate}
+        >
+          <View style={styles.metalLine} />
+          <View style={styles.metalChip}>
+            <View style={styles.chipLine} />
+            <View style={styles.chipLineShort} />
+          </View>
+          <View style={styles.balanceRows}>
+            <View style={styles.balanceRowWide} />
+            <View style={styles.balanceRowNarrow} />
+          </View>
+        </LinearGradient>
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.brandBlock,
+          {
+            opacity: brandOpacity,
+            transform: [{ translateY: brandLift }],
+          },
+        ]}
+      >
+        <Text style={styles.brand}>SpendSense</Text>
+        <Text style={styles.tagline}>Track. Save. Secure.</Text>
+      </Animated.View>
+
+      <Animated.View style={[styles.loadingRow, { opacity: brandOpacity }]}>
+        <ActivityIndicator size="small" color="#b6a7ff" />
+        <Text style={styles.loadingText}>Preparing your session</Text>
+      </Animated.View>
+    </Animated.View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#050509',
+    overflow: 'hidden',
+  },
+  softGlow: {
+    position: 'absolute',
+    top: '18%',
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    backgroundColor: 'rgba(99,102,241,0.18)',
+    shadowColor: '#818cf8',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.45,
+    shadowRadius: 42,
+    elevation: 18,
+  },
+  lowerGlow: {
+    position: 'absolute',
+    bottom: -120,
+    width: 420,
+    height: 240,
+    borderRadius: 210,
+    backgroundColor: 'rgba(16,185,129,0.08)',
+  },
+  cardStack: {
+    width: 210,
+    height: 156,
+    marginBottom: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backPlate: {
+    position: 'absolute',
+    width: 178,
+    height: 116,
+    borderRadius: 22,
+    backgroundColor: 'rgba(99,102,241,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(199,210,254,0.18)',
+    transform: [{ rotateZ: '-9deg' }, { translateY: 8 }],
+  },
+  frontPlate: {
+    width: 188,
+    height: 122,
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.28,
+    shadowRadius: 28,
+    elevation: 22,
+  },
+  metalLine: {
+    width: 62,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.28)',
+    marginBottom: 22,
+  },
+  metalChip: {
+    width: 42,
+    height: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(251,191,36,0.72)',
+    backgroundColor: 'rgba(251,191,36,0.16)',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    gap: 5,
+  },
+  chipLine: {
+    width: 24,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: 'rgba(253,230,138,0.9)',
+  },
+  chipLineShort: {
+    width: 16,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: 'rgba(253,230,138,0.7)',
+  },
+  balanceRows: {
+    position: 'absolute',
+    right: 18,
+    bottom: 20,
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  balanceRowWide: {
+    width: 76,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: 'rgba(45,212,191,0.78)',
+  },
+  balanceRowNarrow: {
+    width: 48,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: 'rgba(167,139,250,0.72)',
+  },
+  brandBlock: {
+    alignItems: 'center',
+  },
+  brand: {
+    color: '#f8fafc',
+    fontSize: 34,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  tagline: {
+    color: '#c4b5fd',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0,
+    marginTop: 8,
+  },
+  loadingRow: {
+    position: 'absolute',
+    bottom: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  loadingText: {
+    color: '#94a3b8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+});
