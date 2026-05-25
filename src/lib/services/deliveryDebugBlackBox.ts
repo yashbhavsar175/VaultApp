@@ -33,6 +33,37 @@ export interface NativeDeliveryDebugSnapshot {
   limits?: Record<string, unknown>;
 }
 
+export interface DeliveryDebugSummary {
+  normalSessionCount: number;
+  rollingEventCount: number;
+  incidentCount: number;
+  nativeEventCount: number;
+  nativeIncidentCount: number;
+  distanceSuccessCount: number;
+  parseFailureCount: number;
+  volumeClampCount: number;
+  realIncidentCount: number;
+  lastUpdatedAt?: number;
+  lastDeliveryApp?: string;
+}
+
+export interface DeliveryIncidentSummary {
+  time?: number;
+  reason: string;
+  source?: 'manual' | 'auto';
+}
+
+export interface DeliveryDistanceSummary {
+  status: 'success' | 'unavailable' | 'none';
+  time?: number;
+  reason?: string;
+  detail?: string;
+  app?: string;
+  packageName?: string;
+  toPickup?: string;
+  tripDistance?: string;
+}
+
 interface DeliverySessionSummary {
   id: string;
   startedAt: number;
@@ -76,6 +107,7 @@ const MAX_INCIDENT_EVENTS = 220;
 const ROLLING_WINDOW_MS = 10 * 60 * 1000;
 const INCIDENT_CAPTURE_MS = 2 * 60 * 1000;
 const STORE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MIRRORED_NATIVE_INCIDENT_WINDOW_MS = 5 * 1000;
 
 const emptyStore = (): DeliveryBlackBoxStore => ({
   version: 1,
@@ -322,6 +354,11 @@ function getNativeString(value: Record<string, unknown>, key: string): string {
   return typeof raw === 'string' ? raw : '';
 }
 
+function getNativeNumber(value: Record<string, unknown>, key: string): number | undefined {
+  const raw = value[key];
+  return typeof raw === 'number' ? raw : undefined;
+}
+
 function isNativeVolumeClamp(value: unknown): boolean {
   if (!isNativeEvent(value)) return false;
   return getNativeString(value, 'stage') === 'volume_clamp';
@@ -347,12 +384,94 @@ function isNativeRealIncident(value: unknown): boolean {
     stage.includes('crash');
 }
 
+function getNativeIncidentTime(value: unknown): number | undefined {
+  if (!isNativeEvent(value)) return undefined;
+  return getNativeNumber(value, 'time') || getNativeNumber(value, 'pinnedAt');
+}
+
+function getNativeIncidentReason(value: unknown): string {
+  if (!isNativeEvent(value)) return 'Native incident';
+  return sanitizeMessage(getNativeString(value, 'reason') || 'Native incident');
+}
+
+function getNativeIncidentSource(value: unknown): 'manual' | 'auto' | undefined {
+  if (!isNativeEvent(value)) return undefined;
+  const source = getNativeString(value, 'source');
+  return source === 'manual' || source === 'auto' ? source : undefined;
+}
+
+function isJsRealIncident(incident: DeliveryIncident): boolean {
+  return incident.source === 'manual' ||
+    isRealIncidentEvent({
+      id: incident.id,
+      time: incident.pinnedAt,
+      category: 'incident',
+      feature: incident.source,
+      message: incident.reason,
+    });
+}
+
+function getMergedIncidentCounts(
+  store: DeliveryBlackBoxStore,
+  nativeSnapshot?: NativeDeliveryDebugSnapshot
+) {
+  const merged: Array<{
+    time?: number;
+    reason: string;
+    source?: 'manual' | 'auto';
+    real: boolean;
+  }> = store.pinnedIncidents.map(incident => ({
+    time: incident.pinnedAt,
+    reason: incident.reason,
+    source: incident.source,
+    real: isJsRealIncident(incident),
+  }));
+
+  const nativeIncidents = Array.isArray(nativeSnapshot?.pinnedIncidents)
+    ? nativeSnapshot.pinnedIncidents
+    : [];
+
+  for (const nativeIncident of nativeIncidents) {
+    if (!isNativeEvent(nativeIncident)) continue;
+    const time = getNativeIncidentTime(nativeIncident);
+    const reason = getNativeIncidentReason(nativeIncident);
+    const source = getNativeIncidentSource(nativeIncident);
+    const normalizedReason = reason.toLowerCase();
+    const hasMatchingJsMirror = merged.some(item => {
+      const normalizedItemReason = item.reason.toLowerCase();
+      const sameReason = normalizedItemReason === normalizedReason ||
+        (normalizedItemReason.includes('user marked') && normalizedReason.includes('user marked')) ||
+        ((item.source === 'manual' || normalizedItemReason.includes('user marked')) &&
+          normalizedReason === 'manual');
+      const sameSource = !item.source || !source || item.source === source;
+      return sameReason &&
+        sameSource &&
+        typeof item.time === 'number' &&
+        typeof time === 'number' &&
+        Math.abs(item.time - time) <= MIRRORED_NATIVE_INCIDENT_WINDOW_MS;
+    });
+
+    if (!hasMatchingJsMirror) {
+      merged.push({
+        time,
+        reason,
+        source,
+        real: isNativeRealIncident(nativeIncident),
+      });
+    }
+  }
+
+  return {
+    totalCount: merged.length,
+    realCount: merged.filter(item => item.real).length,
+  };
+}
+
 function buildExportSummary(
   store: DeliveryBlackBoxStore,
   nativeSnapshot?: NativeDeliveryDebugSnapshot
 ) {
   const nativeEvents = Array.isArray(nativeSnapshot?.normalEvents) ? nativeSnapshot.normalEvents : [];
-  const nativeIncidents = Array.isArray(nativeSnapshot?.pinnedIncidents) ? nativeSnapshot.pinnedIncidents : [];
 
   const sessionTotals = store.normalSessions.reduce(
     (totals, session) => ({
@@ -369,24 +488,142 @@ function buildExportSummary(
     }
   );
 
-  const pinnedRealIncidentCount = store.pinnedIncidents.filter(incident =>
-    incident.source === 'manual' ||
-    isRealIncidentEvent({
-      id: incident.id,
-      time: incident.pinnedAt,
-      category: 'incident',
-      feature: incident.source,
-      message: incident.reason,
-    })
-  ).length;
+  const mergedIncidentCounts = getMergedIncidentCounts(store, nativeSnapshot);
 
   return {
     distanceSuccessCount: sessionTotals.distanceSuccessCount,
     parseFailureCount: sessionTotals.parseFailureCount,
     volumeClampCount: sessionTotals.volumeClampCount + nativeEvents.filter(isNativeVolumeClamp).length,
-    realIncidentCount:
-      Math.max(sessionTotals.realIncidentCount, pinnedRealIncidentCount) +
-      nativeIncidents.filter(isNativeRealIncident).length,
+    realIncidentCount: Math.max(sessionTotals.realIncidentCount, mergedIncidentCounts.realCount),
+  };
+}
+
+function deliveryAppFromPackage(packageName?: string): string | undefined {
+  const normalized = (packageName || '').toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized.includes('porter')) return 'Porter';
+  if (normalized.includes('swiggy')) return 'Swiggy';
+  if (normalized.includes('zomato')) return 'Zomato';
+  return undefined;
+}
+
+function safeDataString(
+  data: DeliveryDebugEvent['data'],
+  key: string
+): string | undefined {
+  const raw = data?.[key];
+  return typeof raw === 'string' && raw.trim() ? raw : undefined;
+}
+
+function findLastDeliveryApp(
+  store: DeliveryBlackBoxStore,
+  nativeSnapshot?: NativeDeliveryDebugSnapshot
+): string | undefined {
+  const fromRolling = store.rollingEvents
+    .map(event => deliveryAppFromPackage(event.packageName))
+    .find(Boolean);
+  if (fromRolling) return fromRolling;
+
+  const nativeEvents = [
+    ...(Array.isArray(nativeSnapshot?.recentEvents) ? nativeSnapshot.recentEvents : []),
+    ...(Array.isArray(nativeSnapshot?.normalEvents) ? nativeSnapshot.normalEvents : []),
+  ];
+  for (const item of nativeEvents) {
+    if (!isNativeEvent(item)) continue;
+    const app = deliveryAppFromPackage(getNativeString(item, 'packageName'));
+    if (app) return app;
+  }
+  return undefined;
+}
+
+export async function getDeliveryDebugSummary(
+  nativeSnapshot?: NativeDeliveryDebugSnapshot
+): Promise<DeliveryDebugSummary> {
+  const store = trimStore(await readStore());
+  const exportSummary = buildExportSummary(store, nativeSnapshot);
+  const nativeEventCount = Array.isArray(nativeSnapshot?.normalEvents)
+    ? nativeSnapshot.normalEvents.length
+    : 0;
+  const nativeIncidentCount = Array.isArray(nativeSnapshot?.pinnedIncidents)
+    ? nativeSnapshot.pinnedIncidents.length
+    : 0;
+  const mergedIncidentCounts = getMergedIncidentCounts(store, nativeSnapshot);
+
+  return {
+    normalSessionCount: store.normalSessions.length,
+    rollingEventCount: store.rollingEvents.length,
+    incidentCount: mergedIncidentCounts.totalCount,
+    nativeEventCount,
+    nativeIncidentCount,
+    distanceSuccessCount: exportSummary.distanceSuccessCount,
+    parseFailureCount: exportSummary.parseFailureCount,
+    volumeClampCount: exportSummary.volumeClampCount,
+    realIncidentCount: exportSummary.realIncidentCount,
+    lastUpdatedAt: store.updatedAt || nativeSnapshot?.generatedAt,
+    lastDeliveryApp: findLastDeliveryApp(store, nativeSnapshot),
+  };
+}
+
+export async function getLastIncidentSummary(
+  nativeSnapshot?: NativeDeliveryDebugSnapshot
+): Promise<DeliveryIncidentSummary | undefined> {
+  const store = trimStore(await readStore());
+  const jsIncident = store.pinnedIncidents[0];
+  const nativeIncidents = Array.isArray(nativeSnapshot?.pinnedIncidents)
+    ? nativeSnapshot.pinnedIncidents
+    : [];
+  const nativeIncident = nativeIncidents.find(isNativeEvent);
+  const nativeIncidentTime = nativeIncident
+    ? getNativeNumber(nativeIncident, 'time') || getNativeNumber(nativeIncident, 'pinnedAt')
+    : undefined;
+
+  if (nativeIncident && nativeIncidentTime && (!jsIncident || nativeIncidentTime > jsIncident.pinnedAt)) {
+    const nativeSource = getNativeString(nativeIncident, 'source');
+    return {
+      time: nativeIncidentTime,
+      reason: sanitizeMessage(getNativeString(nativeIncident, 'reason') || 'Native incident'),
+      source: nativeSource === 'auto' || nativeSource === 'manual' ? nativeSource : undefined,
+    };
+  }
+
+  if (!jsIncident) return undefined;
+  return {
+    time: jsIncident.pinnedAt,
+    reason: jsIncident.reason,
+    source: jsIncident.source,
+  };
+}
+
+export async function getLastDistanceSummary(): Promise<DeliveryDistanceSummary> {
+  const store = trimStore(await readStore());
+  const event = store.rollingEvents.find(item =>
+    item.category === 'porter_distance' &&
+    (
+      item.feature === 'distance_result' ||
+      item.feature === 'readable_text' ||
+      item.feature === 'address_parse' ||
+      item.feature === 'duplicate_guard' ||
+      item.feature === 'native_event_recovered'
+    )
+  );
+
+  if (!event) {
+    return { status: 'none' };
+  }
+
+  const reason =
+    safeDataString(event.data, 'reason') ||
+    (event.level === 'warn' || event.level === 'error' ? event.message : undefined);
+
+  return {
+    status: isDistanceSuccessEvent(event) ? 'success' : 'unavailable',
+    time: event.time,
+    reason: reason ? sanitizeMessage(reason) : undefined,
+    detail: safeDataString(event.data, 'detail'),
+    app: deliveryAppFromPackage(event.packageName),
+    packageName: event.packageName,
+    toPickup: safeDataString(event.data, 'toPickup'),
+    tripDistance: safeDataString(event.data, 'tripDistance'),
   };
 }
 

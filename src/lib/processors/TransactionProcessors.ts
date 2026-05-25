@@ -58,6 +58,7 @@ const ALLOWED_PACKAGES = [
   'net.one97.paytm', // Paytm
   'com.whatsapp', // WhatsApp (for UPI)
   'money.super.app', // Super.money
+  'money.super.payments', // Super.money (current Play package)
   'com.spendsense', // Test notifications
 ];
 
@@ -71,12 +72,13 @@ const PACKAGE_TO_SENDER: { [key: string]: string } = {
   'net.one97.paytm': 'PAYTMB',
   'com.whatsapp': 'WHATSAP',
   'money.super.app': 'SUPERM',
+  'money.super.payments': 'SUPERM',
   'com.spendsense': 'TEST',
 };
 
 const BANK_SENDERS = [
   'HDFC', 'ICICI', 'SBI', 'AXIS', 'KOTAK', 'PNB', 
-  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'UTKARSH', 'SFBL', 'BOB'
+  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'UTKARSH', 'UTKSPR', 'UTKSFB', 'SFBL', 'BOB'
 ];
 
 const UPI_SENDERS = [
@@ -131,10 +133,14 @@ function isLegitimateFinancialSender(sender: string): boolean {
   return TRAI_DLT_PREFIXES.some(prefix => upperSender.startsWith(prefix));
 }
 
-function identifySource(sender: string): 'bank' | 'upi' | 'unknown' {
+function identifySource(sender: string, body = ''): 'bank' | 'upi' | 'unknown' {
   const upperSender = sender.toUpperCase();
   if (BANK_SENDERS.some(bank => upperSender.includes(bank))) return 'bank';
   if (UPI_SENDERS.some(upi => upperSender.includes(upi))) return 'upi';
+
+  const upperBody = body.toUpperCase();
+  if (BANK_SENDERS.some(bank => upperBody.includes(bank))) return 'bank';
+
   return 'unknown';
 }
 
@@ -180,13 +186,74 @@ function shouldAttemptTransactionParse(body: string): boolean {
   return hasCompletedAction || hasTransactionContext(body);
 }
 
+function normalizeComparableText(value?: string | null): string {
+  return (value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isSameUnreferencedTransaction(
+  existingTxn: any,
+  rawText?: string,
+  merchant?: string
+): boolean {
+  const existingRaw = normalizeComparableText(existingTxn?.raw_sms);
+  const incomingRaw = normalizeComparableText(rawText);
+  if (existingRaw && incomingRaw && existingRaw === incomingRaw) return true;
+
+  const incomingMerchant = normalizeComparableText(merchant);
+  if (!incomingMerchant) return !incomingRaw;
+
+  return [existingTxn?.note, existingTxn?.category]
+    .map(normalizeComparableText)
+    .some(value => value === incomingMerchant);
+}
+
+function isDuplicateInsertError(error: unknown): boolean {
+  return typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === '23505';
+}
+
+function normalizeNotificationPayload(taskData: any): {
+  app: string;
+  title?: string;
+  text?: string;
+  bigText?: string;
+  summaryText?: string;
+  subText?: string;
+  time?: number;
+} {
+  if (typeof taskData?.notification === 'string') {
+    const parsed = JSON.parse(taskData.notification);
+    return {
+      app: parsed.app || parsed.packageName || '',
+      title: parsed.title || '',
+      text: parsed.text || parsed.body || '',
+      bigText: parsed.bigText || parsed.titleBig || '',
+      summaryText: parsed.summaryText || '',
+      subText: parsed.subText || parsed.extraInfoText || '',
+      time: parsed.time || parsed.timestamp,
+    };
+  }
+
+  return {
+    app: taskData?.app || taskData?.packageName || '',
+    title: taskData?.title || '',
+    text: taskData?.text || taskData?.body || '',
+    bigText: taskData?.bigText || taskData?.titleBig || '',
+    summaryText: taskData?.summaryText || '',
+    subText: taskData?.subText || taskData?.extraInfoText || '',
+    time: taskData?.time || taskData?.timestamp,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRANSACTION PARSING
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function parseTransaction(body: string, sender: string): ParsedTransaction | null {
   try {
-    const source = identifySource(sender);
+    const source = identifySource(sender, body);
     if (source === 'unknown') return null;
 
     if (!shouldAttemptTransactionParse(body)) return null;
@@ -249,6 +316,7 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
       /^([A-Za-z0-9\s&/.!@#$-]+?)\s+paid\s+(?:to\s+)?you\s+(?:INR|Rs\.?|₹)/i,
       /;\s*([A-Za-z0-9\s&]+?)\s+credited/i,
       /You'?ve\s+got\s+(?:INR|Rs\.?|₹)[0-9,.]+ from\s+([A-Za-z\s]+?)(?:\s+in\s+your|\s+to\s+your|\s+on|\.|$)/i,
+      /(?:received from|from)\s+([A-Z][A-Za-z\s]+?)(?:\s+deposited\s+into|\s+in\s+your|\s+to\s+your|\s+on\s+\d|\.|$)/i,
       /(?:received from|from)\s+([A-Z][A-Za-z\s]+?)(?:\s+in\s+your|\s+to\s+your|\s+on\s+\d|\.|$)/i,
       /(?:at|made at|for)\s+([A-Za-z0-9\s&]+?)(?:\s+using|\s+on|\.|$)/i,
       /(?:to)\s+([A-Z][A-Za-z\s&]+?)(?:\s*\(UPI Ref)/i,
@@ -293,11 +361,44 @@ async function checkForDuplicates(
   timestamp: number,
   type: 'expense' | 'income',
   referenceNumber?: string,
-  smsSource?: 'bank' | 'upi'
+  smsSource?: 'bank' | 'upi',
+  rawText?: string,
+  merchant?: string
 ): Promise<any | null> {
   try {
     const oneMinuteAgo = new Date(timestamp - 1 * 60 * 1000).toISOString();
     const fiveMinutesAgo = new Date(timestamp - 5 * 60 * 1000).toISOString();
+
+    if (referenceNumber) {
+      const { data: referenceData, error: referenceError } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('amount', amount)
+        .eq('type', type)
+        .eq('reference_number', referenceNumber)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (!referenceError && referenceData && referenceData.length > 0) {
+        return referenceData[0];
+      }
+    } else if (rawText) {
+      const { data: rawData, error: rawError } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('amount', amount)
+        .eq('type', type)
+        .is('reference_number', null)
+        .eq('raw_sms', rawText)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (!rawError && rawData && rawData.length > 0) {
+        return rawData[0];
+      }
+    }
 
     // First check for very recent duplicates (within 1 minute) - these should always be skipped
     let recentQuery = supabase
@@ -311,18 +412,24 @@ async function checkForDuplicates(
 
     if (referenceNumber) {
       recentQuery = recentQuery.eq('reference_number', referenceNumber);
+    } else {
+      recentQuery = recentQuery.is('reference_number', null);
     }
 
-    const { data: recentData, error: recentError } = await recentQuery.limit(1);
+    const { data: recentData, error: recentError } = await recentQuery.limit(referenceNumber ? 1 : 5);
     if (recentError) return null;
 
     if (recentData && recentData.length > 0) {
-      const existingTxn = recentData[0];
-      // Additional check: if we have SMS source, make sure it matches
-      if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+      const existingTxn = referenceNumber
+        ? recentData[0]
+        : recentData.find(tx => isSameUnreferencedTransaction(tx, rawText, merchant));
+      if (existingTxn) {
+        // Additional check: if we have SMS source, make sure it matches
+        if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+          return existingTxn;
+        }
         return existingTxn;
       }
-      return existingTxn;
     }
 
     // Then check for older duplicates (within 5 minutes) - but be less aggressive
@@ -337,18 +444,24 @@ async function checkForDuplicates(
 
     if (referenceNumber) {
       query = query.eq('reference_number', referenceNumber);
+    } else {
+      query = query.is('reference_number', null);
     }
 
-    const { data, error } = await query.limit(1);
+    const { data, error } = await query.limit(referenceNumber ? 1 : 5);
     if (error) return null;
 
     if (data && data.length > 0) {
-      const existingTxn = data[0];
-      // Additional check: if we have SMS source, make sure it matches
-      if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+      const existingTxn = referenceNumber
+        ? data[0]
+        : data.find(tx => isSameUnreferencedTransaction(tx, rawText, merchant));
+      if (existingTxn) {
+        // Additional check: if we have SMS source, make sure it matches
+        if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+          return existingTxn;
+        }
         return existingTxn;
       }
-      return existingTxn;
     }
 
     // Fallback: check for transactions without reference number
@@ -369,7 +482,9 @@ async function checkForDuplicates(
         if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
           return existingTxn;
         }
-        return existingTxn;
+        if (isSameUnreferencedTransaction(existingTxn, rawText, merchant)) {
+          return existingTxn;
+        }
       }
     }
 
@@ -475,7 +590,9 @@ export const processSms = async (taskData: SmsData) => {
       taskData.timestamp,
       dbType,
       parsed.reference,
-      parsed.source
+      parsed.source,
+      taskData.body,
+      parsed.merchant
     );
 
     if (duplicate) {
@@ -563,6 +680,11 @@ export const processSms = async (taskData: SmsData) => {
         });
       }
     } catch (error) {
+      if (isDuplicateInsertError(error)) {
+        console.log('Duplicate transaction detected by database - skipping');
+        return;
+      }
+
       // Network call failed unexpectedly — queue offline
       console.error('Database operation failed, queuing offline:', error);
       const tempId = Date.now().toString();
@@ -626,7 +748,7 @@ export const processNotification = async (taskData: any) => {
   console.log('🔔 Notification Processor Started:', taskData);
 
   try {
-    const notif = JSON.parse(taskData.notification);
+    const notif = normalizeNotificationPayload(taskData);
     console.log('Parsed notification:', notif);
 
     if (!ALLOWED_PACKAGES.includes(notif.app)) {
@@ -634,7 +756,16 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
-    const combinedText = `${notif.title || ''} ${notif.text || ''}`.trim();
+    const combinedText = [
+      notif.title,
+      notif.text,
+      notif.bigText,
+      notif.summaryText,
+      notif.subText,
+    ]
+      .filter((part, index, parts): part is string => Boolean(part) && parts.indexOf(part) === index)
+      .join(' ')
+      .trim();
     
     if (isSpamMessage(combinedText)) {
       console.log('⚠️ Spam notification - skipping');
@@ -732,7 +863,9 @@ export const processNotification = async (taskData: any) => {
       notif.time || Date.now(),
       dbType,
       parsed.reference,
-      parsed.source
+      parsed.source,
+      combinedText,
+      parsed.merchant
     );
 
     if (duplicate) {
@@ -820,6 +953,11 @@ export const processNotification = async (taskData: any) => {
         });
       }
     } catch (error) {
+      if (isDuplicateInsertError(error)) {
+        console.log('Duplicate transaction detected by database - skipping');
+        return;
+      }
+
       // Network call failed unexpectedly — queue offline
       console.error('Database operation failed, queuing offline:', error);
       const tempId = Date.now().toString();

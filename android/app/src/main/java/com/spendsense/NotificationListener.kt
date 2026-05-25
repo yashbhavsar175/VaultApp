@@ -16,10 +16,13 @@ class NotificationListener : NotificationListenerService() {
             "com.google.android.apps.nbu.paisa.user", // Google Pay
             "com.phonepe.app",                         // PhonePe
             "tech.ula",                                // Slice
+            "indwin.c3.shareapp",                      // Slice
             "com.dreamplug.androidapp",                // CRED
             "in.amazon.mShop.android.shopping",        // Amazon Pay
             "net.one97.paytm",                         // Paytm
-            "com.whatsapp"                             // WhatsApp (for UPI)
+            "com.whatsapp",                            // WhatsApp (for UPI)
+            "money.super.app",                         // Super.money (legacy)
+            "money.super.payments"                     // Super.money
         )
     }
 

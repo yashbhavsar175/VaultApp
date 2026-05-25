@@ -152,7 +152,7 @@ const SOURCE_LABELS = [
   },
   {
     label: 'Super.money',
-    needles: ['money.super.app', 'superm', 'super.money'],
+    needles: ['money.super.app', 'money.super.payments', 'superm', 'super.money'],
   },
   {
     label: 'Slice',
@@ -178,6 +178,10 @@ function titleCase(value: string): string {
 function isGeneric(value?: string | null): boolean {
   const normalizedValue = normalize(value).toLowerCase();
   return GENERIC_VALUES.has(normalizedValue);
+}
+
+function isCurrencyOnlyLabel(value: string): boolean {
+  return /^(?:inr|rs\.?|₹)\s*[0-9,]+(?:\.[0-9]{1,2})?$/i.test(value.trim());
 }
 
 function getBrandOverride(value: string): string | null {
@@ -234,6 +238,7 @@ function getSearchText(transaction: TransactionLike): string {
 export function cleanMerchantName(value?: string | null): string {
   const rawValue = normalize(value);
   if (!rawValue || isGeneric(rawValue)) return '';
+  if (isCurrencyOnlyLabel(rawValue)) return '';
 
   const directBrand = getBrandOverride(rawValue);
   if (directBrand) return directBrand;
@@ -311,6 +316,8 @@ export function getTransactionDisplayName(transaction: TransactionLike): string 
   const upiId = transaction.upi_id || extractUpiIdFromText(transaction.raw_sms);
   const cleanedUpi = cleanMerchantName(upiId);
   if (cleanedUpi) return cleanedUpi;
+
+  if (/\bsupercard\b/i.test(getSearchText(transaction))) return 'SuperCard';
 
   const cleanedCategory = cleanMerchantName(transaction.category);
   if (cleanedCategory) return cleanedCategory;

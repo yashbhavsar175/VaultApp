@@ -21,7 +21,16 @@ import {
   openOverlaySettings,
   showIssueBubble,
   hideIssueBubble,
+  getDeliveryDebugBlackBox,
 } from '../../lib/services/porter';
+import {
+  getDeliveryDebugSummary,
+  getLastDistanceSummary,
+  getLastIncidentSummary,
+  DeliveryDebugSummary,
+  DeliveryDistanceSummary,
+  DeliveryIncidentSummary,
+} from '../../lib/services/deliveryDebugBlackBox';
 import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
 
 interface CachedProfile {
@@ -29,6 +38,9 @@ interface CachedProfile {
   name?: string;
   full_name?: string;
 }
+
+const DELIVERY_DEBUG_MODE_UNTIL_KEY = 'debug_delivery_mode_until';
+const DELIVERY_DEBUG_MODE_DURATION_MS = 4 * 60 * 60 * 1000;
 
 export default function Settings() {
   const navigation = useNavigation();
@@ -40,8 +52,14 @@ export default function Settings() {
   const [editedName, setEditedName] = useState('');
   const [saving, setSaving] = useState(false);
   const [porterServiceEnabled, setPorterServiceEnabled] = useState(false);
+  const [overlayPermissionGranted, setOverlayPermissionGranted] = useState(false);
   const [volumeGuardEnabled, setVolumeGuardState] = useState(false);
   const [floatingBubbleEnabled, setFloatingBubbleEnabled] = useState(false);
+  const [deliveryDebugModeUntil, setDeliveryDebugModeUntil] = useState<number | null>(null);
+  const [deliveryDebugSummary, setDeliveryDebugSummary] = useState<DeliveryDebugSummary | null>(null);
+  const [lastDeliveryIncident, setLastDeliveryIncident] = useState<DeliveryIncidentSummary | undefined>();
+  const [lastDistanceResult, setLastDistanceResult] = useState<DeliveryDistanceSummary>({ status: 'none' });
+  const [deliveryStatusLoading, setDeliveryStatusLoading] = useState(false);
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -66,26 +84,69 @@ export default function Settings() {
   const appStateRef = useRef(AppState.currentState);
 
   const checkPorterService = useCallback(async () => {
+    setDeliveryStatusLoading(true);
     try {
-      const enabled = await isAccessibilityServiceEnabled();
+      const [
+        enabled,
+        guardEnabled,
+        canDraw,
+        bubbleStr,
+        debugModeUntilStr,
+        nativeSnapshot,
+      ] = await Promise.all([
+        isAccessibilityServiceEnabled(),
+        isVolumeGuardEnabled(),
+        canDrawOverlays(),
+        AsyncStorage.getItem('debug_floating_bubble'),
+        AsyncStorage.getItem(DELIVERY_DEBUG_MODE_UNTIL_KEY),
+        getDeliveryDebugBlackBox(),
+      ]);
+
       setPorterServiceEnabled(enabled);
-      const guardEnabled = await isVolumeGuardEnabled();
       setVolumeGuardState(guardEnabled);
-      
-      const bubbleStr = await AsyncStorage.getItem('debug_floating_bubble');
-      const bubbleEnabled = bubbleStr === 'true';
-      if (bubbleEnabled) {
-        const canDraw = await canDrawOverlays();
+      setOverlayPermissionGranted(canDraw);
+
+      const now = Date.now();
+      const debugModeUntil = Number(debugModeUntilStr || 0);
+      if (debugModeUntil > now) {
+        setDeliveryDebugModeUntil(debugModeUntil);
+      } else {
+        setDeliveryDebugModeUntil(null);
+        if (debugModeUntilStr) {
+          await AsyncStorage.removeItem(DELIVERY_DEBUG_MODE_UNTIL_KEY);
+          await AsyncStorage.setItem('debug_floating_bubble', 'false');
+          await hideIssueBubble();
+        }
+      }
+
+      const bubbleEnabled = bubbleStr === 'true' && (!debugModeUntil || debugModeUntil > now);
+      if (bubbleEnabled && Platform.OS === 'android') {
         if (canDraw) {
-          setFloatingBubbleEnabled(true);
-          await showIssueBubble();
+          const shown = await showIssueBubble();
+          setFloatingBubbleEnabled(shown);
+          if (!shown) {
+            await AsyncStorage.setItem('debug_floating_bubble', 'false');
+          }
         } else {
           setFloatingBubbleEnabled(false);
           await AsyncStorage.setItem('debug_floating_bubble', 'false');
         }
+      } else {
+        setFloatingBubbleEnabled(false);
       }
+
+      const [summary, lastIncident, lastDistance] = await Promise.all([
+        getDeliveryDebugSummary(nativeSnapshot),
+        getLastIncidentSummary(nativeSnapshot),
+        getLastDistanceSummary(),
+      ]);
+      setDeliveryDebugSummary(summary);
+      setLastDeliveryIncident(lastIncident);
+      setLastDistanceResult(lastDistance);
     } catch (error) {
       console.log('Error checking Porter service', error);
+    } finally {
+      setDeliveryStatusLoading(false);
     }
   }, []);
 
@@ -124,6 +185,7 @@ export default function Settings() {
           ? 'Current media volume is locked as the delivery-app maximum'
           : 'Delivery apps can control volume normally again',
       });
+      await checkPorterService();
     } catch (error) {
       Toast.show({
         type: 'error',
@@ -154,6 +216,7 @@ export default function Settings() {
       }
       setFloatingBubbleEnabled(enabled);
       await AsyncStorage.setItem('debug_floating_bubble', String(enabled));
+      await checkPorterService();
     } catch (error) {
       Toast.show({
         type: 'error',
@@ -188,6 +251,7 @@ export default function Settings() {
         text1: 'Delivery issue marked',
         text2: 'Recent safe diagnostics are pinned for export',
       });
+      await checkPorterService();
     } catch (error) {
       Toast.show({
         type: 'error',
@@ -242,6 +306,7 @@ export default function Settings() {
         setConfirmDialog(null);
         try {
           await clearDeliveryDebugLogs();
+          await checkPorterService();
           Toast.show({
             type: 'success',
             text1: 'Delivery logs cleared',
@@ -256,6 +321,83 @@ export default function Settings() {
         }
       },
     });
+  };
+
+  const startDeliveryDebugMode = async () => {
+    try {
+      const canDraw = await canDrawOverlays();
+      setOverlayPermissionGranted(canDraw);
+      if (!canDraw) {
+        Alert.alert(
+          'Overlay Permission Missing',
+          'Turn on "Display over other apps" so the floating issue marker can stay available during delivery work.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Overlay Settings', onPress: () => openOverlaySettings() },
+          ]
+        );
+        return;
+      }
+
+      const accessibilityEnabled = await isAccessibilityServiceEnabled();
+      if (!accessibilityEnabled) {
+        Alert.alert(
+          'Accessibility Service Off',
+          'Distance status needs the SpendSense Accessibility service. Debug mode will still start for manual issue marking.',
+          [
+            { text: 'Not Now', style: 'cancel' },
+            { text: 'Open Accessibility Settings', onPress: () => openAccessibilitySettings() },
+          ]
+        );
+      }
+
+      const until = Date.now() + DELIVERY_DEBUG_MODE_DURATION_MS;
+      await AsyncStorage.multiSet([
+        ['debug_floating_bubble', 'true'],
+        [DELIVERY_DEBUG_MODE_UNTIL_KEY, String(until)],
+      ]);
+      const shown = await showIssueBubble();
+      setFloatingBubbleEnabled(shown);
+      setDeliveryDebugModeUntil(until);
+      Toast.show({
+        type: shown ? 'success' : 'info',
+        text1: shown ? 'Delivery Debug Mode On' : 'Debug mode saved',
+        text2: shown
+          ? 'Floating issue marker is ready for the next 4 hours'
+          : 'Open overlay permission if the marker does not appear',
+      });
+      await checkPorterService();
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Could not start debug mode',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const endDeliveryDebugMode = async () => {
+    try {
+      await hideIssueBubble();
+      await AsyncStorage.multiSet([
+        ['debug_floating_bubble', 'false'],
+        [DELIVERY_DEBUG_MODE_UNTIL_KEY, '0'],
+      ]);
+      setFloatingBubbleEnabled(false);
+      setDeliveryDebugModeUntil(null);
+      Toast.show({
+        type: 'info',
+        text1: 'Delivery Debug Mode Off',
+        text2: 'Logs and pinned incidents were kept',
+      });
+      await checkPorterService();
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Could not end debug mode',
+        text2: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   useEffect(() => {
@@ -622,6 +764,120 @@ export default function Settings() {
     });
   };
 
+  const formatStatusTime = (time?: number) => {
+    if (!time) return 'None';
+    return new Date(time).toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const formatDebugModeUntil = () => {
+    if (!deliveryDebugModeUntil || deliveryDebugModeUntil <= Date.now()) return 'Inactive';
+    return `Active until ${formatStatusTime(deliveryDebugModeUntil)}`;
+  };
+
+  const getDistanceStatusText = () => {
+    if (lastDistanceResult.status === 'none') return 'None';
+    if (lastDistanceResult.status === 'success') return 'Success';
+    return 'Unavailable';
+  };
+
+  const getDistanceDetailText = () => {
+    if (lastDistanceResult.status === 'none') return 'No distance result recorded yet';
+    const pieces = [
+      lastDistanceResult.reason ? `Reason: ${lastDistanceResult.reason}` : undefined,
+      lastDistanceResult.toPickup ? `Pickup: ${lastDistanceResult.toPickup}` : undefined,
+      lastDistanceResult.tripDistance ? `Trip: ${lastDistanceResult.tripDistance}` : undefined,
+      formatStatusTime(lastDistanceResult.time),
+    ].filter(Boolean);
+    return pieces.join(' | ');
+  };
+
+  const getStatusColor = (tone: 'ok' | 'warn' | 'bad' | 'neutral') => {
+    switch (tone) {
+      case 'ok':
+        return '#10b981';
+      case 'warn':
+        return '#f59e0b';
+      case 'bad':
+        return '#ef4444';
+      default:
+        return colors.subtext;
+    }
+  };
+
+  const renderStatusPill = (label: string, tone: 'ok' | 'warn' | 'bad' | 'neutral') => {
+    const color = getStatusColor(tone);
+    return (
+      <View style={[styles.statusPill, { borderColor: color, backgroundColor: `${color}18` }]}>
+        <View style={[styles.statusDot, { backgroundColor: color }]} />
+        <Text style={[typography.caption, { color, fontWeight: '700' }]}>{label}</Text>
+      </View>
+    );
+  };
+
+  const renderDeliveryStatusRow = (
+    icon: string,
+    label: string,
+    value: string,
+    tone: 'ok' | 'warn' | 'bad' | 'neutral',
+    detail?: string
+  ) => (
+    <View style={styles.deliveryStatusRow}>
+      <MaterialCommunityIcons name={icon} size={22} color={getStatusColor(tone)} style={{ marginTop: 2 }} />
+      <View style={styles.deliveryStatusText}>
+        <Text style={[typography.bodyBold, { color: colors.text }]}>{label}</Text>
+        {detail ? (
+          <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]} numberOfLines={2}>
+            {detail}
+          </Text>
+        ) : null}
+      </View>
+      {renderStatusPill(value, tone)}
+    </View>
+  );
+
+  const renderDeliveryActionButton = (
+    label: string,
+    icon: string,
+    onPress: () => void,
+    tone: 'primary' | 'neutral' | 'danger' = 'neutral'
+  ) => {
+    const color = tone === 'danger' ? '#ef4444' : tone === 'primary' ? colors.accent : colors.text;
+    const borderColor = tone === 'neutral' ? colors.border : color;
+    return (
+      <TouchableOpacity
+        onPress={onPress}
+        style={[
+          styles.deliveryActionButton,
+          {
+            borderColor,
+            backgroundColor: tone === 'neutral' ? colors.card : `${color}14`,
+          },
+        ]}>
+        <MaterialCommunityIcons name={icon} size={18} color={color} />
+        <Text style={[typography.caption, styles.deliveryActionText, { color }]}>
+          {label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const debugLogsText = deliveryDebugSummary
+    ? `${deliveryDebugSummary.normalSessionCount} sessions / ${deliveryDebugSummary.incidentCount} pinned ${deliveryDebugSummary.incidentCount === 1 ? 'incident' : 'incidents'}`
+    : 'Unknown';
+  const debugLogsDetail = deliveryDebugSummary
+    ? `${deliveryDebugSummary.rollingEventCount + deliveryDebugSummary.nativeEventCount} recent events, ${deliveryDebugSummary.realIncidentCount} issue-worthy ${deliveryDebugSummary.realIncidentCount === 1 ? 'incident' : 'incidents'}`
+    : 'Summary will load when Settings refreshes';
+  const lastIncidentText = lastDeliveryIncident ? formatStatusTime(lastDeliveryIncident.time) : 'None';
+  const lastIncidentDetail = lastDeliveryIncident
+    ? `${lastDeliveryIncident.reason}${lastDeliveryIncident.source ? ` (${lastDeliveryIncident.source})` : ''}`
+    : 'No pinned delivery issue yet';
+  const lastDeliveryApp = deliveryDebugSummary?.lastDeliveryApp || lastDistanceResult.app || 'None';
+
   return (
     <ScreenWrapper scrollable>
       <AppHeader title="Settings" />
@@ -875,85 +1131,144 @@ export default function Settings() {
           </Card>
         </View>
 
-        {/* Porter Assistant (Experimental) */}
+        {/* Delivery Tools & Debug */}
         <View style={{ marginTop: spacing.xl }}>
           <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
-            Experimental Features
+            Delivery Tools & Debug
           </Text>
 
           <Card>
-            <View style={[styles.accountRow, { paddingBottom: spacing.sm, flexWrap: 'wrap' }]}>
-              <MaterialCommunityIcons name="truck-fast" size={24} color="#06b6d4" />
-              <View style={{ flex: 1, marginLeft: spacing.md }}>
-                <Text style={[typography.bodyBold, { color: colors.text }]}>Porter Trip Distance</Text>
-                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Automatically show trip distance over Porter app
+            <View style={styles.deliveryPanelHeader}>
+              <View style={{ flex: 1, marginRight: spacing.sm }}>
+                <Text style={[typography.h3, { color: colors.text }]}>Delivery Debug Mode</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 4 }]}>
+                  Quick readiness check before Porter, Swiggy or Zomato work
                 </Text>
               </View>
-              <TouchableOpacity
-                onPress={() => {
-                  openAccessibilitySettings();
-                  Toast.show({
-                    type: 'info',
-                    text1: 'Enable SpendSense',
-                    text2: 'Find SpendSense in Accessibility settings and turn it on',
-                  });
-                }}
-                style={{
-                  backgroundColor: porterServiceEnabled ? '#10b981' + '20' : colors.card,
-                  borderColor: porterServiceEnabled ? '#10b981' : colors.border,
-                  borderWidth: 1,
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderRadius: 16,
-                  marginLeft: 4,
-                }}>
-                <Text style={[typography.caption, { color: porterServiceEnabled ? '#10b981' : colors.text, fontWeight: 'bold' }]}>
-                  {porterServiceEnabled ? 'Active' : 'Enable'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => (navigation as any).navigate('PorterTest')}
-                style={{
-                  backgroundColor: colors.accent + '20',
-                  borderColor: colors.accent,
-                  borderWidth: 1,
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderRadius: 16,
-                  marginLeft: 4,
-                }}>
-                <Text style={[typography.caption, { color: colors.accent, fontWeight: 'bold' }]}>
-                  Test
-                </Text>
-              </TouchableOpacity>
+              {renderStatusPill(
+                deliveryDebugModeUntil && deliveryDebugModeUntil > Date.now() ? 'Active' : 'Inactive',
+                deliveryDebugModeUntil && deliveryDebugModeUntil > Date.now() ? 'ok' : 'neutral'
+              )}
+            </View>
+
+            <View style={[styles.deliveryModeBanner, { backgroundColor: colors.background, borderColor: colors.border }]}>
+              <MaterialCommunityIcons
+                name={deliveryDebugModeUntil && deliveryDebugModeUntil > Date.now() ? 'timer-check-outline' : 'timer-outline'}
+                size={20}
+                color={deliveryDebugModeUntil && deliveryDebugModeUntil > Date.now() ? '#10b981' : colors.subtext}
+              />
+              <Text style={[typography.caption, { color: colors.text, flex: 1, marginLeft: spacing.sm }]}>
+                {formatDebugModeUntil()}
+              </Text>
+              {deliveryStatusLoading ? (
+                <Text style={[typography.caption, { color: colors.subtext }]}>Refreshing</Text>
+              ) : null}
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.md }} />
+
+            {renderDeliveryStatusRow(
+              'human-handsup',
+              'Accessibility Service',
+              porterServiceEnabled ? 'On' : 'Off',
+              porterServiceEnabled ? 'ok' : 'bad',
+              porterServiceEnabled ? 'Porter distance events can reach SpendSense' : 'Open Accessibility Settings before starting work'
+            )}
+            {renderDeliveryStatusRow(
+              'picture-in-picture-bottom-right',
+              'Overlay Permission',
+              overlayPermissionGranted ? 'Granted' : 'Missing',
+              overlayPermissionGranted ? 'ok' : 'warn',
+              overlayPermissionGranted ? 'Floating issue marker can appear over delivery apps' : 'Required for the floating issue marker'
+            )}
+            {renderDeliveryStatusRow(
+              'chat-alert-outline',
+              'Floating Issue Marker',
+              floatingBubbleEnabled ? 'On' : 'Off',
+              floatingBubbleEnabled ? 'ok' : 'neutral',
+              floatingBubbleEnabled ? 'Tap the bubble to pin a delivery issue' : 'Start debug mode or use the switch below'
+            )}
+            {renderDeliveryStatusRow(
+              'volume-vibrate',
+              'Delivery Volume Guard',
+              volumeGuardEnabled ? 'On' : 'Off',
+              volumeGuardEnabled ? 'ok' : 'neutral',
+              volumeGuardEnabled ? 'Delivery apps are limited to the locked media volume' : 'Enable if delivery apps raise media volume'
+            )}
+            {renderDeliveryStatusRow(
+              'black-mesa',
+              'Delivery Debug Logs',
+              debugLogsText,
+              deliveryDebugSummary ? 'ok' : 'neutral',
+              debugLogsDetail
+            )}
+            {renderDeliveryStatusRow(
+              'alert-circle-check-outline',
+              'Last Incident',
+              lastIncidentText,
+              lastDeliveryIncident ? 'warn' : 'neutral',
+              lastIncidentDetail
+            )}
+            {renderDeliveryStatusRow(
+              lastDistanceResult.status === 'success' ? 'map-check-outline' : 'map-marker-question-outline',
+              'Last Distance Result',
+              getDistanceStatusText(),
+              lastDistanceResult.status === 'success' ? 'ok' : lastDistanceResult.status === 'unavailable' ? 'warn' : 'neutral',
+              getDistanceDetailText()
+            )}
+            {renderDeliveryStatusRow(
+              'cellphone-marker',
+              'Last Delivery App',
+              lastDeliveryApp,
+              lastDeliveryApp === 'None' ? 'neutral' : 'ok',
+              lastDeliveryApp === 'None' ? 'No recent supported delivery app event' : 'From privacy-safe package summary'
+            )}
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.md }} />
+
+            <View style={styles.deliveryActionGrid}>
+              {renderDeliveryActionButton('Start Debug Mode', 'play-circle-outline', startDeliveryDebugMode, 'primary')}
+              {renderDeliveryActionButton('End Debug Mode', 'stop-circle-outline', endDeliveryDebugMode)}
+              {renderDeliveryActionButton('Mark Issue', 'alert-plus-outline', handleMarkDeliveryIssue, 'primary')}
+              {renderDeliveryActionButton('Export Logs', 'export-variant', handleExportDeliveryDebugLogs)}
+              {renderDeliveryActionButton('Clear Logs', 'trash-can-outline', handleClearDeliveryDebugLogs, 'danger')}
+              {renderDeliveryActionButton('Accessibility', 'human-handsup', () => {
+                openAccessibilitySettings();
+                Toast.show({
+                  type: 'info',
+                  text1: 'Enable SpendSense',
+                  text2: 'Find SpendSense in Accessibility settings and turn it on',
+                });
+              })}
+              {renderDeliveryActionButton('Overlay Permission', 'picture-in-picture-bottom-right', () => {
+                openOverlaySettings();
+              })}
+              {renderDeliveryActionButton('Porter Test', 'truck-fast-outline', () => (navigation as any).navigate('PorterTest'))}
             </View>
 
             <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
 
-            <View style={[styles.accountRow, { alignItems: 'flex-start', paddingBottom: spacing.sm }]}>
+            <View style={[styles.deliveryToggleRow, { paddingTop: spacing.sm }]}>
               <MaterialCommunityIcons name="volume-vibrate" size={24} color="#f59e0b" style={{ marginTop: 2 }} />
               <View style={{ flex: 1, marginLeft: spacing.md, marginRight: spacing.sm }}>
-                <Text style={[typography.bodyBold, { color: colors.text }]}>Delivery Volume Guard</Text>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>Volume Guard</Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Keep Porter, Swiggy, Zomato and similar delivery apps from raising media volume above your locked level
+                  Keep delivery apps from raising media volume above your locked level
                 </Text>
                 <TouchableOpacity
                   onPress={lockCurrentVolumes}
                   disabled={!volumeGuardEnabled}
-                  style={{
-                    alignSelf: 'flex-start',
-                    marginTop: spacing.sm,
-                    paddingHorizontal: 12,
-                    paddingVertical: 6,
-                    borderRadius: 16,
-                    borderWidth: 1,
-                    borderColor: volumeGuardEnabled ? colors.accent : colors.border,
-                    backgroundColor: volumeGuardEnabled ? colors.accent + '15' : colors.card,
-                    opacity: volumeGuardEnabled ? 1 : 0.5,
-                  }}>
-                  <Text style={[typography.caption, { color: volumeGuardEnabled ? colors.accent : colors.subtext, fontWeight: 'bold' }]}>
-                    Lock Current Media Volume
+                  style={[
+                    styles.inlineControlButton,
+                    {
+                      borderColor: volumeGuardEnabled ? colors.accent : colors.border,
+                      backgroundColor: volumeGuardEnabled ? `${colors.accent}15` : colors.card,
+                      opacity: volumeGuardEnabled ? 1 : 0.5,
+                    },
+                  ]}>
+                  <MaterialCommunityIcons name="lock-check-outline" size={16} color={volumeGuardEnabled ? colors.accent : colors.subtext} />
+                  <Text style={[typography.caption, { color: volumeGuardEnabled ? colors.accent : colors.subtext, fontWeight: '700', marginLeft: 6 }]}>
+                    Lock Current Volume
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -967,63 +1282,7 @@ export default function Settings() {
 
             <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
 
-            <View style={[styles.accountRow, { alignItems: 'flex-start', paddingBottom: spacing.sm }]}>
-              <MaterialCommunityIcons name="black-mesa" size={24} color="#8b5cf6" style={{ marginTop: 2 }} />
-              <View style={{ flex: 1, marginLeft: spacing.md }}>
-                <Text style={[typography.bodyBold, { color: colors.text }]}>Delivery Debug Black Box</Text>
-                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Pin and export privacy-safe delivery diagnostics for Porter, Swiggy and Zomato issues
-                </Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm }}>
-                  <TouchableOpacity
-                    onPress={handleMarkDeliveryIssue}
-                    style={{
-                      paddingHorizontal: 12,
-                      paddingVertical: 6,
-                      borderRadius: 16,
-                      borderWidth: 1,
-                      borderColor: '#8b5cf6',
-                      backgroundColor: '#8b5cf6' + '15',
-                    }}>
-                    <Text style={[typography.caption, { color: '#8b5cf6', fontWeight: 'bold' }]}>
-                      Mark Delivery Issue
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleExportDeliveryDebugLogs}
-                    style={{
-                      paddingHorizontal: 12,
-                      paddingVertical: 6,
-                      borderRadius: 16,
-                      borderWidth: 1,
-                      borderColor: colors.accent,
-                      backgroundColor: colors.accent + '15',
-                    }}>
-                    <Text style={[typography.caption, { color: colors.accent, fontWeight: 'bold' }]}>
-                      Export Logs
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleClearDeliveryDebugLogs}
-                    style={{
-                      paddingHorizontal: 12,
-                      paddingVertical: 6,
-                      borderRadius: 16,
-                      borderWidth: 1,
-                      borderColor: '#ef4444',
-                      backgroundColor: '#ef4444' + '10',
-                    }}>
-                    <Text style={[typography.caption, { color: '#ef4444', fontWeight: 'bold' }]}>
-                      Clear Logs
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-
-            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
-
-            <View style={[styles.accountRow, { alignItems: 'flex-start', paddingBottom: spacing.sm }]}>
+            <View style={[styles.deliveryToggleRow, { paddingTop: spacing.sm }]}>
               <MaterialCommunityIcons name="chat-alert" size={24} color="#8b5cf6" style={{ marginTop: 2 }} />
               <View style={{ flex: 1, marginLeft: spacing.md, marginRight: spacing.sm }}>
                 <Text style={[typography.bodyBold, { color: colors.text }]}>Floating Issue Marker</Text>
@@ -1295,6 +1554,89 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     paddingHorizontal: 16,
+  },
+  deliveryPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  deliveryModeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  deliveryStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  deliveryStatusText: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 8,
+  },
+  statusPill: {
+    minHeight: 28,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    maxWidth: 150,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  deliveryActionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  deliveryActionButton: {
+    minHeight: 40,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexGrow: 1,
+    flexBasis: '47%',
+  },
+  deliveryActionText: {
+    fontWeight: '700',
+    marginLeft: 6,
+    flexShrink: 1,
+  },
+  deliveryToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+  },
+  inlineControlButton: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   divider: {
     height: 1,

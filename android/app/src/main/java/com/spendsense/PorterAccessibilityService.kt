@@ -36,8 +36,10 @@ class PorterAccessibilityService : AccessibilityService() {
         private const val DUPLICATE_REFRESH_MS = 2500L
         private const val OCR_MIN_INTERVAL_MS = 900L
         private const val OCR_DUPLICATE_REFRESH_MS = 2500L
+        private const val OCR_UNSUPPORTED_BACKOFF_MS = 10 * 60_000L
         private const val PORTER_EVENT_MIN_INTERVAL_MS = 120L
         private const val VOLUME_CLAMP_MIN_INTERVAL_MS = 2500L
+        private const val BUFFERED_PORTER_EVENT_TTL_MS = 45_000L
         private const val MAX_TEXT_NODE_DEPTH = 40
         private const val MAX_TEXT_NODES = 450
         private const val MAX_LOG_MESSAGE_LENGTH = 240
@@ -45,6 +47,7 @@ class PorterAccessibilityService : AccessibilityService() {
         private const val NATIVE_LOG_PREFS_NAME = "spendsense_porter_native_logs"
         private const val KEY_NATIVE_LOGS = "logs"
         private const val KEY_NATIVE_INCIDENTS = "incidents"
+        private const val KEY_BUFFERED_PORTER_EVENT = "buffered_porter_event"
         private const val KEY_ENABLED = "enabled"
         private const val MAX_NATIVE_LOGS = 400
         private const val MAX_NATIVE_INCIDENTS = 10
@@ -69,6 +72,7 @@ class PorterAccessibilityService : AccessibilityService() {
         )
 
         private var cachedNativeLogs: JSONArray? = null
+        private var bufferedPorterEvent: JSONObject? = null
 
         fun captureCurrentVolumeCaps(context: Context) {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
@@ -259,7 +263,50 @@ class PorterAccessibilityService : AccessibilityService() {
                 .edit()
                 .putString(KEY_NATIVE_LOGS, "[]")
                 .putString(KEY_NATIVE_INCIDENTS, "[]")
+                .remove(KEY_BUFFERED_PORTER_EVENT)
                 .apply()
+            bufferedPorterEvent = null
+        }
+
+        fun consumeBufferedPorterEvent(context: Context): String {
+            val prefs = context.getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+            val event = bufferedPorterEvent ?: readPersistedBufferedPorterEvent(prefs) ?: return ""
+
+            val createdAt = event.optLong("createdAt", 0L)
+            if (createdAt <= 0L || System.currentTimeMillis() - createdAt > BUFFERED_PORTER_EVENT_TTL_MS) {
+                bufferedPorterEvent = null
+                prefs.edit().remove(KEY_BUFFERED_PORTER_EVENT).apply()
+                return ""
+            }
+
+            bufferedPorterEvent = null
+            prefs.edit().remove(KEY_BUFFERED_PORTER_EVENT).apply()
+            return event.toString()
+        }
+
+        private fun readPersistedBufferedPorterEvent(prefs: android.content.SharedPreferences): JSONObject? {
+            return try {
+                val raw = prefs.getString(KEY_BUFFERED_PORTER_EVENT, "") ?: ""
+                if (raw.isBlank()) {
+                    null
+                } else {
+                    val event = JSONObject(raw)
+                    val rawText = event.optString("textContent", "")
+                    if (rawText.isNotBlank()) {
+                        event.remove("textContent")
+                        if (!event.has("textLength")) {
+                            event.put("textLength", rawText.length)
+                        }
+                        if (!event.has("textSummary")) {
+                            event.put("textSummary", compactTextSample(rawText))
+                        }
+                    }
+                    event.put("textContentAvailable", false)
+                    event
+                }
+            } catch (_: Exception) {
+                null
+            }
         }
 
         private fun pinNativeIncident(
@@ -440,6 +487,8 @@ class PorterAccessibilityService : AccessibilityService() {
     private var lastOcrRequestTime: Long = 0
     private var lastOcrDispatchTime: Long = 0
     private var lastOcrTextHash: Int = 0
+    private var ocrUnsupportedUntil: Long = 0
+    private var lastOcrUnsupportedLogTime: Long = 0
     private var lastVolumeLogTime: Long = 0
     private var lastVolumeClampRequestTime: Long = 0
     private var lastEmptyLogTime: Long = 0
@@ -628,7 +677,7 @@ class PorterAccessibilityService : AccessibilityService() {
         } else {
             appendThrottledEmptyLog(packageName, eventType, windowDiagnostics.joinToString(" | "))
 
-            if (shouldTryOcr(windowDiagnostics)) {
+            if (shouldTryOcr(windowDiagnostics, packageName, eventType)) {
                 requestOcrFallback(packageName, eventType, windowDiagnostics.joinToString(" | "))
             }
         }
@@ -678,7 +727,7 @@ class PorterAccessibilityService : AccessibilityService() {
 
         appendNativeLog(
             applicationContext,
-            "extract_empty",
+            "no_readable_text",
             "Porter event had no readable Porter-owned text. Windows: $diagnostics",
             packageName,
             eventType
@@ -717,7 +766,7 @@ class PorterAccessibilityService : AccessibilityService() {
         return normalized.size <= 2 && normalized.all { part -> chromeParts.contains(part) }
     }
 
-    private fun shouldTryOcr(windowDiagnostics: List<String>): Boolean {
+    private fun shouldTryOcr(windowDiagnostics: List<String>, packageName: String, eventType: String): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
 
         val hasPorterOverlay = windowDiagnostics.any { diagnostic ->
@@ -727,9 +776,31 @@ class PorterAccessibilityService : AccessibilityService() {
         if (!hasPorterOverlay) return false
 
         val now = System.currentTimeMillis()
+        if (now < ocrUnsupportedUntil) {
+            appendThrottledOcrUnsupportedLog(packageName, eventType, "screenshot capability unavailable")
+            return false
+        }
         if (isOcrInFlight || now - lastOcrRequestTime < OCR_MIN_INTERVAL_MS) return false
 
         return true
+    }
+
+    private fun markOcrUnsupported(packageName: String, eventType: String, reason: String) {
+        ocrUnsupportedUntil = System.currentTimeMillis() + OCR_UNSUPPORTED_BACKOFF_MS
+        appendThrottledOcrUnsupportedLog(packageName, eventType, reason)
+    }
+
+    private fun appendThrottledOcrUnsupportedLog(packageName: String, eventType: String, reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastOcrUnsupportedLogTime < OCR_UNSUPPORTED_BACKOFF_MS) return
+        lastOcrUnsupportedLogTime = now
+        appendNativeLog(
+            applicationContext,
+            "ocr_unsupported",
+            "OCR fallback unsupported: $reason",
+            packageName,
+            eventType
+        )
     }
 
     private fun requestOcrFallback(packageName: String, eventType: String, diagnostics: String) {
@@ -792,25 +863,13 @@ class PorterAccessibilityService : AccessibilityService() {
 
                     override fun onFailure(errorCode: Int) {
                         isOcrInFlight = false
-                        appendNativeLog(
-                            applicationContext,
-                            "ocr_failed",
-                            "takeScreenshot failed with code $errorCode",
-                            packageName,
-                            eventType
-                        )
+                        markOcrUnsupported(packageName, eventType, "takeScreenshot failed with code $errorCode")
                     }
                 }
             )
         } catch (e: Exception) {
             isOcrInFlight = false
-            appendNativeLog(
-                applicationContext,
-                "ocr_failed",
-                "takeScreenshot request failed: ${e.message}",
-                packageName,
-                eventType
-            )
+            markOcrUnsupported(packageName, eventType, "takeScreenshot request failed: ${e.message}")
         }
     }
 
@@ -1055,10 +1114,11 @@ class PorterAccessibilityService : AccessibilityService() {
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "ReactContext dispatch failed safely", e)
+                bufferLatestPorterEvent(packageName, textContent, eventType, "dispatch_failed")
                 appendNativeLog(
                     applicationContext,
                     "dispatch_failed",
-                    "ReactContext dispatch failed safely: ${e.message}",
+                    "ReactContext dispatch failed safely; buffered latest Porter event: ${e.message}",
                     packageName,
                     eventType,
                     textContent.length,
@@ -1067,15 +1127,53 @@ class PorterAccessibilityService : AccessibilityService() {
             }
         } else {
             Log.w(TAG, "ReactContext not available, cannot send event to JS")
+            bufferLatestPorterEvent(packageName, textContent, eventType, "js_context_inactive")
             appendNativeLog(
                 applicationContext,
-                "dispatch_failed",
-                "ReactContext not active, could not send event to JS",
+                "js_context_inactive",
+                "ReactContext not active; buffered latest Porter event for JS pull",
                 packageName,
                 eventType,
                 textContent.length,
                 textContent
             )
+        }
+    }
+
+    private fun bufferLatestPorterEvent(
+        packageName: String,
+        textContent: String,
+        eventType: String,
+        reason: String
+    ) {
+        try {
+            val createdAt = System.currentTimeMillis()
+            val event = JSONObject()
+                .put("createdAt", createdAt)
+                .put("packageName", packageName)
+                .put("eventType", eventType)
+                .put("textContent", textContent)
+                .put("textLength", textContent.length)
+                .put("textSummary", compactTextSample(textContent))
+                .put("textContentAvailable", true)
+                .put("reason", reason)
+            val persistedEvent = JSONObject()
+                .put("createdAt", createdAt)
+                .put("packageName", packageName)
+                .put("eventType", eventType)
+                .put("textLength", textContent.length)
+                .put("textSummary", compactTextSample(textContent))
+                .put("textContentAvailable", false)
+                .put("reason", reason)
+
+            bufferedPorterEvent = event
+            applicationContext
+                .getSharedPreferences(NATIVE_LOG_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_BUFFERED_PORTER_EVENT, persistedEvent.toString())
+                .apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not buffer Porter event", e)
         }
     }
 

@@ -143,6 +143,12 @@ export const INDIAN_BANKS: BankPattern[] = [
     keywords: ['AIRTEL', 'Airtel Payments'],
     aliases: ['Airtel Bank', 'Airtel Payments Bank'],
   },
+  {
+    name: 'Utkarsh Small Finance Bank',
+    senderIds: ['UTKSPR', 'UTKSFB', 'UTKARSH', 'SFBL'],
+    keywords: ['UTKARSH', 'SFBL', 'SuperCard'],
+    aliases: ['Utkarsh', 'Utkarsh SFBL', 'Utkarsh Small Finance Bank', 'SuperCard'],
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -164,6 +170,7 @@ const BALANCE_PATTERNS = [
 
 // Card/Account last 4 digits patterns
 const LAST4_PATTERNS = [
+  /(?:supercard|card)\s*(?:ending\s*)?([0-9]{4})/i,
   /(?:card|a\/c|account|ac|xx|xxxx)\s*(?:ending|no\.?|number)?\s*(?:with)?\s*[xX*]{2,}([0-9]{4})/i,
   /(?:card|account)\s*[xX*]{8,}([0-9]{4})/i,
   /\b[xX*]{12}([0-9]{4})\b/,  // Standard card masking
@@ -177,6 +184,8 @@ const PAYMENT_KEYWORDS = ['bill payment', 'bill paid', 'payment received', 'paym
 
 // Merchant/Description extraction
 const MERCHANT_PATTERNS = [
+  /(?:for)\s+(UPI)(?:\s*[-/]|\.|$)/i,
+  /(?:received from|from)\s+([A-Z][A-Za-z\s]+?)(?:\s+deposited\s+into|\s+in\s+your|\s+to\s+your|\s+on\s+\d|\.|$)/i,
   /(?:at|to|from)\s+([A-Z][A-Za-z0-9\s&'-]{2,30}?)(?:\s+on|\s+via|\s+through|\.|$)/i,
   /(?:merchant|vendor|payee):\s*([A-Za-z0-9\s&'-]{2,30})/i,
 ];

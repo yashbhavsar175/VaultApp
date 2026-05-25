@@ -9,7 +9,7 @@
  * - Toast overlay display
  */
 
-import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
+import { AppState, NativeModules, NativeEventEmitter, Platform } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Config from 'react-native-config';
@@ -40,11 +40,11 @@ function requirePorterNativeMethod(methodName: string) {
 
 let subscription: any = null;
 let bubbleIssueSubscription: any = null;
+let appStateSubscription: any = null;
 let lastProcessedHash = 0;
 let activeRideRunId = 0;
 let activeRideSignature: string | null = null;
 
-const MAX_RESULT_WAIT_MS = 5200;
 const LEGACY_PORTER_DEBUG_KEYS = [
   'debug_porter_last_raw_text',
   'debug_porter_api_response',
@@ -93,6 +93,46 @@ function sanitizeNativeSnapshot(raw: unknown): NativeDeliveryDebugSnapshot | und
   return raw as NativeDeliveryDebugSnapshot;
 }
 
+function hashString(value: string): number {
+  return value.split('').reduce((hash: number, char: string) => {
+    return ((hash << 5) - hash) + char.charCodeAt(0);
+  }, 0);
+}
+
+function normalizeVolatilePorterText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\baccept\s+in\s+\d+\s*s\b/g, 'accept in <timer>')
+    .replace(/\b\d+\s*(?:sec|secs|second|seconds)\b/g, '<timer>')
+    .replace(/\b\d{1,2}:\d{2}\b/g, '<timer>')
+    .replace(/\b\d+%\b/g, '<percent>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function distanceReasonLabel(reason?: DistanceFailureReason): string {
+  switch (reason) {
+    case 'no_readable_text':
+      return 'no readable text';
+    case 'ocr_unsupported':
+      return 'OCR unsupported';
+    case 'js_context_inactive':
+      return 'JS context inactive';
+    case 'duplicate_suppressed':
+      return 'duplicate suppressed';
+    case 'distance_api_failed':
+      return 'distance API failed';
+    case 'geocode_failed':
+      return 'geocode failed';
+    case 'invalid_address':
+      return 'address unreadable';
+    case 'stale_order_result':
+      return 'order changed';
+    default:
+      return 'unknown';
+  }
+}
+
 async function purgeLegacySensitivePorterDebugStorage(): Promise<void> {
   await AsyncStorage.multiRemove(LEGACY_PORTER_DEBUG_KEYS);
 }
@@ -108,12 +148,36 @@ function scheduleLegacySensitivePorterDebugPurge(): void {
 interface DistanceResult {
   toPickup: string;
   tripDistance: string;
+  failureReason?: DistanceFailureReason;
+  detail?: string;
 }
+
+type DistanceFailureReason =
+  | 'no_readable_text'
+  | 'ocr_unsupported'
+  | 'js_context_inactive'
+  | 'duplicate_suppressed'
+  | 'invalid_address'
+  | 'distance_api_failed'
+  | 'geocode_failed'
+  | 'stale_order_result';
+
+type PorterScreenEvent = {
+  packageName?: string;
+  textContent?: string;
+  textLength?: number;
+  textSummary?: string;
+  textContentAvailable?: boolean;
+  eventType?: string;
+  reason?: string;
+};
 
 // ─── Location Cache ─────────────────────────────────────────────────────────────
 // Avoids GPS call on every accessibility event — reuse if < 60 seconds old
 let cachedLocation: { lat: number; lng: number; ts: number } | null = null;
 const LOCATION_CACHE_TTL_MS = 60_000; // 60 seconds
+const STALE_RESULT_GRACE_MS = 3500;
+const RESULT_STALE_LIMIT_MS = 12_000;
 
 function getCachedOrFreshLocation(): Promise<{ lat: number; lng: number }> {
   return new Promise((resolve, reject) => {
@@ -378,8 +442,16 @@ async function getDistancesKm(
       drop: summarizeSensitiveValue(drop),
     });
     await AsyncStorage.setItem('debug_porter_api_error', 'Invalid address format');
-    return { toPickup: porterPickupDistance || 'Invalid Address', tripDistance: 'Invalid Address' };
+    return {
+      toPickup: porterPickupDistance || 'Invalid Address',
+      tripDistance: 'Invalid Address',
+      failureReason: 'invalid_address',
+      detail: 'address validation failed',
+    };
   }
+
+  let distanceApiFailed = false;
+  let distanceApiDetail = '';
 
   if (GOOGLE_MAPS_API_KEY) {
     try {
@@ -422,6 +494,8 @@ async function getDistancesKm(
         const errorMsg = toPickupData?.error_message || tripData.error_message || `API Status: ${toPickupData?.status || tripData.status}`;
         console.warn('[Porter] Google Maps API Error:', errorMsg);
         await AsyncStorage.setItem('debug_porter_api_error', errorMsg);
+        distanceApiFailed = true;
+        distanceApiDetail = errorMsg;
         // Fall through to Nominatim fallback
       } else {
         const toPickupStatus = porterPickupDistance ? 'OK' : toPickupData?.rows?.[0]?.elements?.[0]?.status;
@@ -437,12 +511,16 @@ async function getDistancesKm(
           const elementError = `Element status: toPickup=${toPickupStatus}, trip=${tripStatus}`;
           console.warn('[Porter] Google Maps element error:', elementError);
           await AsyncStorage.setItem('debug_porter_api_error', elementError);
+          distanceApiFailed = true;
+          distanceApiDetail = elementError;
           // Fall through to Nominatim fallback
         }
       }
     } catch (error: any) {
       console.error('[Porter] Google Maps API exception:', error);
       await AsyncStorage.setItem('debug_porter_api_error', `Exception: ${error.message}`);
+      distanceApiFailed = true;
+      distanceApiDetail = error.message || 'Google Maps exception';
       // Fall through to Nominatim fallback
     }
   } else {
@@ -450,7 +528,12 @@ async function getDistancesKm(
   }
 
   if (deadlineAt && Date.now() > deadlineAt) {
-    return { toPickup: porterPickupDistance || 'N/A', tripDistance: 'N/A' };
+    return {
+      toPickup: porterPickupDistance || 'N/A',
+      tripDistance: 'N/A',
+      failureReason: 'stale_order_result',
+      detail: 'deadline reached before fallback',
+    };
   }
 
   // Fallback: Free Nominatim geocoding + Haversine
@@ -473,7 +556,15 @@ async function getDistancesKm(
   const toPickup = porterPickupDistance || (pickupCoords ? `~${(haversineKm(currentLat, currentLng, pickupCoords.lat, pickupCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A');
   const tripDistance = pickupCoords && dropCoords ? `~${(haversineKm(pickupCoords.lat, pickupCoords.lng, dropCoords.lat, dropCoords.lng) * ROAD_FACTOR).toFixed(1)} km` : 'N/A';
 
-  return { toPickup, tripDistance };
+  const geocodeFailed = !pickupCoords || !dropCoords;
+  return {
+    toPickup,
+    tripDistance,
+    failureReason: geocodeFailed ? 'geocode_failed' : (distanceApiFailed ? 'distance_api_failed' : undefined),
+    detail: geocodeFailed
+      ? `pickupFound=${!!pickupCoords},dropFound=${!!dropCoords}`
+      : distanceApiDetail || undefined,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -537,13 +628,6 @@ function looksLikeAddress(text: string): boolean {
 function extractPorterPickupDistance(text: string): string | null {
   const match = text.match(/pickup\s+([0-9]+(?:\.[0-9]+)?)\s*km\s+away/i);
   return match ? `${match[1]} km` : null;
-}
-
-function extractAcceptDeadline(text: string, now: number): number {
-  const match = text.match(/accept\s+in\s+(\d+)\s*s/i);
-  const secondsLeft = match ? Number(match[1]) : 0;
-  const popupDeadline = secondsLeft > 0 ? now + Math.max(1200, (secondsLeft * 1000) - 700) : now + MAX_RESULT_WAIT_MS;
-  return Math.min(now + MAX_RESULT_WAIT_MS, popupDeadline);
 }
 
 function isPorterHomeOrIdleText(lowerText: string): boolean {
@@ -644,30 +728,7 @@ function extractAddresses(text: string): { pickup: string; drop: string } | null
   return null;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// PORTER DISTANCE CALCULATOR (EVENT LISTENER)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export const initPorterDistanceCalculator = () => {
-  if (subscription) return; // Already initialized
-  scheduleLegacySensitivePorterDebugPurge();
-
-  console.log('🚛 [Porter] Distance calculator initialized');
-
-  bubbleIssueSubscription = eventEmitter.addListener('onDeliveryIssueBubbleTap', async (event) => {
-    let nativeSnapshot: NativeDeliveryDebugSnapshot | undefined;
-    if (typeof event?.nativeSnapshot === 'string') {
-      try {
-        nativeSnapshot = sanitizeNativeSnapshot(JSON.parse(event.nativeSnapshot));
-      } catch {
-        nativeSnapshot = undefined;
-      }
-    }
-
-    await markDeliveryIssueInBlackBox('User marked delivery issue', nativeSnapshot, 'manual');
-  });
-
-  subscription = eventEmitter.addListener('onPorterScreenChange', async (event) => {
+async function processPorterScreenEvent(event: PorterScreenEvent): Promise<void> {
     const rawText = event.textContent || '';
     const textSummary = summarizeSensitiveValue(rawText);
     const debugEvent: DebugEvent = {
@@ -695,10 +756,26 @@ export const initPorterDistanceCalculator = () => {
         eventType,
         message: 'Porter screen event reached JS',
         data: {
+          reason: event.reason || null,
           textLength: text.length,
           textSummary,
         },
       });
+
+      if (!text.trim()) {
+        debugEvent.status = 'Ignored: no_readable_text';
+        await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+        await recordDeliveryDebugEvent({
+          category: 'porter_distance',
+          feature: 'readable_text',
+          packageName: event.packageName,
+          eventType,
+          level: 'warn',
+          message: 'no_readable_text',
+          data: { reason: 'no_readable_text' },
+        });
+        return;
+      }
       
       // 1. KEEPALIVE TOAST OVERLAY (Background Safe)
       // React Native background timers pause when app is minimized.
@@ -717,10 +794,8 @@ export const initPorterDistanceCalculator = () => {
       await AsyncStorage.setItem('debug_porter_last_time', debugEvent.timestamp);
       await AsyncStorage.setItem('debug_porter_last_event_type', eventType);
 
-      // Check if text has changed (by hash)
-      const textHash = text.split('').reduce((hash: number, char: string) => {
-        return ((hash << 5) - hash) + char.charCodeAt(0);
-      }, 0);
+      const stableText = normalizeVolatilePorterText(text);
+      const textHash = hashString(stableText);
       
       if (textHash === lastProcessedHash) {
         debugEvent.status = 'Skipped: Duplicate text';
@@ -729,8 +804,8 @@ export const initPorterDistanceCalculator = () => {
           feature: 'duplicate_guard',
           packageName: event.packageName,
           eventType,
-          message: 'Skipped duplicate Porter text',
-          data: { textLength: text.length, textSummary },
+          message: 'duplicate_suppressed',
+          data: { reason: 'duplicate_suppressed', textLength: text.length, textSummary },
         });
         return; // Same text, skip
       }
@@ -784,6 +859,7 @@ export const initPorterDistanceCalculator = () => {
           level: 'warn',
           message: 'Could not extract pickup/drop from Porter text',
           data: {
+            reason: 'address_parse_failed',
             parts: text.split(/\|\||[\r\n]+|•/).length,
             textLength: text.length,
             textSummary,
@@ -804,7 +880,7 @@ export const initPorterDistanceCalculator = () => {
       const rideRunId = activeRideRunId + 1;
       activeRideRunId = rideRunId;
       activeRideSignature = tripSig;
-      const resultDeadlineAt = extractAcceptDeadline(text, now);
+      const resultHardDeadlineAt = now + RESULT_STALE_LIMIT_MS;
 
       debugEvent.pickup = summarizeSensitiveValue(addresses.pickup);
       debugEvent.drop = summarizeSensitiveValue(addresses.drop);
@@ -842,13 +918,13 @@ export const initPorterDistanceCalculator = () => {
           addresses.pickup,
           addresses.drop,
           porterPickupDistance,
-          resultDeadlineAt
+          resultHardDeadlineAt
         );
 
         const isStillCurrentOrder =
           rideRunId === activeRideRunId &&
           activeRideSignature === tripSig &&
-          Date.now() <= resultDeadlineAt;
+          Date.now() <= resultHardDeadlineAt + STALE_RESULT_GRACE_MS;
 
         if (!isStillCurrentOrder) {
           debugEvent.status = 'Skipped: Late distance result after order popup disappeared';
@@ -858,7 +934,14 @@ export const initPorterDistanceCalculator = () => {
             feature: 'distance_result',
             packageName: event.packageName,
             eventType,
-            message: 'Skipped late distance result after order changed',
+            level: 'warn',
+            message: 'stale_order_result',
+            data: {
+              reason: 'stale_order_result',
+              sameRun: rideRunId === activeRideRunId,
+              sameSignature: activeRideSignature === tripSig,
+              ageMs: Date.now() - now,
+            },
           });
           return;
         }
@@ -873,7 +956,7 @@ export const initPorterDistanceCalculator = () => {
         if (distances.toPickup !== 'N/A' && distances.toPickup !== 'Invalid Address' && Platform.OS === 'android') {
           const message = distances.tripDistance !== 'N/A' && distances.tripDistance !== 'Invalid Address'
             ? `📍 You -> Pickup: ${distances.toPickup}\n🛣️ Pickup -> Drop: ${distances.tripDistance}`
-            : `📍 You -> Pickup: ${distances.toPickup}\n🛣️ Trip distance unavailable`;
+            : `📍 You -> Pickup: ${distances.toPickup}\n🛣️ Trip unavailable: ${distanceReasonLabel(distances.failureReason)}`;
           showActivePorterOverlay(tripSig, message);
 
           debugEvent.status = distances.tripDistance !== 'N/A' && distances.tripDistance !== 'Invalid Address'
@@ -887,12 +970,14 @@ export const initPorterDistanceCalculator = () => {
             eventType,
             message: debugEvent.status,
             data: {
+              reason: distances.failureReason || null,
               toPickup: distances.toPickup,
               tripDistance: distances.tripDistance,
             },
           });
         } else {
-          const fallbackMessage = `Porter order detected\nDistance unavailable\nCheck Maps API/location`;
+          const reason = distances.failureReason || 'geocode_failed';
+          const fallbackMessage = `Porter order detected\nDistance unavailable\nReason: ${distanceReasonLabel(reason)}`;
           showActivePorterOverlay(tripSig, fallbackMessage);
           debugEvent.status = `Partial: Order popup shown, but distance calc returned N/A or invalid address. Pickup ${debugEvent.pickup}. Drop ${debugEvent.drop}`;
           await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
@@ -902,10 +987,12 @@ export const initPorterDistanceCalculator = () => {
             packageName: event.packageName,
             eventType,
             level: 'warn',
-            message: 'Distance unavailable after Porter order parse',
+            message: reason,
             data: {
+              reason,
               pickup: debugEvent.pickup,
               drop: debugEvent.drop,
+              detail: distances.detail || null,
             },
           });
         }
@@ -921,7 +1008,11 @@ export const initPorterDistanceCalculator = () => {
           packageName: event.packageName,
           eventType,
           level: 'error',
-          message: `Geolocation error: ${geoError.message}`,
+          message: 'geocode_failed',
+          data: {
+            reason: 'geocode_failed',
+            detail: geoError.message || 'location unavailable',
+          },
         });
       }
     } catch (e: any) {
@@ -939,6 +1030,77 @@ export const initPorterDistanceCalculator = () => {
     } finally {
       // Legacy saveDebugEvent removed in favor of Black Box
     }
+}
+
+async function consumeBufferedPorterEvent(): Promise<void> {
+  if (Platform.OS !== 'android' || typeof PorterModule?.consumeBufferedPorterEvent !== 'function') return;
+  try {
+    const raw = await PorterModule.consumeBufferedPorterEvent();
+    if (typeof raw !== 'string' || !raw.trim()) return;
+    const event = JSON.parse(raw) as PorterScreenEvent;
+    const hasTextContent = typeof event.textContent === 'string' && event.textContent.trim().length > 0;
+    const textLength = hasTextContent ? event.textContent!.length : (event.textLength || 0);
+    const textSummary = hasTextContent
+      ? summarizeSensitiveValue(event.textContent || '')
+      : (event.textSummary || (textLength ? `redacted len=${textLength}` : ''));
+    await recordDeliveryDebugEvent({
+      category: 'porter_distance',
+      feature: 'native_event_recovered',
+      packageName: event.packageName,
+      eventType: event.eventType || 'unknown',
+      message: event.reason === 'js_context_inactive' ? 'js_context_inactive' : 'dispatch_failed',
+      data: {
+        reason: event.reason || 'js_context_inactive',
+        textAvailable: hasTextContent,
+        textLength,
+        textSummary,
+      },
+    });
+    if (!hasTextContent) return;
+    await processPorterScreenEvent(event);
+  } catch (error: any) {
+    await recordDeliveryDebugEvent({
+      category: 'error',
+      feature: 'native_event_recovered',
+      level: 'error',
+      message: `Failed to consume buffered Porter event: ${error.message}`,
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PORTER DISTANCE CALCULATOR (EVENT LISTENER)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export const initPorterDistanceCalculator = () => {
+  if (subscription) return; // Already initialized
+  scheduleLegacySensitivePorterDebugPurge();
+
+  console.log('🚛 [Porter] Distance calculator initialized');
+
+  bubbleIssueSubscription = eventEmitter.addListener('onDeliveryIssueBubbleTap', async (event) => {
+    let nativeSnapshot: NativeDeliveryDebugSnapshot | undefined;
+    if (typeof event?.nativeSnapshot === 'string') {
+      try {
+        nativeSnapshot = sanitizeNativeSnapshot(JSON.parse(event.nativeSnapshot));
+      } catch {
+        nativeSnapshot = undefined;
+      }
+    }
+
+    await markDeliveryIssueInBlackBox('User marked delivery issue', nativeSnapshot, 'manual');
+  });
+
+  subscription = eventEmitter.addListener('onPorterScreenChange', processPorterScreenEvent);
+  consumeBufferedPorterEvent().catch((error) => {
+    console.warn('[Porter] Failed to pull buffered native event:', error);
+  });
+  appStateSubscription = AppState.addEventListener('change', (state) => {
+    if (state === 'active') {
+      consumeBufferedPorterEvent().catch((error) => {
+        console.warn('[Porter] Failed to pull buffered native event on resume:', error);
+      });
+    }
   });
 };
 
@@ -950,5 +1112,9 @@ export const stopPorterDistanceCalculator = () => {
   if (bubbleIssueSubscription) {
     bubbleIssueSubscription.remove();
     bubbleIssueSubscription = null;
+  }
+  if (appStateSubscription) {
+    appStateSubscription.remove();
+    appStateSubscription = null;
   }
 };

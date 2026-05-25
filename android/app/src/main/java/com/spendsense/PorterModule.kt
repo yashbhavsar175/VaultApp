@@ -134,6 +134,15 @@ class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
             promise.reject("ERROR", e.message)
         }
     }
+
+    @ReactMethod
+    fun consumeBufferedPorterEvent(promise: Promise) {
+        try {
+            promise.resolve(PorterAccessibilityService.consumeBufferedPorterEvent(reactApplicationContext))
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
     
     @ReactMethod
     fun showToastOverlay(message: String) {
