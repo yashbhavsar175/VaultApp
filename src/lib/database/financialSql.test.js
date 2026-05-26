@@ -31,3 +31,43 @@ describe('EMI accounting SQL', () => {
     expect(sql).toContain('idx_emi_payments_reference');
   });
 });
+
+describe('transfer accounting SQL', () => {
+  it.each([
+    'supabase-fresh-setup.sql',
+    'supabase-self-transfer-enhancement.sql',
+    'supabase_transfer_accounting_fix.sql',
+  ])('%s uses reversible, user-scoped transfer balance movement', fileName => {
+    const sql = readSqlFile(fileName);
+
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION update_bank_balances_on_transfer()');
+    expect(sql).toContain('AFTER INSERT OR UPDATE OR DELETE ON transactions');
+    expect(sql).toContain("OLD.type = 'transfer'");
+    expect(sql).toContain("NEW.type = 'transfer'");
+    expect(sql).toContain('COALESCE(OLD.is_transfer_pending, false) = false');
+    expect(sql).toContain('COALESCE(NEW.is_transfer_pending, false) = false');
+    expect(sql).toContain('SET balance = COALESCE(balance, starting_balance) + OLD.amount');
+    expect(sql).toContain('SET balance = COALESCE(balance, starting_balance) - OLD.amount');
+    expect(sql).toContain('SET balance = COALESCE(balance, starting_balance) - NEW.amount');
+    expect(sql).toContain('SET balance = COALESCE(balance, starting_balance) + NEW.amount');
+    expect(sql).toContain('AND user_id = OLD.user_id');
+    expect(sql).toContain('AND user_id = NEW.user_id');
+    expect(sql).toContain('NEW.from_account_id = NEW.to_account_id');
+    expect(sql).toContain('SELECT COUNT(*) INTO v_owned_count');
+    expect(sql).toContain('Transfer accounts must belong to the transaction user');
+    expect(sql).not.toContain('WHERE id = NEW.from_account_id;');
+    expect(sql).not.toContain('WHERE id = NEW.to_account_id;');
+
+    expect(sql.indexOf("IF TG_OP IN ('UPDATE', 'DELETE')")).toBeLessThan(
+      sql.indexOf("IF TG_OP IN ('INSERT', 'UPDATE')")
+    );
+  });
+
+  it('adds duplicate readiness indexes for transfer posting', () => {
+    const sql = readSqlFile('supabase_transfer_accounting_fix.sql');
+
+    expect(sql).toContain('idx_transactions_transfer_match');
+    expect(sql).toContain('idx_transactions_transfer_accounts');
+    expect(sql).toContain('ON transactions(user_id, from_account_id, to_account_id, amount, created_at DESC)');
+  });
+});

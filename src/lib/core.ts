@@ -261,6 +261,58 @@ export async function addTransaction(
   return data;
 }
 
+export interface CreateTransferTransactionInput {
+  amount: number;
+  from_account_id: string;
+  to_account_id: string;
+  note: string;
+  reference_number?: string | null;
+}
+
+export async function createTransferTransaction(
+  input: CreateTransferTransactionInput
+): Promise<Transaction> {
+  if (!input.amount || input.amount <= 0) {
+    throw new Error('Valid transfer amount required');
+  }
+
+  if (!input.from_account_id) {
+    throw new Error('Transfer source account required');
+  }
+
+  if (!input.to_account_id) {
+    throw new Error('Transfer destination account required');
+  }
+
+  if (input.from_account_id === input.to_account_id) {
+    throw new Error('Transfer source and destination must be different accounts');
+  }
+
+  if (!input.note?.trim()) {
+    throw new Error('Transfer note required');
+  }
+
+  const tx = await addTransaction({
+    amount: input.amount,
+    type: 'transfer',
+    note: input.note,
+    category: 'Transfer',
+    account_id: input.from_account_id,
+    from_account_id: input.from_account_id,
+    to_account_id: input.to_account_id,
+    reference_number: input.reference_number?.trim() || undefined,
+    is_transfer_pending: false,
+  });
+
+  emitFinanceDataChanged({
+    areas: ['accounts'],
+    source: 'transaction:transferBalance',
+    transactionId: tx.id,
+  });
+
+  return tx;
+}
+
 export async function getTransactions(): Promise<Transaction[]> {
   const { data: { user } } = await supabase.auth.getUser();
   

@@ -35,6 +35,12 @@ import {
   recordReviewQueueEMIPayment,
   resolveLoanMatch,
 } from '../../lib/services/reviewQueueEmiPayments';
+import {
+  canRecordTransfer,
+  getEligibleTransferAccounts,
+  recordReviewQueueTransfer,
+  resolveTransferSelection,
+} from '../../lib/services/reviewQueueTransfers';
 import { addTransaction } from '../../lib/core';
 import { BankAccount } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -50,11 +56,14 @@ export default function ReviewQueueScreen() {
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({}); // itemId -> accountId or 'cash'
   const [selectedCreditCards, setSelectedCreditCards] = useState<Record<string, string>>({}); // itemId -> cardId
   const [selectedLoans, setSelectedLoans] = useState<Record<string, string>>({}); // itemId -> loanId
+  const [selectedTransferFromAccounts, setSelectedTransferFromAccounts] = useState<Record<string, string>>({});
+  const [selectedTransferToAccounts, setSelectedTransferToAccounts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [postingId, setPostingId] = useState<string | null>(null);
   const cardPaymentPostingRef = useRef(false);
   const emiPaymentPostingRef = useRef(false);
+  const transferPostingRef = useRef(false);
 
   const loadQueueAndBanks = useCallback(async () => {
     try {
@@ -114,6 +123,16 @@ export default function ReviewQueueScreen() {
     const result = resolveLoanMatch(item, loans);
     return result.status === 'matched' ? result.loan.id : undefined;
   }, [loans]);
+
+  const getPreselectedTransferFrom = useCallback((item: ReviewItem) => {
+    const result = resolveTransferSelection(item, bankAccounts);
+    return result.fromAccountId;
+  }, [bankAccounts]);
+
+  const getPreselectedTransferTo = useCallback((item: ReviewItem) => {
+    const result = resolveTransferSelection(item, bankAccounts);
+    return result.toAccountId;
+  }, [bankAccounts]);
 
   const handleCreateTransaction = async (item: ReviewItem, type: 'expense' | 'income') => {
     if (postingId) return;
@@ -324,6 +343,77 @@ export default function ReviewQueueScreen() {
     }
   };
 
+  const handleCreateTransfer = async (item: ReviewItem) => {
+    if (postingId || transferPostingRef.current) return;
+    const eligibleTransferAccounts = getEligibleTransferAccounts(bankAccounts);
+    const fromAccountId = selectedTransferFromAccounts[item.id] || getPreselectedTransferFrom(item);
+    const toAccountId = selectedTransferToAccounts[item.id] || getPreselectedTransferTo(item);
+
+    if (eligibleTransferAccounts.length < 2) {
+      Toast.show({
+        type: 'info',
+        text1: 'Needs at least two bank accounts',
+        text2: 'Add two savings or current accounts before creating a transfer.',
+      });
+      return;
+    }
+
+    if (!fromAccountId || !toAccountId) {
+      Toast.show({
+        type: 'info',
+        text1: 'Choose accounts',
+        text2: 'Select both From and To accounts.',
+      });
+      return;
+    }
+
+    if (fromAccountId === toAccountId) {
+      Toast.show({
+        type: 'info',
+        text1: 'Choose accounts',
+        text2: 'From and To accounts must be different.',
+      });
+      return;
+    }
+
+    if (!canRecordTransfer(item, bankAccounts, fromAccountId, toAccountId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Choose accounts',
+        text2: 'Select savings or current bank accounts for this transfer.',
+      });
+      return;
+    }
+
+    transferPostingRef.current = true;
+    setPostingId(item.id);
+    HapticFeedback.trigger('impactMedium', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+
+    try {
+      const result = await recordReviewQueueTransfer(item, fromAccountId, toAccountId, bankAccounts);
+
+      Toast.show({
+        type: result.status === 'duplicate' ? 'info' : 'success',
+        text1: result.status === 'duplicate' ? 'Already recorded' : 'Transfer Created',
+        text2: result.status === 'duplicate'
+          ? 'This transfer already exists.'
+          : `Moved ${formatCurrency(item.candidate.amount || 0)} between your accounts`,
+      });
+
+      setItems(prev => prev.filter(x => x.id !== item.id));
+    } catch (e) {
+      console.error('Failed to create transfer:', e);
+      Toast.show({
+        type: 'error',
+        text1: 'Failed to create transfer',
+        text2: 'The item stays in your queue so you can retry.',
+      });
+    } finally {
+      transferPostingRef.current = false;
+      setPostingId(null);
+    }
+  };
+
   const getAutoClassLabel = (autoClass: string) => {
     switch (autoClass) {
       case 'bank_debit': return 'Bank Debit';
@@ -360,7 +450,9 @@ export default function ReviewQueueScreen() {
     const isCredit = candidate.direction === 'credit';
     const isCardBillPayment = candidate.autoClass === 'credit_card_bill_payment';
     const isLoanEMIPayment = candidate.autoClass === 'loan_emi_payment';
-    const amountColor = isCardBillPayment || isLoanEMIPayment ? colors.accent : isCredit ? '#10b981' : '#ef4444';
+    const isSelfTransfer = candidate.autoClass === 'self_transfer';
+    const isNeutralClass = isCardBillPayment || isLoanEMIPayment || isSelfTransfer;
+    const amountColor = isNeutralClass ? colors.accent : isCredit ? '#10b981' : '#ef4444';
     const isSupported = isClassSupported(candidate.autoClass);
 
     const activeSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
@@ -368,6 +460,10 @@ export default function ReviewQueueScreen() {
     const activeLoanSelection = selectedLoans[item.id] || getPreselectedLoan(item);
     const activeLoan = loans.find(loan => loan.id === activeLoanSelection);
     const canRecordActiveEMI = activeLoan ? canRecordEMIWithLoan(item, activeLoan) : false;
+    const eligibleTransferAccounts = getEligibleTransferAccounts(bankAccounts);
+    const activeTransferFrom = selectedTransferFromAccounts[item.id] || getPreselectedTransferFrom(item);
+    const activeTransferTo = selectedTransferToAccounts[item.id] || getPreselectedTransferTo(item);
+    const canCreateActiveTransfer = canRecordTransfer(item, bankAccounts, activeTransferFrom, activeTransferTo);
 
     return (
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -378,6 +474,8 @@ export default function ReviewQueueScreen() {
                 ? 'credit-card-outline'
                 : isLoanEMIPayment
                   ? 'bank-check'
+                  : isSelfTransfer
+                    ? 'swap-horizontal'
                   : 'bank-outline'}
               size={24}
               color={colors.accent}
@@ -393,7 +491,7 @@ export default function ReviewQueueScreen() {
           </View>
           {candidate.amount !== null && (
             <Text style={[typography.bodyBold, { color: amountColor }]}>
-              {isCardBillPayment || isLoanEMIPayment ? '' : isCredit ? '+' : '-'}{formatCurrency(candidate.amount)}
+              {isNeutralClass ? '' : isCredit ? '+' : '-'}{formatCurrency(candidate.amount)}
             </Text>
           )}
         </View>
@@ -594,6 +692,94 @@ export default function ReviewQueueScreen() {
             </View>
           )}
 
+          {isSelfTransfer && (
+            <View style={styles.selectorContainer}>
+              <View style={[styles.transferNotice, { borderColor: colors.border, backgroundColor: colors.border + '30' }]}>
+                <MaterialCommunityIcons name="swap-horizontal" size={14} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6, flex: 1 }]}>
+                  Moves money between your accounts and won't affect income or expense
+                </Text>
+              </View>
+
+              {eligibleTransferAccounts.length < 2 ? (
+                <View style={[styles.setupPill, { borderColor: colors.border, backgroundColor: colors.border + '30', marginTop: 8 }]}>
+                  <MaterialCommunityIcons name="bank-plus" size={14} color={colors.subtext} />
+                  <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6 }]}>
+                    Needs at least two bank accounts
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, marginBottom: 6 }]}>
+                    From
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
+                    {eligibleTransferAccounts.map(bank => (
+                      <TouchableOpacity
+                        key={`from-${bank.id}`}
+                        style={[
+                          styles.chip,
+                          {
+                            borderColor: activeTransferFrom === bank.id ? colors.accent : colors.border,
+                            backgroundColor: activeTransferFrom === bank.id ? colors.accent + '15' : colors.card,
+                          }
+                        ]}
+                        onPress={() => setSelectedTransferFromAccounts(prev => ({ ...prev, [item.id]: bank.id }))}
+                      >
+                        <MaterialCommunityIcons
+                          name="bank-outline"
+                          size={14}
+                          color={activeTransferFrom === bank.id ? colors.accent : colors.subtext}
+                        />
+                        <Text
+                          style={[
+                            typography.caption,
+                            { color: activeTransferFrom === bank.id ? colors.accent : colors.text, fontWeight: '600', marginLeft: 4 }
+                          ]}
+                        >
+                          {bank.bank_name} ({bank.account_last4})
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, marginBottom: 6 }]}>
+                    To
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
+                    {eligibleTransferAccounts.map(bank => (
+                      <TouchableOpacity
+                        key={`to-${bank.id}`}
+                        style={[
+                          styles.chip,
+                          {
+                            borderColor: activeTransferTo === bank.id ? colors.accent : colors.border,
+                            backgroundColor: activeTransferTo === bank.id ? colors.accent + '15' : colors.card,
+                          }
+                        ]}
+                        onPress={() => setSelectedTransferToAccounts(prev => ({ ...prev, [item.id]: bank.id }))}
+                      >
+                        <MaterialCommunityIcons
+                          name="bank-transfer-in"
+                          size={14}
+                          color={activeTransferTo === bank.id ? colors.accent : colors.subtext}
+                        />
+                        <Text
+                          style={[
+                            typography.caption,
+                            { color: activeTransferTo === bank.id ? colors.accent : colors.text, fontWeight: '600', marginLeft: 4 }
+                          ]}
+                        >
+                          {bank.bank_name} ({bank.account_last4})
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </>
+              )}
+            </View>
+          )}
+
           <View style={[styles.reasonsContainer, { backgroundColor: colors.border + '30', borderRadius: borderRadius.sm }]}>
             <Text style={[typography.caption, { color: colors.text, fontWeight: '600', marginBottom: 4 }]}>
               ⚠️ Review Reasons:
@@ -681,6 +867,43 @@ export default function ReviewQueueScreen() {
                         : activeLoanSelection
                           ? 'Needs loan setup'
                           : 'Choose Loan'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          ) : isSelfTransfer ? (
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                canCreateActiveTransfer ? styles.approveButton : styles.disabledButton,
+                {
+                  backgroundColor: canCreateActiveTransfer ? colors.accent : colors.border + '40',
+                  opacity: postingId === item.id ? 0.7 : 1
+                }
+              ]}
+              onPress={() => handleCreateTransfer(item)}
+              disabled={postingId === item.id || !canCreateActiveTransfer}
+            >
+              {postingId === item.id ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <MaterialCommunityIcons
+                    name={canCreateActiveTransfer ? 'bank-transfer' : 'lock-outline'}
+                    size={18}
+                    color={canCreateActiveTransfer ? '#fff' : colors.subtext}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.75}
+                    style={[typography.bodyBold, { color: canCreateActiveTransfer ? '#fff' : colors.subtext, marginLeft: 6, fontSize: 12 }]}
+                  >
+                    {eligibleTransferAccounts.length < 2
+                      ? 'Needs at least two bank accounts'
+                      : canCreateActiveTransfer
+                        ? 'Create Transfer'
+                        : 'Choose accounts'}
                   </Text>
                 </>
               )}
@@ -842,6 +1065,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 6,
+  },
+  transferNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   reasonsContainer: {
     padding: 10,
