@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -58,8 +58,9 @@ function getKnownSenderName(sender?: string | null): string | null {
   if (normalized.includes('whatsapp')) return 'WhatsApp';
   if (normalized.includes('dreamplug') || normalized.includes('cred')) return 'CRED';
   if (normalized.includes('amazon')) return 'Amazon Pay';
-  if (normalized.includes('super')) return 'Super.money';
-  if (normalized.includes('slice') || normalized.includes('slce')) return 'Slice';
+  if (normalized.includes('utkspr') || normalized.includes('utk') || normalized.includes('supercard')) return 'SuperCard / Utkarsh';
+  if (normalized.includes('super.money') || normalized.includes('superm') || normalized.includes('money.super') || normalized.includes('super')) return 'super.money';
+  if (normalized.includes('slice') || normalized.includes('slce')) return 'slice';
 
   return null;
 }
@@ -92,16 +93,28 @@ function getEntrySourceTrace(transaction: Transaction, bankName: string | null, 
   }
 
   if (source === 'sms' || source === 'bank') {
+    // Build detailed subtitle with all available info
+    let subtitle = '';
+    
+    if (senderName) {
+      subtitle = `Detected from ${senderName}`;
+    } else if (bankName) {
+      subtitle = `From ${bankName}`;
+    } else if (transaction.account_last4) {
+      subtitle = `Account ending ${transaction.account_last4}`;
+    } else {
+      subtitle = 'Captured from a bank message';
+    }
+    
+    // Add UPI info if available
+    if (upiId && upiProvider) {
+      subtitle += ` • ${upiProvider}`;
+    }
+    
     return {
       icon: 'message-text-clock',
-      title: senderName ? `${senderName} SMS` : 'Bank SMS',
-      subtitle: senderName
-        ? `Detected from ${senderName}`
-        : bankName
-          ? `Matched with ${bankName}`
-          : transaction.account_last4
-            ? `Matched account ending ${transaction.account_last4}`
-            : 'Captured from a bank message',
+      title: senderName ? `${senderName} SMS` : bankName ? `${bankName} SMS` : 'Bank SMS',
+      subtitle,
       color: colors.info,
     };
   }
@@ -133,6 +146,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const [transaction, setTransaction] = useState<Transaction | null>(null);
   const [bankName, setBankName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showRawMessage, setShowRawMessage] = useState(false);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     visible: boolean;
@@ -342,7 +356,6 @@ export default function TransactionDetail({ route, navigation }: Props) {
       ? { icon: 'swap-horizontal-circle-outline', label: 'Transfer Status', value: 'Waiting for matching transfer entry' }
       : null,
     { icon: 'clock-check-outline', label: 'Saved At', value: savedAt },
-    rawMessage ? { icon: 'message-text-outline', label: 'Raw Message', value: rawMessage } : null,
     { icon: 'identifier', label: 'Record ID', value: transaction.id },
   ].filter(Boolean) as TraceRow[];
 
@@ -456,6 +469,41 @@ export default function TransactionDetail({ route, navigation }: Props) {
               isLast={index === traceRows.length - 1}
             />
           ))}
+
+          {rawMessage ? (
+            <View style={{ marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <MaterialCommunityIcons name="message-text-outline" size={20} color={colors.subtext} />
+                  <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm }]}>Raw Message</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+                    setShowRawMessage(!showRawMessage);
+                  }}
+                  style={{
+                    backgroundColor: colors.border + '50',
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    borderRadius: 6,
+                  }}>
+                  <Text style={[typography.caption, { color: colors.accent, fontWeight: '600' }]}>
+                    {showRawMessage ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {showRawMessage ? (
+                <Text style={[typography.body, { color: colors.text, marginTop: spacing.sm, backgroundColor: colors.border + '20', padding: 8, borderRadius: 6 }]}>
+                  {rawMessage}
+                </Text>
+              ) : (
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontStyle: 'italic' }]}>
+                  Hidden for privacy (OTPs, accounts, etc. are redacted by default)
+                </Text>
+              )}
+            </View>
+          ) : null}
         </Card>
 
         {/* Delete Button */}

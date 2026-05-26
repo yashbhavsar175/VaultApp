@@ -345,8 +345,46 @@ CREATE TABLE IF NOT EXISTS emi_payments (
   payment_date date NOT NULL DEFAULT current_date,
   principal_component numeric(12, 2),
   interest_component numeric(12, 2),
+  reference_number text,
   created_at timestamptz DEFAULT now()
 );
+
+ALTER TABLE emi_payments
+  ADD COLUMN IF NOT EXISTS reference_number text;
+
+ALTER TABLE emi_payments DROP CONSTRAINT IF EXISTS emi_payments_amount_paid_positive;
+ALTER TABLE emi_payments
+  ADD CONSTRAINT emi_payments_amount_paid_positive
+  CHECK (amount_paid > 0) NOT VALID;
+
+ALTER TABLE emi_payments DROP CONSTRAINT IF EXISTS emi_payments_principal_non_negative;
+ALTER TABLE emi_payments
+  ADD CONSTRAINT emi_payments_principal_non_negative
+  CHECK (principal_component IS NULL OR principal_component >= 0) NOT VALID;
+
+ALTER TABLE emi_payments DROP CONSTRAINT IF EXISTS emi_payments_interest_non_negative;
+ALTER TABLE emi_payments
+  ADD CONSTRAINT emi_payments_interest_non_negative
+  CHECK (interest_component IS NULL OR interest_component >= 0) NOT VALID;
+
+ALTER TABLE emi_payments DROP CONSTRAINT IF EXISTS emi_payments_principal_lte_amount;
+ALTER TABLE emi_payments
+  ADD CONSTRAINT emi_payments_principal_lte_amount
+  CHECK (principal_component IS NULL OR principal_component <= amount_paid) NOT VALID;
+
+ALTER TABLE emi_payments DROP CONSTRAINT IF EXISTS emi_payments_interest_lte_amount;
+ALTER TABLE emi_payments
+  ADD CONSTRAINT emi_payments_interest_lte_amount
+  CHECK (interest_component IS NULL OR interest_component <= amount_paid) NOT VALID;
+
+ALTER TABLE emi_payments DROP CONSTRAINT IF EXISTS emi_payments_components_lte_amount;
+ALTER TABLE emi_payments
+  ADD CONSTRAINT emi_payments_components_lte_amount
+  CHECK (
+    principal_component IS NULL
+    OR interest_component IS NULL
+    OR principal_component + interest_component <= amount_paid + 0.01
+  ) NOT VALID;
 
 ALTER TABLE loans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE emi_payments ENABLE ROW LEVEL SECURITY;
@@ -398,6 +436,9 @@ CREATE INDEX IF NOT EXISTS idx_loans_lender_name ON loans(lender_name);
 CREATE INDEX IF NOT EXISTS idx_emi_payments_user_id ON emi_payments(user_id);
 CREATE INDEX IF NOT EXISTS idx_emi_payments_loan_id ON emi_payments(loan_id);
 CREATE INDEX IF NOT EXISTS idx_emi_payments_date ON emi_payments(payment_date DESC);
+CREATE INDEX IF NOT EXISTS idx_emi_payments_reference
+  ON emi_payments(user_id, loan_id, reference_number)
+  WHERE reference_number IS NOT NULL;
 
 -- People ledger --------------------------------------------------------------
 
@@ -680,18 +721,43 @@ LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
+DECLARE
+  v_old_principal numeric;
+  v_new_principal numeric;
 BEGIN
   IF TG_OP = 'INSERT' THEN
+    v_new_principal := COALESCE(NEW.principal_component, NEW.amount_paid);
+
     UPDATE loans
-    SET current_outstanding = GREATEST(current_outstanding - NEW.amount_paid, 0),
+    SET current_outstanding = GREATEST(current_outstanding - v_new_principal, 0),
         updated_at = now()
     WHERE id = NEW.loan_id
       AND user_id = NEW.user_id;
     RETURN NEW;
   END IF;
 
+  IF TG_OP = 'UPDATE' THEN
+    v_old_principal := COALESCE(OLD.principal_component, OLD.amount_paid);
+    v_new_principal := COALESCE(NEW.principal_component, NEW.amount_paid);
+
+    UPDATE loans
+    SET current_outstanding = current_outstanding + v_old_principal,
+        updated_at = now()
+    WHERE id = OLD.loan_id
+      AND user_id = OLD.user_id;
+
+    UPDATE loans
+    SET current_outstanding = GREATEST(current_outstanding - v_new_principal, 0),
+        updated_at = now()
+    WHERE id = NEW.loan_id
+      AND user_id = NEW.user_id;
+    RETURN NEW;
+  END IF;
+
+  v_old_principal := COALESCE(OLD.principal_component, OLD.amount_paid);
+
   UPDATE loans
-  SET current_outstanding = current_outstanding + OLD.amount_paid,
+  SET current_outstanding = current_outstanding + v_old_principal,
       updated_at = now()
   WHERE id = OLD.loan_id
     AND user_id = OLD.user_id;
@@ -701,7 +767,7 @@ $$;
 
 DROP TRIGGER IF EXISTS trigger_update_loan_outstanding ON emi_payments;
 CREATE TRIGGER trigger_update_loan_outstanding
-AFTER INSERT OR DELETE ON emi_payments
+AFTER INSERT OR UPDATE OR DELETE ON emi_payments
 FOR EACH ROW
 EXECUTE FUNCTION update_loan_outstanding();
 

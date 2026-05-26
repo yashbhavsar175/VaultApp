@@ -1002,6 +1002,24 @@ export default function Settings() {
               </View>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
+            
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingBottom: spacing.sm }]}
+              onPress={() => (navigation as any).navigate('ReviewQueue')}
+            >
+              <MaterialCommunityIcons name="inbox-multiple-outline" size={22} color="#f59e0b" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Auto Transaction Review
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Manage transactions awaiting your approval
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
           </Card>
         </View>
 
@@ -1117,7 +1135,37 @@ export default function Settings() {
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
 
-            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+            {__DEV__ && (
+              <>
+                <TouchableOpacity
+                  style={styles.accountRow}
+                  onPress={async () => {
+                    try {
+                      const { processSignal } = require('../../lib/services/transactionIntelligence');
+                      const { enqueueReviewCandidate } = require('../../lib/services/autoTransactionReviewQueue');
+                      const sample = processSignal({
+                        rawText: "Rs.750 spent on Swiggy using HDFC Bank credit card ending 9999.",
+                        senderOrPackage: "HDFCBK",
+                        sourceType: "sms",
+                        timestamp: Date.now()
+                      });
+                      sample.decision = 'review_required'; // force for testing
+                      await enqueueReviewCandidate(sample);
+                      Toast.show({ type: 'success', text1: 'Seeded 1 review candidate' });
+                    } catch (e) {
+                      Toast.show({ type: 'error', text1: 'Seed failed', text2: String(e) });
+                    }
+                  }}>
+                  <MaterialCommunityIcons name="seed-outline" size={22} color="#f59e0b" />
+                  <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
+                    Seed Review Queue
+                  </Text>
+                  <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+                </TouchableOpacity>
+
+                <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+              </>
+            )}
 
             <TouchableOpacity
               style={styles.accountRow}

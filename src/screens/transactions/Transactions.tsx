@@ -31,6 +31,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import { getTransactionIcon, getTransactionColor, formatTransactionDate } from '../../utils/transactionHelpers';
+import { getPendingCount } from '../../lib/services/autoTransactionReviewQueue';
 
 type FilterType = 'all' | TransactionType;
 
@@ -180,6 +181,7 @@ export default function Transactions() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
 
   // Select mode state — use a plain object for O(1) lookup instead of Set
   const [selectMode, setSelectMode] = useState(false);
@@ -269,19 +271,29 @@ export default function Transactions() {
     initLoad();
   }, [filter, loadTransactions, applyFilter]);
 
+  const loadPendingReviewCount = useCallback(async () => {
+    try {
+      const count = await getPendingCount();
+      setPendingReviewCount(count);
+    } catch (e) {
+      console.error('Failed to get pending review count:', e);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       let isActive = true;
       const task = InteractionManager.runAfterInteractions(() => {
         if (isActive) {
           loadTransactions();
+          loadPendingReviewCount();
         }
       });
       return () => {
         isActive = false;
         task.cancel();
       };
-    }, [loadTransactions])
+    }, [loadTransactions, loadPendingReviewCount])
   );
 
   const scheduleEventRefresh = useCallback(() => {
@@ -550,6 +562,42 @@ export default function Transactions() {
       ) : (
         <AppHeader title="History" showBack={true} />
       )}
+
+      {!selectMode && pendingReviewCount > 0 && (
+        <TouchableOpacity
+          activeOpacity={0.8}
+          style={{
+            backgroundColor: colors.card,
+            borderColor: '#f59e0b',
+            marginHorizontal: 16,
+            marginTop: 12,
+            borderRadius: borderRadius.md || 12,
+            padding: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            borderWidth: 1,
+            marginBottom: 4,
+          }}
+          onPress={() => (navigation as any).navigate('ReviewQueue')}>
+          <MaterialCommunityIcons name="inbox-multiple-outline" size={24} color="#f59e0b" />
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]}>
+              Transactions Awaiting Review
+            </Text>
+            <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+              You have {pendingReviewCount} auto-detected {pendingReviewCount === 1 ? 'item' : 'items'} that need review.
+            </Text>
+          </View>
+          <MaterialCommunityIcons name="chevron-right" size={20} color={colors.subtext} />
+        </TouchableOpacity>
+      )}
+
+
+
+
+
+
+
 
       <ScrollView
         horizontal

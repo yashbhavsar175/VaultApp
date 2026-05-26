@@ -381,6 +381,7 @@ export interface EMIPayment {
   payment_date: string;
   principal_component?: number;
   interest_component?: number;
+  reference_number?: string;
   created_at: string;
 }
 
@@ -403,6 +404,7 @@ export interface AddEMIPaymentData {
   payment_date?: Date;
   principal_component?: number;
   interest_component?: number;
+  reference_number?: string;
 }
 
 // Get all loans for user
@@ -523,7 +525,7 @@ export async function addEMIPayment(
   let principal_component = paymentData.principal_component;
   let interest_component = paymentData.interest_component;
 
-  if (!principal_component || !interest_component) {
+  if (principal_component == null || interest_component == null) {
     const loan = await getLoan(paymentData.loan_id);
     if (loan && loan.interest_rate) {
       const components = calculateEMIComponents(
@@ -545,6 +547,7 @@ export async function addEMIPayment(
       payment_date: paymentData.payment_date?.toISOString().split('T')[0] || new Date().toISOString().split('T')[0],
       principal_component,
       interest_component,
+      reference_number: paymentData.reference_number?.trim() || undefined,
     })
     .select()
     .single();
