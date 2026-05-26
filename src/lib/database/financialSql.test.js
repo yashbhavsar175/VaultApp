@@ -71,3 +71,52 @@ describe('transfer accounting SQL', () => {
     expect(sql).toContain('ON transactions(user_id, from_account_id, to_account_id, amount, created_at DESC)');
   });
 });
+
+describe('refund foundation SQL', () => {
+  it.each([
+    'supabase-fresh-setup.sql',
+    'supabase_refund_foundation.sql',
+  ])('%s supports linked refund transactions', fileName => {
+    const sql = readSqlFile(fileName);
+
+    expect(sql).toContain("'refund'");
+    expect(sql).toContain('refund_of_transaction_id uuid');
+    expect(sql).toContain('transactions_refund_of_transaction_id_fkey');
+    expect(sql).toContain('FOREIGN KEY (refund_of_transaction_id) REFERENCES transactions(id) NOT VALID');
+    expect(sql).toContain('transactions_refund_amount_positive');
+    expect(sql).toContain('transactions_refund_requires_link');
+    expect(sql).toContain('transactions_refund_link_only_for_refund');
+    expect(sql).toContain('idx_transactions_refund_link');
+    expect(sql).toContain('idx_transactions_refund_reference');
+    expect(sql).toContain('idx_transactions_refund_duplicate');
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION validate_refund_transaction_link()');
+    expect(sql).toContain('DROP TRIGGER IF EXISTS trigger_validate_refund_transaction_link ON transactions');
+    expect(sql).toContain('BEFORE INSERT OR UPDATE ON transactions');
+  });
+
+  it('validates refund links against same-user expense rows in SQL', () => {
+    const sql = readSqlFile('supabase_refund_foundation.sql');
+
+    expect(sql).toContain("IF NEW.type = 'refund' THEN");
+    expect(sql).toContain('NEW.amount IS NULL OR NEW.amount <= 0');
+    expect(sql).toContain('NEW.refund_of_transaction_id IS NULL');
+    expect(sql).toContain('SELECT user_id, type');
+    expect(sql).toContain('v_original_user <> NEW.user_id');
+    expect(sql).toContain("v_original_type <> 'expense'");
+    expect(sql).toContain('Only refund transactions can link to an original transaction');
+  });
+
+  it.each([
+    'supabase-fresh-setup.sql',
+    'supabase-migration-lent-borrowed.sql',
+    'supabase_add_transfer_type.sql',
+    'supabase-self-transfer-enhancement.sql',
+    'supabase-setup.sql',
+    'supabase_transfer_accounting_fix.sql',
+    'supabase_refund_foundation.sql',
+  ])('%s keeps refund in the transaction type check', fileName => {
+    const sql = readSqlFile(fileName);
+
+    expect(sql).toContain("'income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer', 'refund'");
+  });
+});

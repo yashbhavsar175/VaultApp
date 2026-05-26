@@ -12,7 +12,7 @@ ADD COLUMN IF NOT EXISTS is_transfer_pending BOOLEAN DEFAULT FALSE;
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
 ALTER TABLE transactions 
 ADD CONSTRAINT transactions_type_check 
-CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer'));
+CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer', 'refund'));
 
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_transfer_amount_positive;
 ALTER TABLE transactions

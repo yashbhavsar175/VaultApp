@@ -30,7 +30,12 @@ import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
-import { getTransactionIcon, getTransactionColor, formatTransactionDate } from '../../utils/transactionHelpers';
+import {
+  getTransactionAmountPrefix,
+  getTransactionColor,
+  getTransactionIcon,
+  formatTransactionDate,
+} from '../../utils/transactionHelpers';
 import { getPendingCount } from '../../lib/services/autoTransactionReviewQueue';
 
 type FilterType = 'all' | TransactionType;
@@ -163,8 +168,7 @@ const TransactionRow = React.memo(({
             }]
           }}>
             <Text style={{ color, fontSize: 14, fontWeight: '600' }} numberOfLines={1}>
-              {item.type === 'income' ? '+' :
-                item.type === 'transfer' ? '↔' : '-'}{formatAmount(Number(item.amount))}
+              {getTransactionAmountPrefix(item.type)}{formatAmount(Number(item.amount))}
             </Text>
           </Animated.View>
         </Animated.View>
@@ -646,6 +650,21 @@ export default function Transactions() {
             }]}
             numberOfLines={1}>
             Expense
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.filterButton, {
+            backgroundColor: filter === 'refund' ? '#14b8a6' : colors.card,
+            borderColor: filter === 'refund' ? '#14b8a6' : colors.border,
+          }]}
+          onPress={() => handleFilterChange('refund')}>
+          <Text
+            style={[styles.filterButtonText, {
+              color: filter === 'refund' ? '#fff' : colors.text,
+            }]}
+            numberOfLines={1}>
+            Refunds
           </Text>
         </TouchableOpacity>
 

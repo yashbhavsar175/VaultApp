@@ -10,7 +10,13 @@ import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, AppButton, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
-import { getTransactionIcon, getTransactionColor, formatTransactionDateTime } from '../../utils/transactionHelpers';
+import {
+  getTransactionAmountPrefix,
+  getTransactionColor,
+  getTransactionIcon,
+  getTransactionTypeLabel,
+  formatTransactionDateTime,
+} from '../../utils/transactionHelpers';
 import { extractUpiIdFromText, getUpiHandle, getUpiProviderName } from '../../utils/upi';
 import { getBankAccounts } from '../../lib/database/financial';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
@@ -377,11 +383,11 @@ export default function TransactionDetail({ route, navigation }: Props) {
             <MaterialCommunityIcons name={txIcon} size={32} color={txColor} />
           </View>
           <Text style={[typography.h1, { color: txColor, fontSize: 36, fontWeight: 'bold', marginTop: spacing.md }]}>
-            {transaction.type === 'income' ? '+' : '-'}{formatAmount(Number(transaction.amount))}
+            {getTransactionAmountPrefix(transaction.type)}{formatAmount(Number(transaction.amount))}
           </Text>
           <View style={[styles.typeBadge, { backgroundColor: txColor + '20', borderRadius: borderRadius.full, marginTop: spacing.sm }]}>
             <Text style={[typography.caption, { color: txColor, fontWeight: '600' }]}>
-              {transaction.type.charAt(0).toUpperCase() + transaction.type.slice(1)}
+              {getTransactionTypeLabel(transaction.type)}
             </Text>
           </View>
         </Card>

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   amount numeric NOT NULL,
-  type text NOT NULL CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer')),
+  type text NOT NULL CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer', 'refund')),
   note text NOT NULL,
   category text DEFAULT 'general',
   created_at timestamptz DEFAULT now()

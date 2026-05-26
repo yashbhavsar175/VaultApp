@@ -11,6 +11,7 @@ import { ScreenWrapper, Card, AppHeader, QuickAddModal } from '../components';
 import { getPeopleLedger } from '../lib/database/userdata';
 import { getCached, setCache, CACHE_KEYS } from '../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/services/dataEvents';
+import { computeMonthlyTransactionTotals } from '../utils/financeSummary';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -116,37 +117,21 @@ export default function Dashboard() {
   const peopleSummary = useMemo(() => computePeopleSummary(peopleLedger), [computePeopleSummary, peopleLedger]);
   const lentPeopleEntries = useMemo(() => peopleLedger.filter(e => e.type === 'lent'), [peopleLedger]);
 
-  const monthlyTotals = useMemo(() => {
-    const year = selectedDate.getFullYear();
-    const month = selectedDate.getMonth();
+  const monthlyTotals = useMemo(
+    () => computeMonthlyTransactionTotals(transactions, selectedDate),
+    [selectedDate, transactions]
+  );
 
-    return transactions.reduce(
-      (totals, transaction) => {
-        // Use year/month comparison to avoid UTC vs local timezone issues.
-        const txDate = new Date(transaction.created_at);
-        if (txDate.getFullYear() !== year || txDate.getMonth() !== month) {
-          return totals;
-        }
-
-        const amount = Number(transaction.amount);
-        if (transaction.type === 'income') {
-          totals.totalIncome += amount;
-        } else if (transaction.type === 'expense') {
-          totals.totalExpense += amount;
-        } else if (transaction.type === 'investment') {
-          totals.totalInvestment += amount;
-        } else if (transaction.type === 'emi') {
-          totals.totalEMI += amount;
-        }
-
-        return totals;
-      },
-      { totalIncome: 0, totalExpense: 0, totalInvestment: 0, totalEMI: 0 }
-    );
-  }, [selectedDate, transactions]);
-
-  const { totalIncome, totalExpense, totalInvestment, totalEMI } = monthlyTotals;
-  const monthlyBalance = totalIncome - totalExpense - totalInvestment - totalEMI;
+  const {
+    totalIncome,
+    grossExpense,
+    totalRefunds,
+    netExpense,
+    totalExpense,
+    totalInvestment,
+    totalEMI,
+    monthlyBalance,
+  } = monthlyTotals;
   const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
 
   // Exact change tracking avoids JSON.stringify on full datasets during refresh.
@@ -455,7 +440,7 @@ export default function Dashboard() {
               <View style={styles.heroPill}>
                 <MaterialCommunityIcons name="arrow-up" size={14} color="#fff" />
                 <Text style={[typography.caption, { color: '#fff', marginLeft: 4, fontSize: 11 }]}>
-                  {formatAmount(totalExpense)}
+                  {formatAmount(netExpense)}
                 </Text>
               </View>
             </View>
@@ -497,11 +482,16 @@ export default function Dashboard() {
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
                     <MaterialCommunityIcons name="arrow-up-circle" size={24} color={colors.expense} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
-                      Expense
+                      Net Expense
                     </Text>
                     <Text style={[typography.h3, { color: colors.text, fontWeight: 'bold', marginTop: 4 }]}>
-                      {formatAmount(totalExpense)}
+                      {formatAmount(netExpense)}
                     </Text>
+                    {totalRefunds > 0 && (
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 10 }]}>
+                        Gross {formatAmount(grossExpense)} | Refunds {formatAmount(totalRefunds)}
+                      </Text>
+                    )}
                   </Card>
                 </View>
 

@@ -1,4 +1,4 @@
-export type TransactionType = 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed';
+export type TransactionType = 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed' | 'refund';
 
 export interface Transaction {
   id: string;
@@ -19,6 +19,7 @@ export interface Transaction {
   from_account_id?: string | null;
   to_account_id?: string | null;
   is_transfer_pending?: boolean | null;
+  refund_of_transaction_id?: string | null;
 }
 
 export interface BankAccount {

@@ -117,6 +117,7 @@ const CATEGORY_ICON_MAP: Record<string, string> = {
   Entertainment: 'movie-open-outline',
   'UPI Payments': 'qrcode-scan',
   Income: 'arrow-down-circle-outline',
+  Refunds: 'cash-refund',
   Investments: 'chart-line',
   EMI: 'credit-card-clock-outline',
   Lending: 'account-arrow-right-outline',
@@ -271,6 +272,7 @@ export function cleanMerchantName(value?: string | null): string {
 
 export function inferTransactionCategory(transaction: TransactionLike): string {
   if (transaction.type === 'income') return 'Income';
+  if (transaction.type === 'refund') return 'Refunds';
   if (transaction.type === 'investment') return 'Investments';
   if (transaction.type === 'emi') return 'EMI';
   if (transaction.type === 'lent') return 'Lending';

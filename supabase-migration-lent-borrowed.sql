@@ -8,7 +8,7 @@ DROP CONSTRAINT IF EXISTS transactions_type_check;
 -- Add new check constraint with 'lent' and 'borrowed' types
 ALTER TABLE transactions 
 ADD CONSTRAINT transactions_type_check 
-CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer'));
+CHECK (type IN ('income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer', 'refund'));
 
 -- Verify the constraint
 SELECT conname, pg_get_constraintdef(oid) 

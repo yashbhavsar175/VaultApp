@@ -22,4 +22,15 @@ describe('ReviewQueueScreen self-transfer routing gate', () => {
     expect(source).not.toContain("handleCreateTransfer(item, 'income')");
     expect(source).not.toContain("handleCreateTransfer(item, 'expense')");
   });
+
+  it('keeps refund posting unsupported for Task 20E1 foundation work', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'ReviewQueueScreen.tsx'), 'utf8');
+    const supportedClasses = source.match(/const supportedClasses = \[([\s\S]*?)\];/);
+
+    expect(source).toContain("case 'refund': return 'Refund'");
+    expect(source).toContain('Unsupported in this version');
+    expect(supportedClasses && supportedClasses[1]).not.toContain("'refund'");
+    expect(source).not.toContain('handleCreateRefund');
+    expect(source).not.toContain('createLinkedRefundTransaction(');
+  });
 });

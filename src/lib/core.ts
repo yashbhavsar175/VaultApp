@@ -222,6 +222,7 @@ export async function addTransaction(
     'from_account_id',
     'to_account_id',
     'is_transfer_pending',
+    'refund_of_transaction_id',
   ];
   const metadata = optionalFields.reduce<Record<string, unknown>>((fields, key) => {
     const value = tx[key];
@@ -313,6 +314,56 @@ export async function createTransferTransaction(
   return tx;
 }
 
+export interface CreateLinkedRefundTransactionInput {
+  amount: number;
+  refundOfTransactionId: string;
+  note: string;
+  category?: string | null;
+  reference_number?: string | null;
+  account_id?: string | null;
+  account_last4?: string | null;
+}
+
+function cleanTransactionText(value?: string | null): string | undefined {
+  const cleaned = value?.replace(/\s+/g, ' ').trim();
+  return cleaned || undefined;
+}
+
+export async function createLinkedRefundTransaction(
+  input: CreateLinkedRefundTransactionInput
+): Promise<Transaction> {
+  if (!input.amount || input.amount <= 0) {
+    throw new Error('Valid refund amount required');
+  }
+
+  const refundOfTransactionId = cleanTransactionText(input.refundOfTransactionId);
+  if (!refundOfTransactionId) {
+    throw new Error('Original expense transaction required');
+  }
+
+  const note = cleanTransactionText(input.note);
+  if (!note) {
+    throw new Error('Refund note required');
+  }
+
+  return addTransaction({
+    amount: input.amount,
+    type: 'refund',
+    note,
+    category: cleanTransactionText(input.category) || 'Refund',
+    refund_of_transaction_id: refundOfTransactionId,
+    reference_number: cleanTransactionText(input.reference_number),
+    account_id: cleanTransactionText(input.account_id),
+    account_last4: cleanTransactionText(input.account_last4),
+  });
+}
+
+export interface FindDuplicateLinkedRefundTransactionInput {
+  amount: number;
+  refundOfTransactionId: string;
+  reference_number?: string | null;
+}
+
 export async function getTransactions(): Promise<Transaction[]> {
   const { data: { user } } = await supabase.auth.getUser();
   
@@ -331,6 +382,31 @@ export async function getTransactions(): Promise<Transaction[]> {
   }
 
   return data || [];
+}
+
+export async function findDuplicateLinkedRefundTransaction(
+  input: FindDuplicateLinkedRefundTransactionInput
+): Promise<Transaction | null> {
+  if (!input.amount || input.amount <= 0) {
+    throw new Error('Valid refund amount required');
+  }
+
+  const refundOfTransactionId = cleanTransactionText(input.refundOfTransactionId);
+  if (!refundOfTransactionId) {
+    throw new Error('Original expense transaction required');
+  }
+
+  const reference = cleanTransactionText(input.reference_number)?.toLowerCase();
+  const transactions = await getTransactions();
+
+  return transactions.find(tx => {
+    if (tx.type !== 'refund') return false;
+    if (tx.refund_of_transaction_id !== refundOfTransactionId) return false;
+    if (tx.amount !== input.amount) return false;
+    if (!reference) return true;
+
+    return tx.reference_number?.trim().toLowerCase() === reference;
+  }) || null;
 }
 
 export async function deleteTransaction(id: string): Promise<void> {
