@@ -23,14 +23,27 @@ describe('ReviewQueueScreen self-transfer routing gate', () => {
     expect(source).not.toContain("handleCreateTransfer(item, 'expense')");
   });
 
-  it('keeps refund posting unsupported for Task 20E1 foundation work', () => {
+  it('exposes guarded refund linking without income or expense posting', () => {
     const source = fs.readFileSync(path.join(__dirname, 'ReviewQueueScreen.tsx'), 'utf8');
+    const refundService = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'lib', 'services', 'reviewQueueRefunds.ts'),
+      'utf8'
+    );
     const supportedClasses = source.match(/const supportedClasses = \[([\s\S]*?)\];/);
+    const refundActionBranch = source.match(/\) : isRefund \? \(([\s\S]*?)\) : isSupported \? \(/);
 
     expect(source).toContain("case 'refund': return 'Refund'");
-    expect(source).toContain('Unsupported in this version');
+    expect(source).toContain('Link Refund');
+    expect(source).toContain('Choose Original Expense');
+    expect(source).toContain('Refunds reduce spending; they are not normal income');
+    expect(source).toContain('handleLinkRefund');
+    expect(source).toContain('recordReviewQueueRefund');
+    expect(source).toContain('getRefundExpenseMatches');
+    expect(source).toContain('findLocalDuplicateLinkedRefund');
     expect(supportedClasses && supportedClasses[1]).not.toContain("'refund'");
-    expect(source).not.toContain('handleCreateRefund');
-    expect(source).not.toContain('createLinkedRefundTransaction(');
+    expect(refundActionBranch && refundActionBranch[1]).not.toContain('Create Income');
+    expect(refundActionBranch && refundActionBranch[1]).not.toContain('Create Expense');
+    expect(refundService).toContain('createLinkedRefundTransaction');
+    expect(refundService).toContain('refundOfTransactionId: originalExpense.id');
   });
 });

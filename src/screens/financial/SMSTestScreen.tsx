@@ -23,6 +23,7 @@ import { ScreenWrapper, AppHeader, Card } from '../../components';
 import { parseSMS, isTransactionSMS, ParsedTransaction } from '../../lib/services/smsParser';
 import { processTransactionSMS, getSMSParsingStats } from '../../lib/services/notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { sanitizeDebugBugReportsForPrivacy } from '../../lib/privacy/rawText';
 
 // Sample SMS for testing
 const SAMPLE_SMS = [
@@ -75,7 +76,11 @@ export default function SMSTestScreen() {
     try {
       const reportsStr = await AsyncStorage.getItem('debug_bug_reports');
       const reports = reportsStr ? JSON.parse(reportsStr) : [];
-      setBugReports(reports.slice(0, 10)); // Last 10
+      const safeReports = sanitizeDebugBugReportsForPrivacy(Array.isArray(reports) ? reports : []);
+      setBugReports(safeReports.slice(0, 10)); // Last 10
+      if (JSON.stringify(reports) !== JSON.stringify(safeReports)) {
+        await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(safeReports));
+      }
     } catch (error) {
       console.error('Error loading bug reports:', error);
     }

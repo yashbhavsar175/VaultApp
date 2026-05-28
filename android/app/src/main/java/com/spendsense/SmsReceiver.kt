@@ -40,7 +40,7 @@ class SmsReceiver : BroadcastReceiver() {
                     }
                     
                     Log.d(TAG, "SMS Received from: $sender")
-                    Log.d(TAG, "SMS Body: $messageBody")
+                    Log.d(TAG, "SMS Body length: ${messageBody.length}")
                     
                     // Start Headless JS Service
                     val serviceIntent = Intent(context, SmsProcessorService::class.java)

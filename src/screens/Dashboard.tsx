@@ -14,7 +14,12 @@ import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/s
 import { computeMonthlyTransactionTotals } from '../utils/financeSummary';
 
 // Enable LayoutAnimation on Android
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+const isFabricEnabled = (globalThis as any).nativeFabricUIManager != null;
+if (
+  Platform.OS === 'android' &&
+  !isFabricEnabled &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 

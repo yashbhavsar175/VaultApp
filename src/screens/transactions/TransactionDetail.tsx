@@ -20,6 +20,7 @@ import {
 import { extractUpiIdFromText, getUpiHandle, getUpiProviderName } from '../../utils/upi';
 import { getBankAccounts } from '../../lib/database/financial';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
+import { isRedactedRawTextRecord, sanitizeTransactionRawSmsForPrivacy } from '../../lib/privacy/rawText';
 
 type TransactionDetailRouteProp = RouteProp<
   { TransactionDetail: { transactionId: string } },
@@ -208,24 +209,25 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
       if (error) throw error;
       if (!isMountedRef.current) return; // BUG FIX: prevent state update after unmount
-      setTransaction(data);
+      const safeTransaction = sanitizeTransactionRawSmsForPrivacy(data as Transaction);
+      setTransaction(safeTransaction);
       await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
         current
-          ? current.map(tx => tx.id === data.id ? data : tx)
-          : [data]
+          ? current.map(tx => tx.id === safeTransaction.id ? safeTransaction : tx)
+          : [safeTransaction]
       );
 
       // Fetch bank account name if account_id exists
-      if (data.account_id) {
+      if (safeTransaction.account_id) {
         const bankAccounts = await getBankAccounts();
         await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
-        const bankData = bankAccounts.find(account => account.id === data.account_id);
+        const bankData = bankAccounts.find(account => account.id === safeTransaction.account_id);
 
         if (bankData && isMountedRef.current) {
           setBankName(`${bankData.bank_name} (${bankData.account_last4})`);
         }
       } else if (isMountedRef.current) {
-        setBankName(data.account_last4 ? `Account ending ${data.account_last4}` : null);
+        setBankName(safeTransaction.account_last4 ? `Account ending ${safeTransaction.account_last4}` : null);
       }
     } catch (error) {
       if (!isMountedRef.current) return;
@@ -337,6 +339,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const senderLabel = formatSender(transaction.sms_sender);
   const accountLabel = bankName || (transaction.account_last4 ? `Account ending ${transaction.account_last4}` : null);
   const rawMessage = transaction.raw_sms?.trim();
+  const isRedactedRawMessage = isRedactedRawTextRecord(rawMessage);
   const upiId = transaction.upi_id || extractUpiIdFromText(rawMessage);
   const detectedApp = getKnownSenderName(transaction.sms_sender);
   const upiProvider = getUpiProviderName(upiId);
@@ -481,7 +484,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <MaterialCommunityIcons name="message-text-outline" size={20} color={colors.subtext} />
-                  <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm }]}>Raw Message</Text>
+                  <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm }]}>
+                    {isRedactedRawMessage ? 'Message Metadata' : 'Raw Message'}
+                  </Text>
                 </View>
                 <TouchableOpacity
                   onPress={() => {
@@ -505,7 +510,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
                 </Text>
               ) : (
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontStyle: 'italic' }]}>
-                  Hidden for privacy (OTPs, accounts, etc. are redacted by default)
+                  {isRedactedRawMessage
+                    ? 'Stored as redacted metadata; full message is not retained.'
+                    : 'Hidden for privacy (OTPs, accounts, etc. are redacted by default)'}
                 </Text>
               )}
             </View>

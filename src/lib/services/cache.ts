@@ -16,6 +16,7 @@ import { getPlaces, getPeopleLedger } from '../database/userdata';
 import { getTransactions } from '../core';
 import { supabase } from '../core';
 import { GEMINI_API_KEY as GEMINI_KEY, OPENAI_API_KEY as OPENAI_KEY } from '../../config';
+import { sanitizeTransactionRawSmsListForPrivacy } from '../privacy/rawText';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // AI CONFIGURATION
@@ -50,6 +51,18 @@ type CacheEntry<T> = {
   timestamp: number;
 };
 
+function sanitizeCacheDataForPrivacy<T>(key: string, data: T): T {
+  if (key === CACHE_KEYS.TRANSACTIONS && Array.isArray(data)) {
+    return sanitizeTransactionRawSmsListForPrivacy(data as any[]) as T;
+  }
+
+  return data;
+}
+
+function didSanitizeData<T>(before: T, after: T): boolean {
+  return before !== after && JSON.stringify(before) !== JSON.stringify(after);
+}
+
 // ─── SWR Return Type ─────────────────────────────────────────────────────────
 export type CachedResult<T> = { data: T; isStale: boolean } | null;
 
@@ -69,12 +82,23 @@ export async function getCached<T>(key: string): Promise<CachedResult<T>> {
 
     const entry = JSON.parse(raw) as CacheEntry<T> | T;
     if (!entry || typeof entry !== 'object' || !('data' in entry) || !('timestamp' in entry)) {
-      return { data: entry as T, isStale: true };
+      const sanitizedData = sanitizeCacheDataForPrivacy(key, entry as T);
+      if (didSanitizeData(entry as T, sanitizedData)) {
+        await AsyncStorage.setItem(key, JSON.stringify(sanitizedData));
+      }
+      return { data: sanitizedData, isStale: true };
     }
 
     const isStale = Date.now() - entry.timestamp > MAX_CACHE_AGE_MS;
+    const sanitizedData = sanitizeCacheDataForPrivacy(key, entry.data);
+    if (didSanitizeData(entry.data, sanitizedData)) {
+      await AsyncStorage.setItem(key, JSON.stringify({
+        ...entry,
+        data: sanitizedData,
+      }));
+    }
 
-    return { data: entry.data, isStale };
+    return { data: sanitizedData, isStale };
   } catch {
     return null;
   }
@@ -85,7 +109,7 @@ export async function getCached<T>(key: string): Promise<CachedResult<T>> {
  */
 export async function setCache<T>(key: string, data: T): Promise<void> {
   try {
-    const entry: CacheEntry<T> = { data, timestamp: Date.now() };
+    const entry: CacheEntry<T> = { data: sanitizeCacheDataForPrivacy(key, data), timestamp: Date.now() };
     await AsyncStorage.setItem(key, JSON.stringify(entry));
   } catch {
     // Silently fail — caching is best-effort

@@ -87,6 +87,8 @@ function App() {
   const [showSignup, setShowSignup] = useState(false);
   const [profileStatus, setProfileStatus] = useState<ProfileStatus>('unknown');
   const authRouteRevisionRef = useRef(0);
+  const inFlightProfileCheckRef = useRef<{ userId: string; promise: Promise<ProfileStatus> } | null>(null);
+  const prefetchedUserIdRef = useRef<string | null>(null);
 
   // Configure Google Sign-In once on app start
   useEffect(() => {
@@ -152,30 +154,85 @@ function App() {
   }, []);
 
   const resolveProfileStatus = useCallback(async (nextSession: Session): Promise<ProfileStatus> => {
-    try {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('full_name')
-        .eq('id', nextSession.user.id)
-        .maybeSingle();
+    const userId = nextSession.user.id;
+    const activeCheck = inFlightProfileCheckRef.current;
+    if (activeCheck?.userId === userId) {
+      return activeCheck.promise;
+    }
 
-      if (profile?.full_name?.trim()) {
-        return 'complete';
+    const profileCheckPromise = (async (): Promise<ProfileStatus> => {
+      try {
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (error) {
+          throw error;
+        }
+
+        if (profile?.full_name?.trim()) {
+          return 'complete';
+        }
+
+        // Only a successful profile response with no usable name is treated as incomplete.
+        return 'incomplete';
+      } catch (error) {
+        console.error('Error checking profile:', error);
+        return await getCachedProfileStatus(nextSession) ?? 'error';
       }
+    })();
 
-      // Only a successful profile response with no usable name is treated as incomplete.
-      return 'incomplete';
-    } catch (error) {
-      console.error('Error checking profile:', error);
-      return await getCachedProfileStatus(nextSession) ?? 'error';
+    inFlightProfileCheckRef.current = { userId, promise: profileCheckPromise };
+
+    try {
+      return await profileCheckPromise;
+    } finally {
+      if (inFlightProfileCheckRef.current?.promise === profileCheckPromise) {
+        inFlightProfileCheckRef.current = null;
+      }
     }
   }, [getCachedProfileStatus]);
+
+  const prefetchForSession = useCallback((nextSession: Session) => {
+    const userId = nextSession.user.id;
+    if (prefetchedUserIdRef.current === userId) {
+      return;
+    }
+
+    prefetchedUserIdRef.current = userId;
+    prefetchAllData();
+  }, []);
 
   useEffect(() => {
     // Supabase persists sessions through the AsyncStorage-backed auth client.
     let isMounted = true;
 
-    const resolveProfileRoute = async (nextSession: Session) => {
+    const resolveProfileRoute = async (nextSession: Session, routeRevision?: number) => {
+      const cachedStatus = await getCachedProfileStatus(nextSession);
+      if (cachedStatus) {
+        void resolveProfileStatus(nextSession)
+          .then(verifiedStatus => {
+            if (
+              !isMounted ||
+              routeRevision === undefined ||
+              routeRevision !== authRouteRevisionRef.current ||
+              verifiedStatus === cachedStatus
+            ) {
+              return;
+            }
+            setProfileStatus(verifiedStatus);
+          })
+          .catch(error => {
+            if (routeRevision === undefined || routeRevision === authRouteRevisionRef.current) {
+              console.warn('[AuthStartup] Cached profile route kept; live profile verification failed:', error);
+            }
+          });
+
+        return cachedStatus;
+      }
+
       try {
         return await withStartupTimeout(
           resolveProfileStatus(nextSession),
@@ -183,12 +240,17 @@ function App() {
           'Profile check',
         );
       } catch (error) {
-        console.warn('[AuthStartup] Profile check unavailable:', error);
-        return await getCachedProfileStatus(nextSession) ?? 'error';
+        const isStaleRoute = routeRevision !== undefined && routeRevision !== authRouteRevisionRef.current;
+        if (!isStaleRoute) {
+          console.warn('[AuthStartup] Profile check unavailable:', error);
+        }
+        return 'error';
       }
     };
 
     const initAuth = async () => {
+      const startupRevision = authRouteRevisionRef.current;
+
       try {
         void AsyncStorage.removeItem(LEGACY_AUTH_TOKEN_KEY).catch(() => undefined);
 
@@ -198,6 +260,10 @@ function App() {
           AUTH_STARTUP_TIMEOUT_MS,
           'Supabase session load',
         ).catch(error => {
+          if (authRouteRevisionRef.current !== startupRevision) {
+            return null;
+          }
+
           console.warn('[AuthStartup] Session load fallback shows logged-out route:', error);
 
           void initialSessionPromise
@@ -206,10 +272,10 @@ function App() {
               const routeRevision = ++authRouteRevisionRef.current;
               setSession(lateSession);
               setProfileStatus('checking');
-              const nextProfileStatus = await resolveProfileRoute(lateSession);
+              const nextProfileStatus = await resolveProfileRoute(lateSession, routeRevision);
               if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
               setProfileStatus(nextProfileStatus);
-              prefetchAllData();
+              prefetchForSession(lateSession);
             })
             .catch(lateError => {
               console.warn('[AuthStartup] Late session recovery failed:', lateError);
@@ -219,21 +285,29 @@ function App() {
         });
         if (!isMounted) return;
 
+        if (authRouteRevisionRef.current !== startupRevision) {
+          setAuthReady(true);
+          return;
+        }
+
         const initialSession = initialSessionResult?.data.session ?? null;
         if (initialSession?.user) {
+          const routeRevision = ++authRouteRevisionRef.current;
           setSession(initialSession);
           setProfileStatus('checking');
-          const nextProfileStatus = await resolveProfileRoute(initialSession);
-          if (!isMounted) return;
+          const nextProfileStatus = await resolveProfileRoute(initialSession, routeRevision);
+          if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
           setProfileStatus(nextProfileStatus);
-          prefetchAllData(); // Prefetch all data for instant screen loads
+          prefetchForSession(initialSession); // Prefetch all data for instant screen loads
         } else {
+          prefetchedUserIdRef.current = null;
           setProfileStatus('unknown');
           setSession(null);
         }
       } catch (error) {
         console.warn('[AuthStartup] Falling back to logged-out route:', error);
         if (!isMounted) return;
+        prefetchedUserIdRef.current = null;
         setProfileStatus('unknown');
         setSession(null);
       }
@@ -249,12 +323,13 @@ function App() {
       if (nextSession?.user) {
         setSession(nextSession);
         setProfileStatus('checking');
-        const nextProfileStatus = await resolveProfileRoute(nextSession);
+        const nextProfileStatus = await resolveProfileRoute(nextSession, routeRevision);
         if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
         setProfileStatus(nextProfileStatus);
-        prefetchAllData();
+        prefetchForSession(nextSession);
       } else {
         if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
+        prefetchedUserIdRef.current = null;
         setProfileStatus('unknown');
         setSession(null);
       }
@@ -264,7 +339,7 @@ function App() {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [getCachedProfileStatus, resolveProfileStatus]);
+  }, [getCachedProfileStatus, prefetchForSession, resolveProfileStatus]);
 
   const handleProfileComplete = () => {
     setProfileStatus('complete');
@@ -281,8 +356,15 @@ function App() {
       PROFILE_STARTUP_TIMEOUT_MS,
       'Profile check',
     ).catch(async error => {
-      console.warn('[AuthStartup] Profile retry unavailable:', error);
-      return await getCachedProfileStatus(session) ?? 'error';
+      const cachedStatus = await getCachedProfileStatus(session);
+      if (routeRevision === authRouteRevisionRef.current) {
+        if (cachedStatus) {
+          console.warn('[AuthStartup] Profile retry unavailable; using cached profile route:', error);
+        } else {
+          console.warn('[AuthStartup] Profile retry unavailable:', error);
+        }
+      }
+      return cachedStatus ?? 'error';
     });
 
     if (routeRevision === authRouteRevisionRef.current) {

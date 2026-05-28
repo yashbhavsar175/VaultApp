@@ -14,7 +14,12 @@ import {
   InteractionManager,
 } from 'react-native';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+const isFabricEnabled = (globalThis as any).nativeFabricUIManager != null;
+if (
+  Platform.OS === 'android' &&
+  !isFabricEnabled &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 import { FlashList } from '@shopify/flash-list';

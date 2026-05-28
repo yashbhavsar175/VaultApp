@@ -11,6 +11,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config
 import { Transaction, TransactionType } from '../types';
 import { showTransactionConfirmation } from './services/notifications';
 import { emitFinanceDataChanged } from './services/dataEvents';
+import { sanitizeTransactionRawSmsForPrivacy } from './privacy/rawText';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SUPABASE CLIENT
@@ -381,7 +382,7 @@ export async function getTransactions(): Promise<Transaction[]> {
     throw new Error(error.message);
   }
 
-  return data || [];
+  return (data || []).map(tx => sanitizeTransactionRawSmsForPrivacy(tx as Transaction));
 }
 
 export async function findDuplicateLinkedRefundTransaction(

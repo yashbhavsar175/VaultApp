@@ -13,13 +13,26 @@ import {
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
-import Voice, { SpeechResultsEvent, SpeechErrorEvent } from '@react-native-voice/voice';
+import type { SpeechResultsEvent, SpeechErrorEvent } from '@react-native-voice/voice';
 import { useTheme } from '../../context/ThemeContext';
 import { parseNaturalLanguageTxn, ParsedTransaction } from '../../utils/nlpParser';
 import { addTransaction } from '../../lib/core';
 import { CACHE_KEYS, updateCache } from '../../lib/services/cache';
 import { Transaction } from '../../types';
 import { GEMINI_API_KEY } from '../../lib/services/cache';
+
+type VoiceModule = typeof import('@react-native-voice/voice').default;
+let voiceModule: VoiceModule | null = null;
+
+function getVoiceModule(): VoiceModule {
+  if (!voiceModule) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const loadedVoiceModule = require('@react-native-voice/voice').default as VoiceModule;
+    voiceModule = loadedVoiceModule;
+    return loadedVoiceModule;
+  }
+  return voiceModule;
+}
 
 interface QuickAddModalProps {
   visible: boolean;
@@ -37,6 +50,7 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
   const [aiWarning, setAiWarning] = useState<{ emoji: string; msg: string } | null>(null);
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAiTextRef = useRef('');
+  const isListeningRef = useRef(false);
 
   // Smart contextual warning generator — instant, no API!
   const getSmartWarning = (text: string): { emoji: string; msg: string } => {
@@ -177,13 +191,18 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
   }, [parsed, input]);
 
   useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
+
+  useEffect(() => {
     if (visible) {
       setInput('');
       setParsed(null);
       setIsListening(false);
       setAiWarning(null);
-    } else {
-      Voice.stop().catch(() => {});
+    } else if (isListeningRef.current) {
+      getVoiceModule().stop().catch(() => {});
+      setIsListening(false);
     }
   }, [visible]);
 
@@ -197,9 +216,12 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
 
   // Setup Voice listeners
   useEffect(() => {
-    Voice.onSpeechStart = () => setIsListening(true);
-    Voice.onSpeechEnd = () => setIsListening(false);
-    Voice.onSpeechError = (e: SpeechErrorEvent) => {
+    if (!visible) return;
+
+    const voice = getVoiceModule();
+    voice.onSpeechStart = () => setIsListening(true);
+    voice.onSpeechEnd = () => setIsListening(false);
+    voice.onSpeechError = (e: SpeechErrorEvent) => {
       setIsListening(false);
       const msg = e.error?.message || '';
       // Ignore common non-critical errors (No speech, Client error, etc.)
@@ -207,15 +229,15 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
         Toast.show({ type: 'error', text1: 'Voice Error', text2: msg });
       }
     };
-    Voice.onSpeechResults = (e: SpeechResultsEvent) => {
+    voice.onSpeechResults = (e: SpeechResultsEvent) => {
       const text = e.value?.[0] || '';
       setInput(text);
     };
 
     return () => {
-      Voice.destroy().then(Voice.removeAllListeners);
+      voice.destroy().then(voice.removeAllListeners);
     };
-  }, []);
+  }, [visible]);
 
   const requestAudioPermission = async () => {
     if (Platform.OS === 'android') {
@@ -236,13 +258,13 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
   const toggleListening = async () => {
     try {
       if (isListening) {
-        await Voice.stop();
+        await getVoiceModule().stop();
         setIsListening(false);
       } else {
         const hasPermission = await requestAudioPermission();
         if (hasPermission) {
           setInput(''); // clear existing input when starting new voice
-          await Voice.start('en-IN'); // en-IN forces Hinglish instead of Devanagari script
+          await getVoiceModule().start('en-IN'); // en-IN forces Hinglish instead of Devanagari script
         } else {
           Toast.show({ type: 'error', text1: 'Permission Denied', text2: 'Microphone access is required.' });
         }

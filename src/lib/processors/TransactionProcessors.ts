@@ -20,6 +20,7 @@ import {
 import { CACHE_KEYS, updateCache } from '../services/cache';
 import { emitFinanceDataChanged } from '../services/dataEvents';
 import { BankAccount, Transaction } from '../../types';
+import { createRedactedRawTextRecord } from '../privacy/rawText';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -244,6 +245,38 @@ function normalizeNotificationPayload(taskData: any): {
     summaryText: taskData?.summaryText || '',
     subText: taskData?.subText || taskData?.extraInfoText || '',
     time: taskData?.time || taskData?.timestamp,
+  };
+}
+
+function getNotificationPayloadLength(taskData: any): number {
+  if (typeof taskData?.notification === 'string') {
+    return taskData.notification.length;
+  }
+
+  try {
+    return JSON.stringify(taskData ?? {}).length;
+  } catch {
+    return 0;
+  }
+}
+
+function summarizeNotificationForLog(notif: {
+  app: string;
+  title?: string;
+  text?: string;
+  bigText?: string;
+  summaryText?: string;
+  subText?: string;
+  time?: number;
+}) {
+  return {
+    app: notif.app,
+    titleLength: notif.title?.length ?? 0,
+    textLength: notif.text?.length ?? 0,
+    bigTextLength: notif.bigText?.length ?? 0,
+    summaryTextLength: notif.summaryText?.length ?? 0,
+    subTextLength: notif.subText?.length ?? 0,
+    time: notif.time,
   };
 }
 
@@ -540,7 +573,11 @@ async function findAndSyncBankAccount(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const processSms = async (taskData: SmsData) => {
-  console.log('SMS Processor Started', taskData);
+  console.log('SMS Processor Started', {
+    sender: taskData.sender,
+    bodyLength: taskData.body?.length ?? 0,
+    timestamp: taskData.timestamp,
+  });
 
   try {
     if (isBlockedSender(taskData.sender)) {
@@ -584,6 +621,12 @@ export const processSms = async (taskData: SmsData) => {
 
     // Check for duplicates
     const dbType = parsed.type === 'debit' ? 'expense' : 'income';
+    const redactedRawSms = createRedactedRawTextRecord({
+      kind: 'sms',
+      text: taskData.body,
+      sender: parsed.rawSender,
+      source: parsed.source,
+    });
     const duplicate = await checkForDuplicates(
       userId,
       parsed.amount,
@@ -591,7 +634,7 @@ export const processSms = async (taskData: SmsData) => {
       dbType,
       parsed.reference,
       parsed.source,
-      taskData.body,
+      redactedRawSms,
       parsed.merchant
     );
 
@@ -635,7 +678,7 @@ export const processSms = async (taskData: SmsData) => {
           sms_source: parsed.source,
           sms_sender: parsed.rawSender,
           upi_id: parsed.upiId,
-          raw_sms: taskData.body,
+          raw_sms: redactedRawSms,
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -661,7 +704,7 @@ export const processSms = async (taskData: SmsData) => {
             sms_source: parsed.source,
             sms_sender: parsed.rawSender,
             upi_id: parsed.upiId,
-            raw_sms: taskData.body,
+            raw_sms: redactedRawSms,
           })
           .select()
           .single();
@@ -701,7 +744,7 @@ export const processSms = async (taskData: SmsData) => {
         sms_source: parsed.source,
         sms_sender: parsed.rawSender,
         upi_id: parsed.upiId,
-        raw_sms: taskData.body,
+        raw_sms: redactedRawSms,
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -721,7 +764,7 @@ export const processSms = async (taskData: SmsData) => {
           transactionNote,
           parsed.amount,
           parsed.accountLast4,
-          taskData.body
+          redactedRawSms
         );
       } catch (notificationError) {
         console.error('Failed to show transaction notification (non-critical):', notificationError);
@@ -745,11 +788,13 @@ export const processSms = async (taskData: SmsData) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const processNotification = async (taskData: any) => {
-  console.log('🔔 Notification Processor Started:', taskData);
+  console.log('🔔 Notification Processor Started:', {
+    payloadLength: getNotificationPayloadLength(taskData),
+  });
 
   try {
     const notif = normalizeNotificationPayload(taskData);
-    console.log('Parsed notification:', notif);
+    console.log('Parsed notification:', summarizeNotificationForLog(notif));
 
     if (!ALLOWED_PACKAGES.includes(notif.app)) {
       console.log('Notification from non-financial app - ignoring:', notif.app);
@@ -832,7 +877,11 @@ export const processNotification = async (taskData: any) => {
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
       if (hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText)) {
-        await showSmsFailedNotification(combinedText, sender, 'Parse failed');
+        await showSmsFailedNotification(combinedText, sender, 'Parse failed', {
+          kind: 'notification',
+          source: 'notification_parse_failed',
+          app: notif.app,
+        });
       }
       return;
     }
@@ -857,6 +906,14 @@ export const processNotification = async (taskData: any) => {
 
     // Check for duplicates
     const dbType = parsed.type === 'debit' ? 'expense' : 'income';
+    const senderLabel = notif.app || parsed.rawSender;
+    const redactedRawNotification = createRedactedRawTextRecord({
+      kind: 'notification',
+      text: combinedText,
+      sender: senderLabel,
+      source: parsed.source,
+      app: notif.app,
+    });
     const duplicate = await checkForDuplicates(
       userId,
       parsed.amount,
@@ -864,7 +921,7 @@ export const processNotification = async (taskData: any) => {
       dbType,
       parsed.reference,
       parsed.source,
-      combinedText,
+      redactedRawNotification,
       parsed.merchant
     );
 
@@ -874,7 +931,6 @@ export const processNotification = async (taskData: any) => {
     }
 
     const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
-    const senderLabel = notif.app || parsed.rawSender;
     const presentation = {
       type: dbType,
       merchant: parsed.merchant,
@@ -908,7 +964,7 @@ export const processNotification = async (taskData: any) => {
           sms_source: parsed.source,
           sms_sender: senderLabel,
           upi_id: parsed.upiId,
-          raw_sms: combinedText,
+          raw_sms: redactedRawNotification,
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -934,7 +990,7 @@ export const processNotification = async (taskData: any) => {
             sms_source: parsed.source,
             sms_sender: senderLabel,
             upi_id: parsed.upiId,
-            raw_sms: combinedText,
+            raw_sms: redactedRawNotification,
           })
           .select()
           .single();
@@ -974,7 +1030,7 @@ export const processNotification = async (taskData: any) => {
         sms_source: parsed.source,
         sms_sender: senderLabel,
         upi_id: parsed.upiId,
-        raw_sms: combinedText,
+        raw_sms: redactedRawNotification,
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -994,7 +1050,7 @@ export const processNotification = async (taskData: any) => {
           transactionNote,
           parsed.amount,
           parsed.accountLast4,
-          combinedText
+          redactedRawNotification
         );
       } catch (notificationError) {
         console.error('Failed to show transaction notification (non-critical):', notificationError);

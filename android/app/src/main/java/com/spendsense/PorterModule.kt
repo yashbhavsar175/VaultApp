@@ -39,6 +39,16 @@ class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
     }
 
     @ReactMethod
+    fun addListener(eventName: String) {
+        // Required by NativeEventEmitter; events are emitted manually from native code.
+    }
+
+    @ReactMethod
+    fun removeListeners(count: Int) {
+        // Required by NativeEventEmitter; listener bookkeeping is handled by JS subscriptions.
+    }
+
+    @ReactMethod
     fun isAccessibilityServiceEnabled(promise: Promise) {
         try {
             val enabled = PorterAccessibilityService.isServiceRunning

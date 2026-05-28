@@ -120,3 +120,21 @@ describe('refund foundation SQL', () => {
     expect(sql).toContain("'income', 'expense', 'investment', 'emi', 'lent', 'borrowed', 'transfer', 'refund'");
   });
 });
+
+describe('raw SMS privacy backfill SQL', () => {
+  it('redacts only historical raw_sms and uses the app-compatible FNV hash helper', () => {
+    const sql = readSqlFile('supabase_raw_sms_privacy_backfill.sql');
+
+    expect(sql).toContain('create or replace function pg_temp.task24f_fnv1a_32');
+    expect(sql).toContain('hash_value bigint := 2166136261');
+    expect(sql).toContain('* 16777619');
+    expect(sql).toContain('pg_temp.task24f_fnv1a_32(raw_sms)');
+    expect(sql).toContain("raw_sms !~ '^redacted_(sms|notification)\\s'");
+    expect(sql).toContain('update public.transactions');
+    expect(sql).toContain('set raw_sms = concat(');
+    expect(sql).not.toContain('md5(');
+    expect(sql).not.toContain('reference_number =');
+    expect(sql).not.toContain('amount =');
+    expect(sql).not.toContain('note =');
+  });
+});

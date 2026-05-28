@@ -32,6 +32,7 @@ import {
   DeliveryIncidentSummary,
 } from '../../lib/services/deliveryDebugBlackBox';
 import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
+import { sanitizeDebugBugReportsForPrivacy } from '../../lib/privacy/rawText';
 
 interface CachedProfile {
   email?: string;
@@ -675,7 +676,12 @@ export default function Settings() {
     try {
       const logsStr = await AsyncStorage.getItem('debug_bug_reports');
       if (logsStr) {
-        setBugReports(JSON.parse(logsStr));
+        const parsedReports = JSON.parse(logsStr);
+        const safeReports = sanitizeDebugBugReportsForPrivacy(Array.isArray(parsedReports) ? parsedReports : []);
+        setBugReports(safeReports);
+        if (JSON.stringify(parsedReports) !== JSON.stringify(safeReports)) {
+          await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(safeReports));
+        }
       } else {
         setBugReports([]);
       }
@@ -719,12 +725,19 @@ export default function Settings() {
         return;
       }
 
+      const parsedReports = JSON.parse(logsStr);
+      const safeReports = sanitizeDebugBugReportsForPrivacy(Array.isArray(parsedReports) ? parsedReports : []);
+      const sharePayloadFull = JSON.stringify(safeReports, null, 2);
+      if (sharePayloadFull !== logsStr) {
+        await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(safeReports));
+      }
+
       const fileName = `spendsense_bugs_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
 
       // Use native file-based sharing on Android to bypass Binder size limit
       if (Platform.OS === 'android' && typeof NativeModules.PorterModule?.shareTextFile === 'function') {
         await NativeModules.PorterModule.shareTextFile(
-          logsStr,
+          sharePayloadFull,
           fileName,
           'VaultApp Bug Reports'
         );
@@ -732,9 +745,9 @@ export default function Settings() {
       }
 
       // Fallback: Share.share() (works on iOS, or if native method unavailable)
-      let sharePayload = logsStr;
-      if (Platform.OS === 'android' && logsStr.length > 100000) {
-        sharePayload = logsStr.substring(0, 100000) + '\n\n...[TRUNCATED due to Android share limits. Rebuild the native app to enable full file exports.]';
+      let sharePayload = sharePayloadFull;
+      if (Platform.OS === 'android' && sharePayloadFull.length > 100000) {
+        sharePayload = sharePayloadFull.substring(0, 100000) + '\n\n...[TRUNCATED due to Android share limits. Rebuild the native app to enable full file exports.]';
       }
       await Share.share({ title: 'VaultApp Bug Reports', message: sharePayload });
     } catch (error) {

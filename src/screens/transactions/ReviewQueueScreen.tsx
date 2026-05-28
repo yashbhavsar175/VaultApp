@@ -41,8 +41,14 @@ import {
   recordReviewQueueTransfer,
   resolveTransferSelection,
 } from '../../lib/services/reviewQueueTransfers';
-import { addTransaction } from '../../lib/core';
-import { BankAccount } from '../../types';
+import {
+  findLocalDuplicateLinkedRefund,
+  getRefundExpenseMatches,
+  isRefundSchemaMissingError,
+  recordReviewQueueRefund,
+} from '../../lib/services/reviewQueueRefunds';
+import { addTransaction, getTransactions } from '../../lib/core';
+import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader } from '../../components';
 import { formatCurrency } from '../../utils/format';
@@ -58,20 +64,25 @@ export default function ReviewQueueScreen() {
   const [selectedLoans, setSelectedLoans] = useState<Record<string, string>>({}); // itemId -> loanId
   const [selectedTransferFromAccounts, setSelectedTransferFromAccounts] = useState<Record<string, string>>({});
   const [selectedTransferToAccounts, setSelectedTransferToAccounts] = useState<Record<string, string>>({});
+  const [selectedRefundExpenses, setSelectedRefundExpenses] = useState<Record<string, string>>({});
+  const [refundSchemaErrors, setRefundSchemaErrors] = useState<Record<string, boolean>>({});
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [postingId, setPostingId] = useState<string | null>(null);
   const cardPaymentPostingRef = useRef(false);
   const emiPaymentPostingRef = useRef(false);
   const transferPostingRef = useRef(false);
+  const refundPostingRef = useRef(false);
 
   const loadQueueAndBanks = useCallback(async () => {
     try {
-      const [allItems, banks, cards, loanData] = await Promise.all([
+      const [allItems, banks, cards, loanData, txData] = await Promise.all([
         getReviewQueue(),
         getBankAccounts(),
         getCreditCards(),
         getLoans(),
+        getTransactions(),
       ]);
       // Only show pending items in the active queue
       const pendingItems = allItems.filter(item => item.status === 'pending');
@@ -83,6 +94,7 @@ export default function ReviewQueueScreen() {
       setBankAccounts(allowedAccounts);
       setCreditCards(cards);
       setLoans(loanData);
+      setTransactions(txData);
     } catch (e) {
       console.error('Failed to load review data:', e);
       Toast.show({
@@ -414,6 +426,56 @@ export default function ReviewQueueScreen() {
     }
   };
 
+  const handleLinkRefund = async (item: ReviewItem) => {
+    if (postingId || refundPostingRef.current) return;
+    const originalExpenseId = selectedRefundExpenses[item.id];
+    const originalExpense = transactions.find(tx => tx.id === originalExpenseId);
+
+    if (!originalExpense) {
+      Toast.show({
+        type: 'info',
+        text1: 'Choose Original Expense',
+        text2: 'Select the expense this refund belongs to.',
+      });
+      return;
+    }
+
+    refundPostingRef.current = true;
+    setPostingId(item.id);
+    HapticFeedback.trigger('impactMedium', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+
+    try {
+      const result = await recordReviewQueueRefund(item, originalExpense, transactions);
+
+      Toast.show({
+        type: result.status === 'duplicate' ? 'info' : 'success',
+        text1: result.status === 'duplicate' ? 'Already recorded' : 'Refund Linked',
+        text2: result.status === 'duplicate'
+          ? 'This refund was already linked to the original expense.'
+          : `Linked refund of ${formatCurrency(item.candidate.amount || 0)}`,
+      });
+
+      setItems(prev => prev.filter(x => x.id !== item.id));
+      await loadQueueAndBanks();
+    } catch (e) {
+      console.error('Failed to link refund:', e);
+      const schemaMissing = isRefundSchemaMissingError(e);
+      if (schemaMissing) {
+        setRefundSchemaErrors(prev => ({ ...prev, [item.id]: true }));
+      }
+      Toast.show({
+        type: 'error',
+        text1: schemaMissing ? 'Run refund migration first' : 'Failed to link refund',
+        text2: schemaMissing
+          ? 'Database update required before refunds can be posted.'
+          : 'The item stays in your queue so you can retry.',
+      });
+    } finally {
+      refundPostingRef.current = false;
+      setPostingId(null);
+    }
+  };
+
   const getAutoClassLabel = (autoClass: string) => {
     switch (autoClass) {
       case 'bank_debit': return 'Bank Debit';
@@ -451,8 +513,9 @@ export default function ReviewQueueScreen() {
     const isCardBillPayment = candidate.autoClass === 'credit_card_bill_payment';
     const isLoanEMIPayment = candidate.autoClass === 'loan_emi_payment';
     const isSelfTransfer = candidate.autoClass === 'self_transfer';
+    const isRefund = candidate.autoClass === 'refund';
     const isNeutralClass = isCardBillPayment || isLoanEMIPayment || isSelfTransfer;
-    const amountColor = isNeutralClass ? colors.accent : isCredit ? '#10b981' : '#ef4444';
+    const amountColor = isRefund ? '#14b8a6' : isNeutralClass ? colors.accent : isCredit ? '#10b981' : '#ef4444';
     const isSupported = isClassSupported(candidate.autoClass);
 
     const activeSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
@@ -464,6 +527,14 @@ export default function ReviewQueueScreen() {
     const activeTransferFrom = selectedTransferFromAccounts[item.id] || getPreselectedTransferFrom(item);
     const activeTransferTo = selectedTransferToAccounts[item.id] || getPreselectedTransferTo(item);
     const canCreateActiveTransfer = canRecordTransfer(item, bankAccounts, activeTransferFrom, activeTransferTo);
+    const refundMatches = isRefund ? getRefundExpenseMatches(item, transactions) : [];
+    const activeRefundExpenseId = selectedRefundExpenses[item.id];
+    const activeRefundExpense = transactions.find(tx => tx.id === activeRefundExpenseId);
+    const activeRefundDuplicate = activeRefundExpense
+      ? findLocalDuplicateLinkedRefund(item, activeRefundExpense, transactions)
+      : null;
+    const refundSchemaMissing = !!refundSchemaErrors[item.id];
+    const canLinkActiveRefund = !!activeRefundExpense && !refundSchemaMissing;
 
     return (
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -476,7 +547,9 @@ export default function ReviewQueueScreen() {
                   ? 'bank-check'
                   : isSelfTransfer
                     ? 'swap-horizontal'
-                  : 'bank-outline'}
+                    : isRefund
+                      ? 'cash-refund'
+                      : 'bank-outline'}
               size={24}
               color={colors.accent}
             />
@@ -491,7 +564,7 @@ export default function ReviewQueueScreen() {
           </View>
           {candidate.amount !== null && (
             <Text style={[typography.bodyBold, { color: amountColor }]}>
-              {isNeutralClass ? '' : isCredit ? '+' : '-'}{formatCurrency(candidate.amount)}
+              {isRefund ? 'Refund ' : isNeutralClass ? '' : isCredit ? '+' : '-'}{formatCurrency(candidate.amount)}
             </Text>
           )}
         </View>
@@ -780,6 +853,76 @@ export default function ReviewQueueScreen() {
             </View>
           )}
 
+          {isRefund && (
+            <View style={styles.selectorContainer}>
+              <View style={[styles.refundNotice, { borderColor: colors.border, backgroundColor: colors.border + '30' }]}>
+                <MaterialCommunityIcons name="cash-refund" size={14} color="#14b8a6" />
+                <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6, flex: 1 }]}>
+                  Refunds reduce spending; they are not normal income
+                </Text>
+              </View>
+
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, marginBottom: 6 }]}>
+                Choose original expense:
+              </Text>
+
+              {refundMatches.length === 0 ? (
+                <View style={[styles.setupPill, { borderColor: colors.border, backgroundColor: colors.border + '30' }]}>
+                  <MaterialCommunityIcons name="clipboard-search-outline" size={14} color={colors.subtext} />
+                  <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6 }]}>
+                    No eligible expense found
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>
+                    Likely original expense preview
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
+                    {refundMatches.map(match => {
+                      const tx = match.transaction;
+                      const isActive = activeRefundExpenseId === tx.id;
+
+                      return (
+                        <TouchableOpacity
+                          key={tx.id}
+                          style={[
+                            styles.refundMatchChip,
+                            {
+                              borderColor: isActive ? '#14b8a6' : colors.border,
+                              backgroundColor: isActive ? '#14b8a615' : colors.card,
+                            }
+                          ]}
+                          onPress={() => setSelectedRefundExpenses(prev => ({ ...prev, [item.id]: tx.id }))}
+                        >
+                          <MaterialCommunityIcons
+                            name={isActive ? 'check-circle-outline' : 'receipt-text-outline'}
+                            size={14}
+                            color={isActive ? '#14b8a6' : colors.subtext}
+                          />
+                          <Text
+                            numberOfLines={1}
+                            style={[
+                              typography.caption,
+                              {
+                                color: isActive ? '#14b8a6' : colors.text,
+                                fontWeight: '600',
+                                marginLeft: 4,
+                                maxWidth: 180,
+                              }
+                            ]}
+                          >
+                            {(tx.note || tx.category || 'Expense')} ({formatCurrency(tx.amount)})
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </>
+              )}
+            </View>
+          )}
+
           <View style={[styles.reasonsContainer, { backgroundColor: colors.border + '30', borderRadius: borderRadius.sm }]}>
             <Text style={[typography.caption, { color: colors.text, fontWeight: '600', marginBottom: 4 }]}>
               ⚠️ Review Reasons:
@@ -904,6 +1047,51 @@ export default function ReviewQueueScreen() {
                       : canCreateActiveTransfer
                         ? 'Create Transfer'
                         : 'Choose accounts'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          ) : isRefund ? (
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                canLinkActiveRefund ? styles.approveButton : styles.disabledButton,
+                {
+                  backgroundColor: canLinkActiveRefund ? '#14b8a6' : colors.border + '40',
+                  opacity: postingId === item.id ? 0.7 : 1
+                }
+              ]}
+              onPress={() => handleLinkRefund(item)}
+              disabled={postingId === item.id || !canLinkActiveRefund}
+            >
+              {postingId === item.id ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <MaterialCommunityIcons
+                    name={refundSchemaMissing
+                      ? 'database-alert-outline'
+                      : activeRefundDuplicate
+                        ? 'check-circle-outline'
+                        : canLinkActiveRefund
+                          ? 'cash-refund'
+                          : 'lock-outline'}
+                    size={18}
+                    color={canLinkActiveRefund ? '#fff' : colors.subtext}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.75}
+                    style={[typography.bodyBold, { color: canLinkActiveRefund ? '#fff' : colors.subtext, marginLeft: 6, fontSize: 12 }]}
+                  >
+                    {refundSchemaMissing
+                      ? 'Database update required'
+                      : activeRefundDuplicate
+                        ? 'Already recorded'
+                        : activeRefundExpense
+                          ? 'Link Refund'
+                          : 'Choose Original Expense'}
                   </Text>
                 </>
               )}
@@ -1057,6 +1245,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
+  refundMatchChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    maxWidth: 240,
+  },
   setupPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1067,6 +1264,14 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   transferNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  refundNotice: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,

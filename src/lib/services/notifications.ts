@@ -23,6 +23,12 @@ import {
 import { BankAccount, Transaction } from '../../types';
 import { CACHE_KEYS, updateCache } from './cache';
 import { emitFinanceDataChanged } from './dataEvents';
+import {
+  createRedactedRawTextRecord,
+  ensureRedactedRawTextRecord,
+  sanitizeDebugBugReportEntry,
+  RedactedRawTextKind,
+} from '../privacy/rawText';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SPAM FILTERING
@@ -63,18 +69,6 @@ const SPAM_REGEX = new RegExp(
  */
 export function isSpamMessage(text: string): boolean {
   return SPAM_REGEX.test(text);
-}
-
-// ─── Privacy: OTP / PIN scrubber ────────────────────────────────────────────
-/**
- * Replace sensitive data before writing to AsyncStorage bug reports.
- * - 4-to-6 digit standalone numbers (OTPs / PINs) → '***'
- * - CVV keyword + trailing digits → 'CVV ***'
- */
-function scrubSensitiveData(text: string): string {
-  return text
-    .replace(/\b\d{4,6}\b/g, '***')           // OTPs / PINs
-    .replace(/\bCVV[:\s]*\d*/gi, 'CVV ***');   // CVV keyword + value
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -131,6 +125,14 @@ export async function showTransactionConfirmation(
 
     let bodyText = `${merchant} - ${formattedAmount}`;
     if (accountName) bodyText += `\n${accountName}`;
+    const notificationRawText = ensureRedactedRawTextRecord(rawSms, {
+      kind: 'sms',
+      sender,
+      source: 'transaction_confirmation',
+    });
+    const rawSmsKind: RedactedRawTextKind = notificationRawText.startsWith('redacted_notification')
+      ? 'notification'
+      : 'sms';
 
     await notifee.displayNotification({
       id: `txn_${transactionId}`,
@@ -150,7 +152,8 @@ export async function showTransactionConfirmation(
         transactionId,
         action: 'transaction_confirmation',
         sender: sender || 'Unknown Sender',
-        rawSms: rawSms || 'No raw SMS available',
+        rawSms: notificationRawText,
+        rawSmsKind,
         logicLog: logicLog || 'No logic log available',
       },
     });
@@ -167,18 +170,28 @@ export async function showTransactionConfirmation(
 export async function showSmsFailedNotification(
   smsBody: string,
   sender: string,
-  logicLog?: string
+  logicLog?: string,
+  options?: {
+    kind?: RedactedRawTextKind;
+    source?: string;
+    app?: string;
+  }
 ): Promise<void> {
   try {
     await createTransactionChannels();
 
-    const truncatedBody = smsBody.length > 100
-      ? `${smsBody.substring(0, 100)}...`
-      : smsBody;
+    const rawSmsKind = options?.kind || 'sms';
+    const redactedRawText = createRedactedRawTextRecord({
+      kind: rawSmsKind,
+      text: smsBody,
+      sender,
+      source: options?.source || 'parse_failed',
+      app: options?.app,
+    });
 
     await notifee.displayNotification({
       title: 'Transaction SMS Not Recognized',
-      body: `From: ${sender}\n${truncatedBody}`,
+      body: `From: ${sender}\n${redactedRawText}`,
       android: {
         channelId: 'sms_failed',
         importance: AndroidImportance.HIGH,
@@ -189,9 +202,12 @@ export async function showSmsFailedNotification(
       },
       data: {
         action: 'sms_failed',
-        rawSms: smsBody,
+        rawSms: redactedRawText,
+        rawSmsKind,
         sender,
         logicLog: logicLog || '',
+        source: options?.source || 'parse_failed',
+        app: options?.app || '',
       },
     });
 
@@ -274,16 +290,18 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
         const currentLogsStr = await AsyncStorage.getItem('debug_bug_reports');
         const currentLogs = currentLogsStr ? JSON.parse(currentLogsStr) : [];
 
-        currentLogs.unshift({
+        currentLogs.unshift(sanitizeDebugBugReportEntry({
           id: Date.now().toString(),
           timestamp: new Date().toISOString(),
           transactionId: transactionId || 'failed_parse',
           type: actionType,
           sender,
-          // PRIVACY: scrub OTPs, PINs, CVV before persisting to AsyncStorage
-          rawSms: scrubSensitiveData(rawSms),
+          rawSms,
+          rawSmsKind: notification?.data?.rawSmsKind,
+          source: notification?.data?.source,
+          app: notification?.data?.app,
           logicLog,
-        });
+        }));
 
         if (currentLogs.length > 50) currentLogs.length = 50;
 
@@ -448,6 +466,12 @@ export async function processTransactionSMS(
     };
     const transactionNote = getTransactionDisplayName(presentation);
     const transactionCategory = inferTransactionCategory(presentation);
+    const redactedRawSms = createRedactedRawTextRecord({
+      kind: 'sms',
+      text: smsText,
+      sender: senderId,
+      source: 'sms',
+    });
 
     const { data: transaction, error } = await supabase
       .from('transactions')
@@ -461,7 +485,7 @@ export async function processTransactionSMS(
         account_last4: matchedAccount.account_last4,
         sms_source: 'sms',
         sms_sender: senderId,
-        raw_sms: smsText,
+        raw_sms: redactedRawSms,
         balance: parsed.balance,
         upi_id: parsed.upiId,
         created_at: new Date().toISOString(),
@@ -505,7 +529,7 @@ export async function processTransactionSMS(
       transactionNote,
       parsed.amount!,
       matchedAccount.bank_name,
-      smsText,
+      redactedRawSms,
       `Confidence: ${parsed.confidence}%\nMatched: ${matchedAccount.bank_name} (${matchedAccount.account_last4})`,
       senderId
     );

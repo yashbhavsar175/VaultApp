@@ -11,6 +11,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { parseSMS, detectBankFromSender, detectBankFromContent, extractLast4Digits } from './smsParser';
 import { getBankAccounts, addBankAccount, updateBankAccount } from '../database/financial';
+import { createRedactedRawTextRecord, isRedactedRawTextRecord } from '../privacy/rawText';
 
 // Dynamically import SMS module to handle cases where it's not available
 let SmsAndroid: any = null;
@@ -32,6 +33,7 @@ export interface DetectedBank {
   lastKnownBalance?: number | null;
   balanceLastSeen?: string | null;
   sampleSMS: string;
+  accountTypeHint?: 'savings' | 'current' | 'credit_card';
   confidence: number;
   firstSeen: string;
   lastSeen: string;
@@ -88,6 +90,48 @@ function recordDetectedBalance(
 function getDetectedBalanceForLast4(detectedBank: DetectedBank, last4Digits?: string | null): number | null {
   const accountBalance = detectedBank.accountBalances?.find(item => item.last4Digits === (last4Digits || null));
   return accountBalance?.balance ?? detectedBank.lastKnownBalance ?? null;
+}
+
+function inferAccountTypeHint(smsText: string): DetectedBank['accountTypeHint'] {
+  const sampleLower = smsText.toLowerCase();
+
+  if (sampleLower.includes('credit card') || sampleLower.includes('card')) {
+    return 'credit_card';
+  }
+
+  if (sampleLower.includes('current')) {
+    return 'current';
+  }
+
+  return 'savings';
+}
+
+function createRedactedSampleSMS(smsText: string, senderId?: string | null, source = 'bank_auto_detection'): string {
+  return createRedactedRawTextRecord({
+    kind: 'sms',
+    text: smsText,
+    sender: senderId,
+    source,
+  });
+}
+
+function sanitizeDetectedBankSample(bank: DetectedBank): DetectedBank {
+  if (!bank.sampleSMS || isRedactedRawTextRecord(bank.sampleSMS)) return bank;
+
+  return {
+    ...bank,
+    accountTypeHint: bank.accountTypeHint || inferAccountTypeHint(bank.sampleSMS),
+    sampleSMS: createRedactedSampleSMS(bank.sampleSMS, bank.senderIds?.[0], 'bank_auto_detection_cache'),
+  };
+}
+
+function sanitizeDetectionResult(result: AutoDetectionResult): AutoDetectionResult {
+  return {
+    ...result,
+    detectedBanks: Array.isArray(result.detectedBanks)
+      ? result.detectedBanks.map(sanitizeDetectedBankSample)
+      : [],
+  };
 }
 
 async function syncDetectedBalancesToExistingAccounts(detectedBanks: DetectedBank[]) {
@@ -233,7 +277,8 @@ export async function scanSMSHistory(): Promise<AutoDetectionResult> {
           accountBalances: [],
           lastKnownBalance: null,
           balanceLastSeen: null,
-          sampleSMS: body.substring(0, 200),
+          sampleSMS: createRedactedSampleSMS(body, address),
+          accountTypeHint: inferAccountTypeHint(body),
           confidence: parsed.confidence,
           firstSeen: seenAt,
           lastSeen: seenAt,
@@ -273,7 +318,12 @@ export async function getCachedDetectionResult(): Promise<AutoDetectionResult | 
   try {
     const cached = await AsyncStorage.getItem('bank_auto_detection_result');
     if (!cached) return null;
-    return JSON.parse(cached);
+    const parsed = JSON.parse(cached);
+    const result = sanitizeDetectionResult(parsed);
+    if (JSON.stringify(parsed) !== JSON.stringify(result)) {
+      await AsyncStorage.setItem('bank_auto_detection_result', JSON.stringify(result));
+    }
+    return result;
   } catch {
     return null;
   }
@@ -334,12 +384,12 @@ export async function getUnaddedBanks(): Promise<DetectedBank[]> {
 export async function autoAddBank(detectedBank: DetectedBank): Promise<boolean> {
   try {
     // Determine account type based on keywords in sample SMS
-    let accountType: 'savings' | 'current' | 'credit_card' = 'savings';
+    let accountType: 'savings' | 'current' | 'credit_card' = detectedBank.accountTypeHint || 'savings';
     const sampleLower = detectedBank.sampleSMS.toLowerCase();
     
-    if (sampleLower.includes('credit card') || sampleLower.includes('card')) {
+    if (!detectedBank.accountTypeHint && (sampleLower.includes('credit card') || sampleLower.includes('card'))) {
       accountType = 'credit_card';
-    } else if (sampleLower.includes('current')) {
+    } else if (!detectedBank.accountTypeHint && sampleLower.includes('current')) {
       accountType = 'current';
     }
 
@@ -418,7 +468,8 @@ export async function detectAndSuggestBank(
       accountBalances: [],
       lastKnownBalance: null,
       balanceLastSeen: null,
-      sampleSMS: smsText.substring(0, 200),
+      sampleSMS: createRedactedSampleSMS(smsText, senderId, 'bank_auto_detection_realtime'),
+      accountTypeHint: inferAccountTypeHint(smsText),
       confidence: parsed.confidence,
       firstSeen: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
