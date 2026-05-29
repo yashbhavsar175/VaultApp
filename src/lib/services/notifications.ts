@@ -29,6 +29,7 @@ import {
   sanitizeDebugBugReportEntry,
   RedactedRawTextKind,
 } from '../privacy/rawText';
+import { recordBalanceSignalForUser } from './balanceSignalRecorder';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SPAM FILTERING
@@ -388,6 +389,34 @@ export async function initializeBackgroundListeners() {
 // INTELLIGENT SMS PROCESSING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+async function recordLegacySmsBalanceSignalSafely(
+  userId: string,
+  smsText: string,
+  senderId: string
+): Promise<void> {
+  try {
+    const result = await recordBalanceSignalForUser({
+      userId,
+      text: smsText,
+      senderOrPackage: senderId,
+      sourceType: 'sms',
+      timestamp: Date.now(),
+    });
+
+    if (result.parsed.isBalanceSignal) {
+      console.log('[BalanceSignal] Recorded legacy SMS balance signal', {
+        hash: result.parsed.redactedSource.hash,
+        snapshots: result.snapshots.length,
+        detectedCandidates: result.detectedCandidates.length,
+      });
+    }
+  } catch (error) {
+    console.warn('[BalanceSignal] Failed to record legacy SMS balance signal', {
+      message: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
 /**
  * Process incoming SMS and auto-create transaction if possible
  * Returns transaction ID if successful, null otherwise
@@ -397,6 +426,11 @@ export async function processTransactionSMS(
   senderId: string
 ): Promise<{ success: boolean; transactionId?: string; parsed: ParsedTransaction }> {
   try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.id) {
+      await recordLegacySmsBalanceSignalSafely(user.id, smsText, senderId);
+    }
+
     // Step 1: Check if it's a transaction SMS
     if (!isTransactionSMS(smsText)) {
       console.log('[SMS Parser] Not a transaction SMS');
@@ -438,8 +472,6 @@ export async function processTransactionSMS(
       return { success: false, parsed };
     }
 
-    // Step 5: Create transaction
-    const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       console.log('[SMS Parser] No user found');
       return { success: false, parsed };

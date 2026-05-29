@@ -693,6 +693,286 @@ CREATE POLICY "Users can manage their own vault items"
 
 CREATE INDEX IF NOT EXISTS idx_vault_items_user_id ON vault_items(user_id);
 
+-- Balance snapshots ----------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  owner_type text NOT NULL CHECK (
+    owner_type IN (
+      'bank_account',
+      'credit_card',
+      'debit_card',
+      'loan',
+      'cash',
+      'detected_account',
+      'detected_card'
+    )
+  ),
+  owner_id uuid,
+  detected_bank_name text,
+  account_last4 text CHECK (account_last4 IS NULL OR account_last4 ~ '^[0-9]{1,4}$'),
+  card_last4 text CHECK (card_last4 IS NULL OR card_last4 ~ '^[0-9]{1,4}$'),
+  balance_kind text NOT NULL CHECK (
+    balance_kind IN (
+      'available_balance',
+      'current_balance',
+      'outstanding',
+      'available_limit',
+      'credit_limit',
+      'due_amount',
+      'minimum_due',
+      'loan_outstanding'
+    )
+  ),
+  amount numeric NOT NULL CHECK (amount >= 0),
+  currency text NOT NULL DEFAULT 'INR',
+  source text NOT NULL CHECK (source IN ('sms', 'notification', 'calculated', 'manual', 'review', 'import')),
+  confidence text NOT NULL CHECK (confidence IN ('exact', 'estimated', 'low')),
+  detected_at timestamptz NOT NULL DEFAULT now(),
+  source_sender_or_package text,
+  raw_source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON COLUMN balance_snapshots.raw_source_metadata IS
+  'Redacted metadata only. Allowed examples: len/length, hash, source, sender, package, kind. Never raw SMS, notification body, OTP, phone, address, or full account/card number.';
+
+ALTER TABLE balance_snapshots ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own balance snapshots" ON balance_snapshots;
+CREATE POLICY "Users manage own balance snapshots"
+  ON balance_snapshots FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_owner_latest
+  ON balance_snapshots(user_id, owner_type, owner_id, balance_kind, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_account_last4
+  ON balance_snapshots(user_id, account_last4)
+  WHERE account_last4 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_card_last4
+  ON balance_snapshots(user_id, card_last4)
+  WHERE card_last4 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_source
+  ON balance_snapshots(user_id, source);
+
+-- Debit cards ----------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS debit_cards (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  bank_account_id uuid REFERENCES bank_accounts(id) ON DELETE SET NULL,
+  bank_name text,
+  card_last4 text NOT NULL CHECK (card_last4 ~ '^[0-9]{4}$'),
+  card_network text,
+  card_label text,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'replaced', 'detected')),
+  detected_confidence text DEFAULT 'low' CHECK (detected_confidence IN ('exact', 'estimated', 'low')),
+  source_sender_or_package text,
+  last_seen_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON COLUMN debit_cards.card_last4 IS
+  'Last four digits only. Do not store full card numbers.';
+
+ALTER TABLE debit_cards ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own debit cards" ON debit_cards;
+CREATE POLICY "Users manage own debit cards"
+  ON debit_cards FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_debit_cards_unique_bank_card
+  ON debit_cards(user_id, bank_account_id, card_last4)
+  WHERE bank_account_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_debit_cards_user_id
+  ON debit_cards(user_id);
+CREATE INDEX IF NOT EXISTS idx_debit_cards_bank_account_id
+  ON debit_cards(user_id, bank_account_id)
+  WHERE bank_account_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_debit_cards_card_last4
+  ON debit_cards(user_id, card_last4);
+
+CREATE OR REPLACE FUNCTION validate_debit_card_bank_account_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM bank_accounts
+    WHERE id = NEW.bank_account_id
+      AND user_id = NEW.user_id
+  ) THEN
+    RAISE EXCEPTION 'Debit card bank account must belong to the same user'
+      USING ERRCODE = '42501';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_debit_card_bank_account_owner ON debit_cards;
+CREATE TRIGGER trigger_validate_debit_card_bank_account_owner
+  BEFORE INSERT OR UPDATE ON debit_cards
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_debit_card_bank_account_owner();
+
+-- Detected accounts ----------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS detected_accounts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  detection_type text NOT NULL CHECK (detection_type IN ('bank_account', 'credit_card', 'debit_card', 'loan')),
+  detected_bank_name text,
+  account_last4 text CHECK (account_last4 IS NULL OR account_last4 ~ '^[0-9]{1,4}$'),
+  card_last4 text CHECK (card_last4 IS NULL OR card_last4 ~ '^[0-9]{1,4}$'),
+  account_type_hint text,
+  balance_amount numeric CHECK (balance_amount IS NULL OR balance_amount >= 0),
+  balance_kind text CHECK (
+    balance_kind IS NULL OR balance_kind IN (
+      'available_balance',
+      'current_balance',
+      'outstanding',
+      'available_limit',
+      'credit_limit',
+      'due_amount',
+      'minimum_due',
+      'loan_outstanding'
+    )
+  ),
+  source text NOT NULL CHECK (source IN ('sms', 'notification', 'manual', 'import')),
+  confidence text NOT NULL CHECK (confidence IN ('exact', 'estimated', 'low')),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'merged', 'ignored')),
+  matched_owner_type text CHECK (
+    matched_owner_type IS NULL OR matched_owner_type IN (
+      'bank_account',
+      'credit_card',
+      'debit_card',
+      'loan',
+      'cash',
+      'detected_account',
+      'detected_card'
+    )
+  ),
+  matched_owner_id uuid,
+  source_sender_or_package text,
+  raw_source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON COLUMN detected_accounts.raw_source_metadata IS
+  'Redacted metadata only. Never store raw SMS, notification body, OTP, phone, address, or full account/card number.';
+
+ALTER TABLE detected_accounts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own detected accounts" ON detected_accounts;
+CREATE POLICY "Users manage own detected accounts"
+  ON detected_accounts FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_detected_accounts_status_type
+  ON detected_accounts(user_id, status, detection_type);
+CREATE INDEX IF NOT EXISTS idx_detected_accounts_account_last4
+  ON detected_accounts(user_id, account_last4)
+  WHERE account_last4 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_detected_accounts_card_last4
+  ON detected_accounts(user_id, card_last4)
+  WHERE card_last4 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_detected_accounts_last_seen
+  ON detected_accounts(user_id, last_seen_at DESC);
+
+-- Credit card statements -----------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS credit_card_statements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  credit_card_id uuid NOT NULL REFERENCES credit_cards(id) ON DELETE CASCADE,
+  statement_date date,
+  period_start date,
+  period_end date,
+  total_due numeric CHECK (total_due IS NULL OR total_due >= 0),
+  minimum_due numeric CHECK (minimum_due IS NULL OR minimum_due >= 0),
+  payment_due_date date,
+  statement_balance numeric CHECK (statement_balance IS NULL OR statement_balance >= 0),
+  source_snapshot_id uuid REFERENCES balance_snapshots(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paid', 'partial', 'overdue', 'unknown')),
+  source text CHECK (source IS NULL OR source IN ('sms', 'notification', 'manual', 'import')),
+  confidence text CHECK (confidence IS NULL OR confidence IN ('exact', 'estimated', 'low')),
+  raw_source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON COLUMN credit_card_statements.raw_source_metadata IS
+  'Redacted metadata only. Never store raw SMS, notification body, OTP, phone, address, or full account/card number.';
+
+ALTER TABLE credit_card_statements ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own credit card statements" ON credit_card_statements;
+CREATE POLICY "Users manage own credit card statements"
+  ON credit_card_statements FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_credit_card_statements_user_id
+  ON credit_card_statements(user_id);
+CREATE INDEX IF NOT EXISTS idx_credit_card_statements_card_id
+  ON credit_card_statements(user_id, credit_card_id);
+CREATE INDEX IF NOT EXISTS idx_credit_card_statements_due_date
+  ON credit_card_statements(user_id, payment_due_date)
+  WHERE payment_due_date IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_credit_card_statements_status
+  ON credit_card_statements(user_id, status);
+
+CREATE OR REPLACE FUNCTION validate_credit_card_statement_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM credit_cards
+    WHERE id = NEW.credit_card_id
+      AND user_id = NEW.user_id
+  ) THEN
+    RAISE EXCEPTION 'Credit card statement card must belong to the same user'
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF NEW.source_snapshot_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM balance_snapshots
+    WHERE id = NEW.source_snapshot_id
+      AND user_id = NEW.user_id
+  ) THEN
+    RAISE EXCEPTION 'Credit card statement source snapshot must belong to the same user'
+      USING ERRCODE = '42501';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_credit_card_statement_owner ON credit_card_statements;
+CREATE TRIGGER trigger_validate_credit_card_statement_owner
+  BEFORE INSERT OR UPDATE ON credit_card_statements
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_credit_card_statement_owner();
+
 -- RPCs and triggers ----------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION update_bank_balance(

@@ -36,6 +36,108 @@ export interface BankAccount {
   created_at: string;
 }
 
+export type BalanceOwnerType =
+  | 'bank_account'
+  | 'credit_card'
+  | 'debit_card'
+  | 'loan'
+  | 'cash'
+  | 'detected_account'
+  | 'detected_card';
+
+export type BalanceKind =
+  | 'available_balance'
+  | 'current_balance'
+  | 'outstanding'
+  | 'available_limit'
+  | 'credit_limit'
+  | 'due_amount'
+  | 'minimum_due'
+  | 'loan_outstanding';
+
+export type BalanceSource = 'sms' | 'notification' | 'calculated' | 'manual' | 'review' | 'import';
+
+export type BalanceConfidence = 'exact' | 'estimated' | 'low';
+
+export interface BalanceSnapshot {
+  id: string;
+  user_id: string;
+  owner_type: BalanceOwnerType;
+  owner_id: string | null;
+  detected_bank_name: string | null;
+  account_last4: string | null;
+  card_last4: string | null;
+  balance_kind: BalanceKind;
+  amount: number;
+  currency: string;
+  source: BalanceSource;
+  confidence: BalanceConfidence;
+  detected_at: string;
+  source_sender_or_package: string | null;
+  raw_source_metadata: Record<string, unknown>;
+  note: string | null;
+  created_at: string;
+}
+
+export interface DebitCard {
+  id: string;
+  user_id: string;
+  bank_account_id: string | null;
+  bank_name: string | null;
+  card_last4: string;
+  card_network: string | null;
+  card_label: string | null;
+  status: 'active' | 'inactive' | 'replaced' | 'detected';
+  detected_confidence: BalanceConfidence;
+  source_sender_or_package: string | null;
+  last_seen_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DetectedAccount {
+  id: string;
+  user_id: string;
+  detection_type: 'bank_account' | 'credit_card' | 'debit_card' | 'loan';
+  detected_bank_name: string | null;
+  account_last4: string | null;
+  card_last4: string | null;
+  account_type_hint: string | null;
+  balance_amount: number | null;
+  balance_kind: BalanceKind | null;
+  source: Exclude<BalanceSource, 'calculated' | 'review'>;
+  confidence: BalanceConfidence;
+  status: 'pending' | 'confirmed' | 'merged' | 'ignored';
+  matched_owner_type: BalanceOwnerType | null;
+  matched_owner_id: string | null;
+  source_sender_or_package: string | null;
+  raw_source_metadata: Record<string, unknown>;
+  first_seen_at: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreditCardStatement {
+  id: string;
+  user_id: string;
+  credit_card_id: string;
+  statement_date: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  total_due: number | null;
+  minimum_due: number | null;
+  payment_due_date: string | null;
+  statement_balance: number | null;
+  source_snapshot_id: string | null;
+  status: 'open' | 'paid' | 'partial' | 'overdue' | 'unknown';
+  source: Exclude<BalanceSource, 'calculated' | 'review'> | null;
+  confidence: BalanceConfidence | null;
+  raw_source_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PeopleLedger {
   id: string;
   user_id: string;

@@ -21,6 +21,7 @@ import { CACHE_KEYS, updateCache } from '../services/cache';
 import { emitFinanceDataChanged } from '../services/dataEvents';
 import { BankAccount, Transaction } from '../../types';
 import { createRedactedRawTextRecord } from '../privacy/rawText';
+import { recordBalanceSignalForUser } from '../services/balanceSignalRecorder';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -568,6 +569,43 @@ async function findAndSyncBankAccount(
   }
 }
 
+async function getProcessorUserId(): Promise<string | null> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user?.id) return session.user.id;
+  } catch {}
+
+  const storedUserId = await AsyncStorage.getItem('app_user_id');
+  return storedUserId || null;
+}
+
+async function recordBalanceSignalSafely(input: {
+  userId: string;
+  text: string;
+  senderOrPackage?: string | null;
+  sourceType: 'sms' | 'notification';
+  timestamp?: number;
+}): Promise<void> {
+  try {
+    const result = await recordBalanceSignalForUser(input);
+    if (result.parsed.isBalanceSignal) {
+      console.log('[BalanceSignal] Recorded parsed balance signal', {
+        sourceType: input.sourceType,
+        hash: result.parsed.redactedSource.hash,
+        snapshots: result.snapshots.length,
+        detectedCandidates: result.detectedCandidates.length,
+        debitCards: result.debitCards.length,
+        creditCardStatements: result.creditCardStatements.length,
+      });
+    }
+  } catch (error) {
+    console.warn('[BalanceSignal] Failed to record parsed balance signal', {
+      sourceType: input.sourceType,
+      message: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SMS PROCESSOR
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -595,6 +633,20 @@ export const processSms = async (taskData: SmsData) => {
       return;
     }
 
+    const userId = await getProcessorUserId();
+    if (!userId) {
+      console.log('No user ID found');
+      return;
+    }
+
+    await recordBalanceSignalSafely({
+      userId,
+      text: taskData.body,
+      senderOrPackage: taskData.sender,
+      sourceType: 'sms',
+      timestamp: taskData.timestamp,
+    });
+
     const parsed = parseTransaction(taskData.body, taskData.sender);
     if (!parsed) {
       console.log('SMS not recognized as financial transaction');
@@ -602,22 +654,6 @@ export const processSms = async (taskData: SmsData) => {
     }
 
     console.log('Parsed Transaction:', parsed);
-
-    let userId: string | null = null;
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) userId = session.user.id;
-    } catch {}
-
-    if (!userId) {
-      const storedUserId = await AsyncStorage.getItem('app_user_id');
-      if (storedUserId) userId = storedUserId;
-    }
-
-    if (!userId) {
-      console.log('No user ID found');
-      return;
-    }
 
     // Check for duplicates
     const dbType = parsed.type === 'debit' ? 'expense' : 'income';
@@ -817,6 +853,32 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
+    const sender = PACKAGE_TO_SENDER[notif.app] || 'UNKNOWN';
+
+    if (isBlockedSender(sender)) {
+      console.log('⛔ Blocked sender - skipping:', sender);
+      return;
+    }
+
+    if (!isLegitimateFinancialSender(sender)) {
+      console.log('⛔ Non-financial sender - skipping:', sender);
+      return;
+    }
+
+    const userId = await getProcessorUserId();
+    if (!userId) {
+      console.log('No user ID found');
+      return;
+    }
+
+    await recordBalanceSignalSafely({
+      userId,
+      text: combinedText,
+      senderOrPackage: notif.app,
+      sourceType: 'notification',
+      timestamp: notif.time || Date.now(),
+    });
+
     // Non-transaction filter
     const NON_TRANSACTION_PATTERNS = [
       /emi\s+of\s+(?:INR|Rs\.?|₹)\s*[0-9,]+.*(?:is\s+)?due/i,
@@ -861,18 +923,6 @@ export const processNotification = async (taskData: any) => {
       }
     }
 
-    const sender = PACKAGE_TO_SENDER[notif.app] || 'UNKNOWN';
-
-    if (isBlockedSender(sender)) {
-      console.log('⛔ Blocked sender - skipping:', sender);
-      return;
-    }
-
-    if (!isLegitimateFinancialSender(sender)) {
-      console.log('⛔ Non-financial sender - skipping:', sender);
-      return;
-    }
-
     const parsed = parseTransaction(combinedText, sender);
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
@@ -887,22 +937,6 @@ export const processNotification = async (taskData: any) => {
     }
 
     console.log('✅ Parsed Transaction:', parsed);
-
-    let userId: string | null = null;
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) userId = session.user.id;
-    } catch {}
-
-    if (!userId) {
-      const storedUserId = await AsyncStorage.getItem('app_user_id');
-      if (storedUserId) userId = storedUserId;
-    }
-
-    if (!userId) {
-      console.log('No user ID found');
-      return;
-    }
 
     // Check for duplicates
     const dbType = parsed.type === 'debit' ? 'expense' : 'income';

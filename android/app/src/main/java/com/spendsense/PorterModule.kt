@@ -28,7 +28,19 @@ import kotlin.math.abs
 class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private var currentToast: Toast? = null
     private var floatingBubbleView: View? = null
+    private var distanceOverlayView: View? = null
+    private var distanceOverlayTextView: TextView? = null
+    private var distanceOverlayHideRunnable: Runnable? = null
+    private var distanceOverlayUpdateRunnable: Runnable? = null
+    private var pendingDistanceOverlayMessage: String? = null
+    private var pendingDistanceOverlayTtlMs: Long = 0L
+    private var lastDistanceOverlayUpdateAt: Long = 0L
     private var windowManager: WindowManager? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    companion object {
+        private const val DISTANCE_OVERLAY_MIN_UPDATE_MS = 750L
+    }
 
     init {
         PorterAccessibilityService.reactContext = reactContext
@@ -158,7 +170,7 @@ class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
     fun showToastOverlay(message: String) {
         try {
             // Replace the previous toast instead of queueing many Porter updates.
-            Handler(Looper.getMainLooper()).post {
+            mainHandler.post {
                 try {
                     currentToast?.cancel()
                     currentToast = Toast.makeText(reactApplicationContext, message, Toast.LENGTH_LONG)
@@ -170,6 +182,195 @@ class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
         } catch (e: Exception) {
             // Ignore
         }
+    }
+
+    @ReactMethod
+    fun showOrUpdatePorterDistanceOverlay(message: String, ttlMs: Double, promise: Promise) {
+        if (!Settings.canDrawOverlays(reactApplicationContext)) {
+            promise.reject("PERMISSION_DENIED", "Overlay permission not granted")
+            return
+        }
+
+        val safeTtlMs = ttlMs.toLong().coerceIn(3000L, 30000L)
+
+        mainHandler.post {
+            try {
+                val now = System.currentTimeMillis()
+                val hasVisibleOverlay = distanceOverlayView != null
+                val isTooSoon = hasVisibleOverlay && now - lastDistanceOverlayUpdateAt < DISTANCE_OVERLAY_MIN_UPDATE_MS
+                if (isTooSoon) {
+                    pendingDistanceOverlayMessage = message
+                    pendingDistanceOverlayTtlMs = safeTtlMs
+                    if (distanceOverlayUpdateRunnable == null) {
+                        val delayMs = (DISTANCE_OVERLAY_MIN_UPDATE_MS - (now - lastDistanceOverlayUpdateAt))
+                            .coerceAtLeast(100L)
+                        val updateRunnable = Runnable {
+                            distanceOverlayUpdateRunnable = null
+                            val pendingMessage = pendingDistanceOverlayMessage
+                            val pendingTtl = pendingDistanceOverlayTtlMs
+                            pendingDistanceOverlayMessage = null
+                            pendingDistanceOverlayTtlMs = 0L
+                            if (pendingMessage != null) {
+                                applyDistanceOverlayUpdate(pendingMessage, pendingTtl)
+                            }
+                        }
+                        distanceOverlayUpdateRunnable = updateRunnable
+                        mainHandler.postDelayed(updateRunnable, delayMs)
+                    }
+                    PorterAccessibilityService.appendNativeLog(
+                        reactApplicationContext,
+                        "overlay_update_throttled",
+                        "Coalesced native distance overlay update",
+                        reactApplicationContext.packageName,
+                        "native_overlay"
+                    )
+                    promise.resolve(false)
+                    return@post
+                }
+
+                applyDistanceOverlayUpdate(message, safeTtlMs)
+                promise.resolve(true)
+            } catch (e: Exception) {
+                promise.reject("OVERLAY_ERROR", e.message, e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun hidePorterDistanceOverlay(promise: Promise) {
+        mainHandler.post {
+            try {
+                hideDistanceOverlayInternal()
+                promise.resolve(true)
+            } catch (e: Exception) {
+                promise.reject("OVERLAY_ERROR", e.message, e)
+            }
+        }
+    }
+
+    private fun getWindowManager(): WindowManager {
+        val existing = windowManager
+        if (existing != null) return existing
+        val manager = reactApplicationContext.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager
+        windowManager = manager
+        return manager
+    }
+
+    private fun createDistanceOverlayParams(): WindowManager.LayoutParams {
+        return WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = dp(8f)
+            y = dp(360f)
+            alpha = 0.9f
+        }
+    }
+
+    private fun applyDistanceOverlayUpdate(message: String, ttlMs: Long) {
+        val manager = getWindowManager()
+        val overlay = distanceOverlayView ?: createDistanceOverlayView()
+        if (distanceOverlayTextView?.text?.toString() != message) {
+            distanceOverlayTextView?.text = message
+        }
+
+        if (distanceOverlayView == null) {
+            distanceOverlayView = overlay
+            manager.addView(overlay, createDistanceOverlayParams())
+            PorterAccessibilityService.appendNativeLog(
+                reactApplicationContext,
+                "overlay_repositioned_below_fare",
+                "Distance overlay positioned below Porter fare area",
+                reactApplicationContext.packageName,
+                "native_overlay"
+            )
+        }
+
+        lastDistanceOverlayUpdateAt = System.currentTimeMillis()
+
+        distanceOverlayHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        distanceOverlayHideRunnable = Runnable {
+            hideDistanceOverlayInternal()
+        }
+        mainHandler.postDelayed(distanceOverlayHideRunnable!!, ttlMs)
+    }
+
+    private fun createDistanceOverlayView(): View {
+        val frame = FrameLayout(reactApplicationContext)
+        frame.isClickable = false
+        frame.isFocusable = false
+
+        val shape = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(14f).toFloat()
+            setColor(Color.parseColor("#EAF5FF"))
+            setStroke(dp(1f), Color.parseColor("#2563EB"))
+        }
+        frame.background = shape
+        frame.alpha = 0.96f
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            frame.elevation = dp(8f).toFloat()
+        }
+
+        val textView = TextView(reactApplicationContext).apply {
+            text = ""
+            textSize = 12f
+            setTextColor(Color.parseColor("#10233F"))
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setLineSpacing(dp(1f).toFloat(), 1.0f)
+            maxWidth = dp(190f)
+        }
+        distanceOverlayTextView = textView
+
+        frame.addView(textView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.CENTER
+            leftMargin = dp(10f)
+            topMargin = dp(7f)
+            rightMargin = dp(10f)
+            bottomMargin = dp(7f)
+        })
+
+        return frame
+    }
+
+    private fun hideDistanceOverlayInternal() {
+        distanceOverlayHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        distanceOverlayHideRunnable = null
+        distanceOverlayUpdateRunnable?.let { mainHandler.removeCallbacks(it) }
+        distanceOverlayUpdateRunnable = null
+        pendingDistanceOverlayMessage = null
+        pendingDistanceOverlayTtlMs = 0L
+
+        val overlay = distanceOverlayView
+        if (overlay != null && windowManager != null) {
+            try {
+                windowManager?.removeView(overlay)
+            } catch (_: Exception) {
+                // Ignore already-removed overlay windows.
+            }
+        }
+
+        distanceOverlayView = null
+        distanceOverlayTextView = null
+        lastDistanceOverlayUpdateAt = 0L
+    }
+
+    private fun dp(value: Float): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            value,
+            reactApplicationContext.resources.displayMetrics
+        ).toInt()
     }
 
     /**
@@ -239,7 +440,7 @@ class PorterModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
                     return@post
                 }
 
-                windowManager = reactApplicationContext.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager
+                windowManager = getWindowManager()
 
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,

@@ -34,6 +34,7 @@ class PorterAccessibilityService : AccessibilityService() {
         private const val DISPATCH_DEBOUNCE_MS = 250L
         private const val DISPATCH_THROTTLE_MS = 600L
         private const val DUPLICATE_REFRESH_MS = 2500L
+        private const val ACCESSIBILITY_EVENT_COALESCE_MS = 220L
         private const val OCR_MIN_INTERVAL_MS = 900L
         private const val OCR_DUPLICATE_REFRESH_MS = 2500L
         private const val OCR_UNSUPPORTED_BACKOFF_MS = 10 * 60_000L
@@ -473,6 +474,10 @@ class PorterAccessibilityService : AccessibilityService() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private val accessibilityExecutor = Executors.newSingleThreadExecutor()
+    private val accessibilityWorkLock = Any()
+    private var pendingAccessibilityEvent: AccessibilityEvent? = null
+    private var accessibilityWorkScheduled = false
     private var pendingDispatch: Runnable? = null
     private var pendingPackageName: String = ""
     private var pendingTextContent: String = ""
@@ -493,6 +498,7 @@ class PorterAccessibilityService : AccessibilityService() {
     private var lastVolumeClampRequestTime: Long = 0
     private var lastEmptyLogTime: Long = 0
     private var lastPorterProcessTime: Long = 0
+    private var lastAnrGuardLogTime: Long = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -548,8 +554,98 @@ class PorterAccessibilityService : AccessibilityService() {
             return
         }
 
+        enqueuePorterEvent(event)
+    }
+
+    private fun enqueuePorterEvent(event: AccessibilityEvent) {
+        val eventCopy = try {
+            AccessibilityEvent.obtain(event)
+        } catch (e: Exception) {
+            appendAnrGuardLogAsync(
+                "anr_guard_event_dropped",
+                "Dropped Porter event copy failure: ${e.javaClass.simpleName}",
+                event.packageName?.toString().orEmpty(),
+                safeEventType(event)
+            )
+            return
+        }
+
+        var replacedPending = false
+        synchronized(accessibilityWorkLock) {
+            replacedPending = pendingAccessibilityEvent != null
+            pendingAccessibilityEvent?.recycle()
+            pendingAccessibilityEvent = eventCopy
+            if (!accessibilityWorkScheduled) {
+                accessibilityWorkScheduled = true
+                handler.postDelayed({
+                    accessibilityExecutor.execute { processLatestPorterEventOffMainThread() }
+                }, ACCESSIBILITY_EVENT_COALESCE_MS)
+            }
+        }
+
+        if (replacedPending) {
+            appendAnrGuardLogAsync(
+                "accessibility_event_coalesced",
+                "Coalesced rapid Porter accessibility event; latest event kept",
+                event.packageName?.toString().orEmpty(),
+                safeEventType(event)
+            )
+        }
+    }
+
+    private fun processLatestPorterEventOffMainThread() {
+        val eventToProcess = synchronized(accessibilityWorkLock) {
+            val latest = pendingAccessibilityEvent
+            pendingAccessibilityEvent = null
+            accessibilityWorkScheduled = false
+            latest
+        } ?: return
+
+        try {
+            appendAnrGuardLogAsync(
+                "main_thread_work_avoided",
+                "Processing Porter text extraction off accessibility callback thread",
+                eventToProcess.packageName?.toString().orEmpty(),
+                safeEventType(eventToProcess)
+            )
+            processPorterEventSnapshot(eventToProcess)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Off-main Porter event processing failed safely", t)
+            appendNativeLog(
+                applicationContext,
+                "event_error",
+                "Off-main Porter event failed safely: ${t.javaClass.simpleName}: ${t.message}",
+                eventToProcess.packageName?.toString() ?: "",
+                safeEventType(eventToProcess)
+            )
+        } finally {
+            eventToProcess.recycle()
+        }
+    }
+
+    private fun appendAnrGuardLogAsync(stage: String, message: String, packageName: String, eventType: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastAnrGuardLogTime < 1000L && stage != "anr_guard_event_dropped") return
+        lastAnrGuardLogTime = now
+        accessibilityExecutor.execute {
+            appendNativeLog(applicationContext, stage, message, packageName, eventType)
+        }
+    }
+
+    private fun processPorterEventSnapshot(event: AccessibilityEvent) {
+        val packageName = event.packageName?.toString()?.trim().orEmpty()
+        if (packageName.isEmpty()) return
+        val eventType = safeEventType(event)
+
         val now = System.currentTimeMillis()
         if (now - lastPorterProcessTime < PORTER_EVENT_MIN_INTERVAL_MS) {
+            appendNativeLog(
+                applicationContext,
+                "anr_guard_event_dropped",
+                "Dropped rapid Porter event after coalescing",
+                packageName,
+                eventType
+            )
             return
         }
         lastPorterProcessTime = now
@@ -670,7 +766,9 @@ class PorterAccessibilityService : AccessibilityService() {
             if (now - lastSentTime > DISPATCH_THROTTLE_MS) {
                 dispatchPendingEvent()
             } else {
-                val dispatch = Runnable { dispatchPendingEvent() }
+                val dispatch = Runnable {
+                    accessibilityExecutor.execute { dispatchPendingEvent() }
+                }
                 pendingDispatch = dispatch
                 handler.postDelayed(dispatch, DISPATCH_DEBOUNCE_MS)
             }
@@ -1182,6 +1280,11 @@ class PorterAccessibilityService : AccessibilityService() {
         appendNativeLog(applicationContext, "service", "Accessibility service interrupted")
         pendingDispatch?.let { handler.removeCallbacks(it) }
         pendingDispatch = null
+        synchronized(accessibilityWorkLock) {
+            pendingAccessibilityEvent?.recycle()
+            pendingAccessibilityEvent = null
+            accessibilityWorkScheduled = false
+        }
         isServiceRunning = false
     }
     
@@ -1189,6 +1292,11 @@ class PorterAccessibilityService : AccessibilityService() {
         appendNativeLog(applicationContext, "service", "Accessibility service unbound")
         pendingDispatch?.let { handler.removeCallbacks(it) }
         pendingDispatch = null
+        synchronized(accessibilityWorkLock) {
+            pendingAccessibilityEvent?.recycle()
+            pendingAccessibilityEvent = null
+            accessibilityWorkScheduled = false
+        }
         isServiceRunning = false
         return super.onUnbind(intent)
     }

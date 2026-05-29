@@ -1,12 +1,13 @@
 import React from 'react';
 import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
 import Settings from '../screens/user/Settings';
-import { BankConfigScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
+import { BankConfigScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
 import PorterTestScreen from '../screens/porter/PorterTestScreen';
 
 export type SettingsStackParamList = {
   SettingsHome: undefined;
   BankConfigScreen: undefined;
+  DetectedAccountsScreen: undefined;
   SMSTestScreen: undefined;
   Places: undefined;
   PorterTest: undefined;
@@ -29,6 +30,7 @@ export default function SettingsStack() {
       }}>
       <Stack.Screen name="SettingsHome" component={Settings} />
       <Stack.Screen name="BankConfigScreen" component={BankConfigScreen} />
+      <Stack.Screen name="DetectedAccountsScreen" component={DetectedAccountsScreen} />
       <Stack.Screen name="SMSTestScreen" component={SMSTestScreen} />
       <Stack.Screen name="Places" component={PlacesScreen} />
       <Stack.Screen name="PorterTest" component={PorterTestScreen} />

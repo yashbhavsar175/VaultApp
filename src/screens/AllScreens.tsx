@@ -9,6 +9,7 @@ export { LoginScreen, SignupScreen } from './auth/AuthScreens';
 // Financial screens
 export { BanksScreen, AddCreditCardScreen, AnalyticsScreen } from './financial/FinancialScreens';
 export { default as BankConfigScreen } from './financial/BankConfigScreen';
+export { default as DetectedAccountsScreen } from './financial/DetectedAccountsScreen';
 export { default as SMSTestScreen } from './financial/SMSTestScreen';
 export { default as BankAutoDetectScreen } from './financial/BankAutoDetectScreen';
 

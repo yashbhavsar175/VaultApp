@@ -3,6 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { processNotification, processSms } from './TransactionProcessors';
 import { supabase } from '../core';
 import { showTransactionConfirmation } from '../services/notifications';
+import { recordBalanceSignalForUser } from '../services/balanceSignalRecorder';
 
 jest.mock('../core', () => ({
   supabase: {
@@ -31,10 +32,21 @@ jest.mock('../services/dataEvents', () => ({
   emitFinanceDataChanged: jest.fn(),
 }));
 
+jest.mock('../services/balanceSignalRecorder', () => ({
+  recordBalanceSignalForUser: jest.fn(async () => ({
+    parsed: { isBalanceSignal: false },
+    snapshots: [],
+    detectedCandidates: [],
+    debitCards: [],
+    creditCardStatements: [],
+  })),
+}));
+
 type InsertedTransaction = Record<string, any>;
 
 const mockSupabase = supabase as any;
 const mockShowTransactionConfirmation = showTransactionConfirmation as jest.Mock;
+const mockRecordBalanceSignalForUser = recordBalanceSignalForUser as jest.Mock;
 const insertedTransactions: InsertedTransaction[] = [];
 
 function setupSupabaseMock() {
@@ -100,6 +112,13 @@ describe('TransactionProcessors raw_sms privacy', () => {
     insertedTransactions.length = 0;
     await AsyncStorage.clear();
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true });
+    mockRecordBalanceSignalForUser.mockResolvedValue({
+      parsed: { isBalanceSignal: false },
+      snapshots: [],
+      detectedCandidates: [],
+      debitCards: [],
+      creditCardStatements: [],
+    });
     setupSupabaseMock();
   });
 
@@ -124,6 +143,11 @@ describe('TransactionProcessors raw_sms privacy', () => {
       account_last4: '1234',
     }));
     expect(mockShowTransactionConfirmation.mock.calls[0][5]).toBe(rawSms);
+    expect(mockRecordBalanceSignalForUser).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user_1',
+      sourceType: 'sms',
+      senderOrPackage: 'HDFCBK',
+    }));
   });
 
   it('stores redacted raw_sms for new notification transactions', async () => {
@@ -153,6 +177,11 @@ describe('TransactionProcessors raw_sms privacy', () => {
       account_last4: '1234',
     }));
     expect(mockShowTransactionConfirmation.mock.calls[0][5]).toBe(rawSms);
+    expect(mockRecordBalanceSignalForUser).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user_1',
+      sourceType: 'notification',
+      senderOrPackage: 'com.google.android.apps.nbu.paisa.user',
+    }));
   });
 
   it('still skips duplicate replay of the same SMS', async () => {
@@ -162,5 +191,19 @@ describe('TransactionProcessors raw_sms privacy', () => {
     await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() + 1000 });
 
     expect(insertedTransactions).toHaveLength(1);
+  });
+
+  it('does not fail transaction processing if balance signal recording fails', async () => {
+    mockRecordBalanceSignalForUser.mockRejectedValueOnce(new Error('snapshot write failed'));
+    const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK26D SHOP via UPI. UPI Ref 313131313131.';
+
+    await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+    expect(insertedTransactions).toHaveLength(1);
+    expect(insertedTransactions[0]).toEqual(expect.objectContaining({
+      amount: 31,
+      type: 'expense',
+      account_last4: '1234',
+    }));
   });
 });
