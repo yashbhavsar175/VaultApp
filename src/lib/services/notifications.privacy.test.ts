@@ -4,6 +4,7 @@ import {
   handleTransactionNotificationEvent,
   showTransactionConfirmation,
   showSmsFailedNotification,
+  summarizeParsedSmsForLog,
 } from './notifications';
 
 describe('notification privacy paths', () => {
@@ -83,5 +84,37 @@ describe('notification privacy paths', () => {
     expect(serializedReports).not.toContain('OTP 123456');
     expect(serializedReports).not.toContain('9876543210');
     expect(serializedReports).not.toContain('Main Road');
+  });
+
+  it('summarizes parsed SMS logs without extracted sensitive values', () => {
+    const serializedSummary = JSON.stringify(summarizeParsedSmsForLog({
+      amount: 2841.32,
+      balance: 9876543210,
+      last4Digits: '2841',
+      bankName: 'CODEX28KR BANK',
+      transactionType: 'debit',
+      merchant: 'CODEX28KR SHOP',
+      upiId: 'codex28kr@bank',
+      confidence: 100,
+      rawText: 'OTP 123456 at 12 Main Road. UPI Ref 284128412841.',
+    }));
+
+    expect(serializedSummary).toEqual(JSON.stringify({
+      transactionType: 'debit',
+      amountPresent: true,
+      balancePresent: true,
+      accountLast4Present: true,
+      bankNamePresent: true,
+      merchantPresent: true,
+      upiIdPresent: true,
+      confidencePresent: true,
+    }));
+    expect(serializedSummary).not.toContain('CODEX28KR');
+    expect(serializedSummary).not.toContain('284128412841');
+    expect(serializedSummary).not.toContain('2841.32');
+    expect(serializedSummary).not.toContain('9876543210');
+    expect(serializedSummary).not.toContain('codex28kr@bank');
+    expect(serializedSummary).not.toContain('OTP 123456');
+    expect(serializedSummary).not.toContain('Main Road');
   });
 });

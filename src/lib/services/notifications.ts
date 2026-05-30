@@ -30,6 +30,20 @@ import {
   RedactedRawTextKind,
 } from '../privacy/rawText';
 import { recordBalanceSignalForUser } from './balanceSignalRecorder';
+import { recordSmsTransactionEvidence } from './runtimeTransactionEvidence';
+
+export function summarizeParsedSmsForLog(parsed: ParsedTransaction) {
+  return {
+    transactionType: parsed.transactionType,
+    amountPresent: parsed.amount !== null,
+    balancePresent: parsed.balance !== null,
+    accountLast4Present: parsed.last4Digits !== null,
+    bankNamePresent: parsed.bankName !== null,
+    merchantPresent: parsed.merchant !== null,
+    upiIdPresent: parsed.upiId !== null,
+    confidencePresent: Number.isFinite(parsed.confidence),
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SPAM FILTERING
@@ -439,7 +453,7 @@ export async function processTransactionSMS(
 
     // Step 2: Parse SMS
     const parsed = parseSMS(smsText, senderId);
-    console.log('[SMS Parser] Parsed:', JSON.stringify(parsed, null, 2));
+    console.log('[SMS Parser] Parsed:', summarizeParsedSmsForLog(parsed));
 
     // Step 3: Check confidence
     if (parsed.confidence < 50) {
@@ -530,6 +544,22 @@ export async function processTransactionSMS(
       await showSmsFailedNotification(smsText, senderId, `Database error: ${error.message}`);
       return { success: false, parsed };
     }
+
+    void recordSmsTransactionEvidence({
+      text: smsText,
+      sender: senderId,
+      parsed: {
+        amount: parsed.amount,
+        transactionType: parsed.transactionType,
+        merchant: parsed.merchant,
+        bankName: parsed.bankName,
+        accountLast4: parsed.last4Digits,
+        last4Digits: parsed.last4Digits,
+        upiId: parsed.upiId,
+      },
+      transactionId: transaction.id,
+      timestamp: Date.now(),
+    }).catch(() => undefined);
 
     if (parsed.balance !== null && parsed.balance !== undefined) {
       try {

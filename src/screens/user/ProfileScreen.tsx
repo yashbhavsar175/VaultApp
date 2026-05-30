@@ -97,7 +97,6 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
         setMonthlyBudget(data.monthly_budget?.toString() || '');
         setCurrency(data.currency || 'INR');
         await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
-          email: user.email,
           name: data.full_name || '',
           full_name: data.full_name || '',
           phone: data.phone || null,
@@ -143,7 +142,6 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
 
       if (error) throw error;
       await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
-        email: user.email,
         name: fullName.trim(),
         full_name: fullName.trim(),
         phone: phone.trim() || null,

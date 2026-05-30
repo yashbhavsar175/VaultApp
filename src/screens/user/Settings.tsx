@@ -429,16 +429,16 @@ export default function Settings() {
       // Show cached profile instantly
       const cachedProfile = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
       if (cachedProfile) {
-        const { email, name, full_name } = cachedProfile.data;
-        if (email) setUserEmail(email);
+        const { name, full_name } = cachedProfile.data;
         if (full_name || name) setUserName(full_name || name || '');
-        if (!cachedProfile.isStale) return;
       }
 
-      // Then fetch fresh from cloud
+      // Then fetch auth/profile data. Auth supplies email; profile cache avoids storing it.
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.email) {
         setUserEmail(user.email);
+
+        if (cachedProfile && !cachedProfile.isStale) return;
 
         const { data: profile } = await supabase
           .from('profiles')
@@ -452,7 +452,6 @@ export default function Settings() {
 
         // Update cache
         await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
-          email: user.email,
           name: profile?.full_name || '',
           full_name: profile?.full_name || '',
         });
@@ -525,7 +524,6 @@ export default function Settings() {
       setShowEditModal(false);
       // Update profile cache
       await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
-        email: userEmail,
         name: editedName.trim(),
         full_name: editedName.trim(),
       });
@@ -1027,6 +1025,24 @@ export default function Settings() {
                 </Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
                   Test transaction detection from SMS
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingVertical: spacing.sm }]}
+              onPress={() => (navigation as any).navigate('ReconciliationProposals')}
+            >
+              <MaterialCommunityIcons name="source-branch-sync" size={22} color="#8b5cf6" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Reconciliation Proposals
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Review payment match suggestions safely
                 </Text>
               </View>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />

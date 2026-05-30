@@ -51,9 +51,34 @@ type CacheEntry<T> = {
   timestamp: number;
 };
 
+function summarizeErrorForLog(error: unknown) {
+  if (error && typeof error === 'object') {
+    const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+    return {
+      code: typeof maybeError.code === 'string' ? maybeError.code : null,
+      name: typeof maybeError.name === 'string' ? maybeError.name : null,
+      status: typeof maybeError.status === 'number' || typeof maybeError.status === 'string' ? maybeError.status : null,
+    };
+  }
+
+  return {
+    code: null,
+    name: typeof error,
+    status: null,
+  };
+}
+
 function sanitizeCacheDataForPrivacy<T>(key: string, data: T): T {
   if (key === CACHE_KEYS.TRANSACTIONS && Array.isArray(data)) {
     return sanitizeTransactionRawSmsListForPrivacy(data as any[]) as T;
+  }
+
+  if (key === CACHE_KEYS.USER_PROFILE && data && typeof data === 'object' && !Array.isArray(data)) {
+    const safeProfile = { ...(data as Record<string, unknown>) };
+    delete safeProfile.email;
+    delete safeProfile.phone;
+    delete safeProfile.full_name;
+    return safeProfile as T;
   }
 
   return data;
@@ -195,12 +220,18 @@ async function prefetchProfile() {
       .single();
 
     await setCache(CACHE_KEYS.USER_PROFILE, {
-      email: user.email,
       name: profile?.full_name || '',
     });
-    console.log('🚀 [Prefetch] ✅ Profile:', user.email);
+    console.log('🚀 [Prefetch] ✅ Profile', {
+      hasUser: Boolean(user.id),
+      userIdSuffix: user.id ? user.id.slice(-6) : null,
+      profileNamePresent: Boolean(profile?.full_name?.trim()),
+    });
   } catch (e) {
-    console.warn('🚀 [Prefetch] ❌ Profile failed:', e);
+    console.warn('🚀 [Prefetch] ❌ Profile failed', {
+      operation: 'prefetchProfile',
+      error: summarizeErrorForLog(e),
+    });
   }
 }
 

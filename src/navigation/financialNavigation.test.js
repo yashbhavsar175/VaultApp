@@ -17,4 +17,17 @@ describe('financial account navigation reachability', () => {
     expect(settingsScreen).toContain('Cards & Accounts');
     expect(settingsScreen).toContain("navigate('Banks')");
   });
+
+  it('exposes read-only reconciliation proposals from Settings', () => {
+    const settingsStack = read('src/navigation/SettingsStack.tsx');
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+    const settingsScreen = read('src/screens/user/Settings.tsx');
+
+    expect(settingsStack).toContain('ReconciliationProposals: undefined');
+    expect(settingsStack).toContain('<Stack.Screen name="ReconciliationProposals" component={ReconciliationProposalsScreen} />');
+
+    expect(bottomTabs).toContain("'ReconciliationProposals'");
+    expect(settingsScreen).toContain('Reconciliation Proposals');
+    expect(settingsScreen).toContain("navigate('ReconciliationProposals')");
+  });
 });

@@ -22,6 +22,10 @@ import { emitFinanceDataChanged } from '../services/dataEvents';
 import { BankAccount, Transaction } from '../../types';
 import { createRedactedRawTextRecord } from '../privacy/rawText';
 import { recordBalanceSignalForUser } from '../services/balanceSignalRecorder';
+import {
+  recordNotificationTransactionEvidence,
+  recordSmsTransactionEvidence,
+} from '../services/runtimeTransactionEvidence';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -278,6 +282,19 @@ function summarizeNotificationForLog(notif: {
     summaryTextLength: notif.summaryText?.length ?? 0,
     subTextLength: notif.subText?.length ?? 0,
     time: notif.time,
+  };
+}
+
+function summarizeParsedTransactionForLog(parsed: ParsedTransaction) {
+  return {
+    type: parsed.type,
+    source: parsed.source,
+    amountPresent: Number.isFinite(parsed.amount),
+    balancePresent: parsed.balance !== undefined,
+    referencePresent: Boolean(parsed.reference),
+    merchantPresent: Boolean(parsed.merchant),
+    accountLast4Present: Boolean(parsed.accountLast4),
+    upiIdPresent: Boolean(parsed.upiId),
   };
 }
 
@@ -653,7 +670,7 @@ export const processSms = async (taskData: SmsData) => {
       return;
     }
 
-    console.log('Parsed Transaction:', parsed);
+    console.log('Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
     // Check for duplicates
     const dbType = parsed.type === 'debit' ? 'expense' : 'income';
@@ -676,6 +693,13 @@ export const processSms = async (taskData: SmsData) => {
 
     if (duplicate) {
       console.log('Duplicate transaction detected - skipping');
+      void recordSmsTransactionEvidence({
+        text: taskData.body,
+        sender: taskData.sender,
+        parsed,
+        transactionId: duplicate.id || null,
+        timestamp: taskData.timestamp,
+      }).catch(() => undefined);
       return;
     }
 
@@ -793,6 +817,14 @@ export const processSms = async (taskData: SmsData) => {
 
     // Show confirmation notification - this should not fail the whole operation
     if (transactionId) {
+      void recordSmsTransactionEvidence({
+        text: taskData.body,
+        sender: taskData.sender,
+        parsed,
+        transactionId,
+        timestamp: taskData.timestamp,
+      }).catch(() => undefined);
+
       try {
         await showTransactionConfirmation(
           transactionId,
@@ -927,6 +959,14 @@ export const processNotification = async (taskData: any) => {
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
       if (hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText)) {
+        void recordNotificationTransactionEvidence({
+          text: combinedText,
+          sourcePackage: notif.app,
+          sender,
+          transactionId: null,
+          timestamp: notif.time || Date.now(),
+        }).catch(() => undefined);
+
         await showSmsFailedNotification(combinedText, sender, 'Parse failed', {
           kind: 'notification',
           source: 'notification_parse_failed',
@@ -936,7 +976,7 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
-    console.log('✅ Parsed Transaction:', parsed);
+    console.log('✅ Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
     // Check for duplicates
     const dbType = parsed.type === 'debit' ? 'expense' : 'income';
@@ -961,6 +1001,14 @@ export const processNotification = async (taskData: any) => {
 
     if (duplicate) {
       console.log('Duplicate transaction detected - skipping');
+      void recordNotificationTransactionEvidence({
+        text: combinedText,
+        sourcePackage: notif.app,
+        sender,
+        parsed,
+        transactionId: duplicate.id || null,
+        timestamp: notif.time || Date.now(),
+      }).catch(() => undefined);
       return;
     }
 
@@ -1077,6 +1125,15 @@ export const processNotification = async (taskData: any) => {
 
     // Show confirmation notification - this should not fail the whole operation
     if (transactionId) {
+      void recordNotificationTransactionEvidence({
+        text: combinedText,
+        sourcePackage: notif.app,
+        sender,
+        parsed,
+        transactionId,
+        timestamp: notif.time || Date.now(),
+      }).catch(() => undefined);
+
       try {
         await showTransactionConfirmation(
           transactionId,

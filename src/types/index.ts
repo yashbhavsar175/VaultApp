@@ -9,6 +9,7 @@ export type AccountMatchStatus =
   | 'manual_confirmed';
 
 export type AccountMatchConfidence = 'exact' | 'high' | 'medium' | 'low';
+export type AccountMatchOwnerType = 'bank_account' | 'credit_card' | 'debit_card';
 
 export interface Transaction {
   id: string;
@@ -33,6 +34,8 @@ export interface Transaction {
   account_match_status?: AccountMatchStatus | null;
   account_match_confidence?: AccountMatchConfidence | null;
   account_match_reason?: string | null;
+  account_match_owner_type?: AccountMatchOwnerType | null;
+  account_match_owner_id?: string | null;
   primary_evidence_id?: string | null;
 }
 

@@ -3,6 +3,7 @@ import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/
 import Settings from '../screens/user/Settings';
 import { BanksScreen, BankConfigScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
 import PorterTestScreen from '../screens/porter/PorterTestScreen';
+import ReconciliationProposalsScreen from '../screens/transactions/ReconciliationProposalsScreen';
 
 export type SettingsStackParamList = {
   SettingsHome: undefined;
@@ -10,6 +11,7 @@ export type SettingsStackParamList = {
   BankConfigScreen: undefined;
   DetectedAccountsScreen: undefined;
   SMSTestScreen: undefined;
+  ReconciliationProposals: undefined;
   Places: undefined;
   PorterTest: undefined;
 };
@@ -34,6 +36,7 @@ export default function SettingsStack() {
       <Stack.Screen name="BankConfigScreen" component={BankConfigScreen} />
       <Stack.Screen name="DetectedAccountsScreen" component={DetectedAccountsScreen} />
       <Stack.Screen name="SMSTestScreen" component={SMSTestScreen} />
+      <Stack.Screen name="ReconciliationProposals" component={ReconciliationProposalsScreen} />
       <Stack.Screen name="Places" component={PlacesScreen} />
       <Stack.Screen name="PorterTest" component={PorterTestScreen} />
     </Stack.Navigator>
