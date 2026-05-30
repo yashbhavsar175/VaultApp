@@ -46,6 +46,7 @@ describe('transaction evidence foundation SQL', () => {
 
     expect(sql).toContain('USING (auth.uid() = user_id)');
     expect(sql).toContain('WITH CHECK (auth.uid() = user_id)');
+    expect(sql).not.toMatch(/TO\s+(anon|public)/i);
   });
 
   it('adds transaction match fields without changing transaction types', () => {
@@ -99,6 +100,22 @@ describe('transaction evidence foundation SQL', () => {
     }
   });
 
+  it('guards transaction evidence ownership in both link directions', () => {
+    for (const fileName of ['supabase_transaction_evidence.sql', 'supabase-fresh-setup.sql']) {
+      const sql = readSqlFile(fileName);
+
+      expect(sql).toContain('validate_transaction_evidence_owner');
+      expect(sql).toContain('trigger_validate_transaction_evidence_owner');
+      expect(sql).toContain('FROM transactions t');
+      expect(sql).toContain('t.user_id = NEW.user_id');
+      expect(sql).toContain('validate_transaction_primary_evidence_owner');
+      expect(sql).toContain('trigger_validate_transaction_primary_evidence_owner');
+      expect(sql).toContain('FROM transaction_evidence te');
+      expect(sql).toContain('te.user_id = NEW.user_id');
+      expect(sql).toContain('SECURITY INVOKER');
+    }
+  });
+
   it('does not create raw body columns or introduce checking in new foundation SQL', () => {
     for (const fileName of ['supabase_transaction_evidence.sql', 'supabase_account_app_mappings.sql']) {
       const sql = readSqlFile(fileName).toLowerCase();
@@ -110,6 +127,13 @@ describe('transaction evidence foundation SQL', () => {
       expect(sql).not.toMatch(/\n\s*payload\s+json/);
       expect(sql).not.toContain('checking');
     }
+  });
+
+  it('keeps fresh setup on current bank account type instead of checking', () => {
+    const sql = readSqlFile('supabase-fresh-setup.sql');
+
+    expect(sql).toContain("account_type IN ('savings', 'current', 'credit_card', 'loan')");
+    expect(sql).not.toContain("account_type IN ('savings', 'checking'");
   });
 
   it('documents redacted metadata and masked UPI rules', () => {

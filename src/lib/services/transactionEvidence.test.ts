@@ -119,6 +119,8 @@ describe('transaction evidence service foundation', () => {
     expect(maskUpiId('yash@oksbi')).toBe('yash***@oksbi');
     expect(maskUpiId('9876543210@ybl')).toBe('****@ybl');
     expect(maskUpiId('not-a-upi')).toBeNull();
+    expect(maskUpiId('very.private.local@oksbi')).toBe('very***@oksbi');
+    expect(maskUpiId('pay@bad@extra')).toBeNull();
   });
 
   it('sanitizes evidence metadata to the whitelist only', () => {
@@ -206,6 +208,20 @@ describe('transaction evidence service foundation', () => {
     expect(JSON.stringify(calls[0].payload)).not.toContain('yash@oksbi');
   });
 
+  it('does not persist caller-provided raw UPI IDs as masked evidence fields', async () => {
+    const { calls } = setupSupabaseMock();
+
+    await createTransactionEvidence({
+      signal_id: 'signal_2',
+      source_type: 'notification',
+      upi_id_masked: '9876543210@ybl',
+      raw_source_metadata: {},
+    });
+
+    expect(calls[0].payload.upi_id_masked).toBe('****@ybl');
+    expect(JSON.stringify(calls[0].payload)).not.toContain('9876543210@ybl');
+  });
+
   it('reads linked and unlinked evidence through user-scoped queries', async () => {
     const { calls } = setupSupabaseMock();
 
@@ -233,6 +249,14 @@ describe('transaction evidence service foundation', () => {
     await linkEvidenceToTransaction('evidence_1', 'tx_1', 'linked', 'exact', 'same_utr_bank_last4');
 
     expect(calls[0]).toEqual(expect.objectContaining({
+      table: 'transactions',
+      op: 'select',
+      filters: expect.arrayContaining([
+        { method: 'eq', column: 'id', value: 'tx_1' },
+        { method: 'eq', column: 'user_id', value: 'user_1' },
+      ]),
+    }));
+    expect(calls[1]).toEqual(expect.objectContaining({
       table: 'transaction_evidence',
       op: 'update',
       payload: expect.objectContaining({
@@ -242,7 +266,7 @@ describe('transaction evidence service foundation', () => {
         match_reason_code: 'same_utr_bank_last4',
       }),
     }));
-    expect(calls[1]).toEqual(expect.objectContaining({
+    expect(calls[2]).toEqual(expect.objectContaining({
       table: 'transactions',
       op: 'update',
       payload: expect.objectContaining({
@@ -252,8 +276,8 @@ describe('transaction evidence service foundation', () => {
         primary_evidence_id: 'evidence_1',
       }),
     }));
-    expect(calls[1].payload).not.toHaveProperty('account_id');
-    expect(calls[1].payload).not.toHaveProperty('account_last4');
+    expect(calls[2].payload).not.toHaveProperty('account_id');
+    expect(calls[2].payload).not.toHaveProperty('account_last4');
   });
 
   it('marks evidence review required without creating transactions', async () => {
@@ -279,7 +303,7 @@ describe('transaction evidence service foundation', () => {
       app_package: 'com.phonepe.app',
       app_label: 'PhonePe',
       payment_method_hash: 'ABCDEF12',
-      payment_method_masked: 'yash***@ybl',
+      payment_method_masked: 'yash@ybl',
       owner_type: 'bank_account',
       owner_id: 'bank_1',
       account_last4: '1234',
@@ -304,6 +328,22 @@ describe('transaction evidence service foundation', () => {
       status: 'active',
     }));
     expect(calls[1].payload.confidence_level).not.toBe('exact');
+  });
+
+  it('sanitizes account app masked payment fields before storage', async () => {
+    const { calls } = setupSupabaseMock();
+
+    await createOrUpdateAccountAppMapping({
+      app_package: 'com.supermoney.app',
+      payment_method_masked: '4111 1111 1111 1234',
+      owner_type: 'credit_card',
+      owner_id: 'card_1',
+      confidence_level: 'exact' as any,
+    });
+
+    expect(calls[1].payload.payment_method_masked).toBe('****1234');
+    expect(calls[1].payload.confidence_level).toBe('medium');
+    expect(JSON.stringify(calls[1].payload)).not.toContain('4111 1111 1111 1234');
   });
 
   it('updates an existing app mapping and rejects unsupported wallet mappings', async () => {

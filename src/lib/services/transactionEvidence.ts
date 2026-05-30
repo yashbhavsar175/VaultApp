@@ -205,6 +205,24 @@ export function maskUpiId(upiId?: string | null): string | null {
   return `${prefix}***@${safeDomain}`;
 }
 
+function safeMaskedUpiId(masked?: string | null, raw?: string | null): string | null {
+  return maskUpiId(masked) || maskUpiId(raw);
+}
+
+function safeMaskedPaymentMethod(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  const maskedUpi = maskUpiId(trimmed);
+  if (maskedUpi) return maskedUpi;
+
+  const digits = trimmed.replace(/\D/g, '');
+  if (/^(?:91)?[6-9]\d{9}$/.test(digits)) return null;
+  if (digits.length >= 6) return `****${digits.slice(-4)}`;
+
+  return sanitizeToken(trimmed) || null;
+}
+
 async function getCurrentUserId(): Promise<string> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
@@ -212,9 +230,12 @@ async function getCurrentUserId(): Promise<string> {
 }
 
 function buildEvidencePayload(userId: string, input: CreateTransactionEvidenceInput) {
+  const signalId = input.signal_id.trim();
+  if (!signalId) throw new Error('Evidence signal_id is required');
+
   return {
     user_id: userId,
-    signal_id: input.signal_id.trim(),
+    signal_id: signalId,
     transaction_id: input.transaction_id || null,
     source_type: input.source_type,
     source_package: input.source_package?.trim() || null,
@@ -229,7 +250,7 @@ function buildEvidencePayload(userId: string, input: CreateTransactionEvidenceIn
     account_last4: safeLast4(input.account_last4),
     card_last4: safeLast4(input.card_last4),
     instrument_hint: input.instrument_hint || null,
-    upi_id_masked: input.upi_id_masked?.trim() || maskUpiId(input.upi_id),
+    upi_id_masked: safeMaskedUpiId(input.upi_id_masked, input.upi_id),
     upi_id_hash: input.upi_id_hash?.trim().toLowerCase() || null,
     confidence_level: input.confidence_level || 'low',
     match_status: input.match_status || 'unlinked',
@@ -293,6 +314,15 @@ export async function linkEvidenceToTransaction(
   const userId = await getCurrentUserId();
   const safeReason = reason?.trim() || null;
 
+  const { error: transactionLookupError } = await supabase
+    .from('transactions')
+    .select('id')
+    .eq('id', transactionId)
+    .eq('user_id', userId)
+    .single();
+
+  if (transactionLookupError) throw transactionLookupError;
+
   const { data, error } = await supabase
     .from('transaction_evidence')
     .update({
@@ -308,7 +338,7 @@ export async function linkEvidenceToTransaction(
 
   if (error) throw error;
 
-  await supabase
+  const { error: transactionUpdateError } = await supabase
     .from('transactions')
     .update({
       account_match_status: matchStatus as AccountMatchStatus,
@@ -317,7 +347,11 @@ export async function linkEvidenceToTransaction(
       primary_evidence_id: evidenceId,
     })
     .eq('id', transactionId)
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .select('id')
+    .single();
+
+  if (transactionUpdateError) throw transactionUpdateError;
 
   return data as TransactionEvidence;
 }
@@ -348,14 +382,17 @@ function buildMappingPayload(userId: string, input: CreateOrUpdateAccountAppMapp
     throw new Error('Wallet mappings are not supported yet');
   }
 
+  const appPackage = input.app_package.trim();
+  if (!appPackage) throw new Error('App package is required');
+
   const confidence = input.confidence_level === 'low' ? 'low' : 'medium';
 
   return {
     user_id: userId,
-    app_package: input.app_package.trim(),
+    app_package: appPackage,
     app_label: input.app_label?.trim() || null,
     payment_method_hash: input.payment_method_hash?.trim().toLowerCase() || null,
-    payment_method_masked: input.payment_method_masked?.trim() || null,
+    payment_method_masked: safeMaskedPaymentMethod(input.payment_method_masked),
     owner_type: input.owner_type,
     owner_id: input.owner_id,
     account_last4: safeLast4(input.account_last4),

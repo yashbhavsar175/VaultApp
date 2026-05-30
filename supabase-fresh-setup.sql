@@ -413,10 +413,68 @@ CREATE TRIGGER trigger_set_transaction_evidence_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION set_transaction_evidence_updated_at();
 
+CREATE OR REPLACE FUNCTION validate_transaction_evidence_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NEW.transaction_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM transactions t
+      WHERE t.id = NEW.transaction_id
+        AND t.user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Linked transaction evidence must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_transaction_evidence_owner ON transaction_evidence;
+CREATE TRIGGER trigger_validate_transaction_evidence_owner
+  BEFORE INSERT OR UPDATE OF transaction_id, user_id ON transaction_evidence
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_transaction_evidence_owner();
+
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_primary_evidence_id_fkey;
 ALTER TABLE transactions
   ADD CONSTRAINT transactions_primary_evidence_id_fkey
   FOREIGN KEY (primary_evidence_id) REFERENCES transaction_evidence(id) ON DELETE SET NULL NOT VALID;
+
+CREATE OR REPLACE FUNCTION validate_transaction_primary_evidence_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NEW.primary_evidence_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM transaction_evidence te
+      WHERE te.id = NEW.primary_evidence_id
+        AND te.user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Primary transaction evidence must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_transaction_primary_evidence_owner ON transactions;
+CREATE TRIGGER trigger_validate_transaction_primary_evidence_owner
+  BEFORE INSERT OR UPDATE OF primary_evidence_id, user_id ON transactions
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_transaction_primary_evidence_owner();
 
 -- User identifiers ------------------------------------------------------------
 
