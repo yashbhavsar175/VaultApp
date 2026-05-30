@@ -78,3 +78,33 @@ export function getUpiProviderName(upiId?: string | null): string | null {
 
   return UPI_PROVIDER_BY_HANDLE[handle] || null;
 }
+
+export function maskUpiId(upiId?: string | null): string | null {
+  const value = upiId?.trim();
+  if (!value || !value.includes('@')) return null;
+
+  const [rawLocalPart, ...handleParts] = value.split('@');
+  const localPart = rawLocalPart.trim();
+  const handle = handleParts.join('@').trim().replace(/[^a-zA-Z0-9._-]/g, '');
+
+  if (!localPart || !handle) return null;
+
+  if (/^(?:\+?91)?\d{10}$/.test(localPart) || /^\d{6,}$/.test(localPart)) {
+    return `****@${handle}`;
+  }
+
+  const visibleCount = localPart.length > 4 ? 4 : Math.max(1, localPart.length - 2);
+  const visiblePrefix = localPart.slice(0, visibleCount);
+  return `${visiblePrefix}***@${handle}`;
+}
+
+export function formatUpiIdsForDisplay(upiIds?: string[] | null): string | null {
+  const validUpiIds = (upiIds || [])
+    .map(id => id.trim())
+    .filter(id => id.includes('@'));
+
+  if (validUpiIds.length === 0) return null;
+  if (validUpiIds.length > 1) return `${validUpiIds.length} UPI IDs`;
+
+  return maskUpiId(validUpiIds[0]);
+}

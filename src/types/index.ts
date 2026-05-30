@@ -1,5 +1,15 @@
 export type TransactionType = 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed' | 'refund';
 
+export type AccountMatchStatus =
+  | 'unlinked'
+  | 'linked'
+  | 'ambiguous'
+  | 'review_required'
+  | 'ignored'
+  | 'manual_confirmed';
+
+export type AccountMatchConfidence = 'exact' | 'high' | 'medium' | 'low';
+
 export interface Transaction {
   id: string;
   user_id: string;
@@ -20,6 +30,74 @@ export interface Transaction {
   to_account_id?: string | null;
   is_transfer_pending?: boolean | null;
   refund_of_transaction_id?: string | null;
+  account_match_status?: AccountMatchStatus | null;
+  account_match_confidence?: AccountMatchConfidence | null;
+  account_match_reason?: string | null;
+  primary_evidence_id?: string | null;
+}
+
+export type EvidenceSourceType = 'sms' | 'notification' | 'accessibility' | 'manual' | 'imported';
+
+export type EvidenceDirection = 'debit' | 'credit' | 'transfer' | 'unknown';
+
+export type EvidenceInstrumentHint =
+  | 'bank_account'
+  | 'debit_card'
+  | 'credit_card'
+  | 'wallet'
+  | 'loan'
+  | 'unknown';
+
+export type EvidenceConfidenceLevel = 'exact' | 'high' | 'medium' | 'low';
+
+export type EvidenceMatchStatus = 'unlinked' | 'linked' | 'ambiguous' | 'review_required' | 'ignored';
+
+export interface TransactionEvidence {
+  id: string;
+  user_id: string;
+  signal_id: string;
+  transaction_id: string | null;
+  source_type: EvidenceSourceType;
+  source_package: string | null;
+  source_app: string | null;
+  sender: string | null;
+  amount: number | null;
+  direction: EvidenceDirection | null;
+  captured_at: string;
+  reference_number: string | null;
+  merchant_or_person: string | null;
+  bank_name: string | null;
+  account_last4: string | null;
+  card_last4: string | null;
+  instrument_hint: EvidenceInstrumentHint | null;
+  upi_id_masked: string | null;
+  upi_id_hash: string | null;
+  confidence_level: EvidenceConfidenceLevel;
+  match_status: EvidenceMatchStatus;
+  match_reason_code: string | null;
+  raw_source_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountAppMapping {
+  id: string;
+  user_id: string;
+  app_package: string;
+  app_label: string | null;
+  payment_method_hash: string | null;
+  payment_method_masked: string | null;
+  owner_type: 'bank_account' | 'credit_card' | 'debit_card' | 'wallet';
+  owner_id: string;
+  account_last4: string | null;
+  card_last4: string | null;
+  bank_name: string | null;
+  confidence_level: 'medium' | 'low';
+  use_count: number;
+  last_confirmed_at: string | null;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string;
 }
 
 export interface BankAccount {

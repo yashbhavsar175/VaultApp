@@ -984,8 +984,24 @@ export default function Settings() {
           </Text>
 
           <Card>
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]}
+              onPress={() => (navigation as any).navigate('Banks')}
+            >
+              <MaterialCommunityIcons name="credit-card-multiple-outline" size={22} color="#f59e0b" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Cards & Accounts
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  View balances, card dues, and history
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+
             <TouchableOpacity 
-              style={[styles.accountRow, { paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]} 
+              style={[styles.accountRow, { paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]} 
               onPress={() => (navigation as any).navigate('BankConfigScreen')}
             >
               <MaterialCommunityIcons name="bank" size={22} color="#10b981" />

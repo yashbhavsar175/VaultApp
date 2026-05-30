@@ -117,6 +117,14 @@ export function sanitizeBalanceSourceMetadata(
     if (!SAFE_METADATA_KEYS.has(outputKey)) continue;
     if (RAW_TEXT_KEYS.some(rawKey => normalizedKey.includes(rawKey))) continue;
 
+    if (outputKey === 'hash' && typeof value === 'string') {
+      const hash = value.trim().toLowerCase();
+      if (/^[a-f0-9]{8,64}$/.test(hash)) {
+        sanitized[outputKey] = hash;
+      }
+      continue;
+    }
+
     const sanitizedValue = sanitizeMetadataValue(value);
     if (sanitizedValue !== undefined) {
       sanitized[outputKey] = sanitizedValue;

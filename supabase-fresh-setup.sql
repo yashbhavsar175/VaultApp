@@ -111,6 +111,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   is_transfer_pending boolean DEFAULT false,
   refund_of_transaction_id uuid,
   merchant text,
+  account_match_status text DEFAULT 'unlinked',
+  account_match_confidence text,
+  account_match_reason text,
+  primary_evidence_id uuid,
   created_at timestamptz DEFAULT now()
 );
 
@@ -132,6 +136,10 @@ ALTER TABLE transactions
   ADD COLUMN IF NOT EXISTS is_transfer_pending boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS refund_of_transaction_id uuid,
   ADD COLUMN IF NOT EXISTS merchant text,
+  ADD COLUMN IF NOT EXISTS account_match_status text DEFAULT 'unlinked',
+  ADD COLUMN IF NOT EXISTS account_match_confidence text,
+  ADD COLUMN IF NOT EXISTS account_match_reason text,
+  ADD COLUMN IF NOT EXISTS primary_evidence_id uuid,
   ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
 
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_refund_of_transaction_id_fkey;
@@ -184,6 +192,22 @@ ALTER TABLE transactions
   CHECK (
     sms_source IS NULL
     OR sms_source IN ('bank', 'upi', 'sms', 'manual', 'notification', 'voice')
+  );
+
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_account_match_status_check;
+ALTER TABLE transactions
+  ADD CONSTRAINT transactions_account_match_status_check
+  CHECK (
+    account_match_status IS NULL
+    OR account_match_status IN ('unlinked', 'linked', 'ambiguous', 'review_required', 'ignored', 'manual_confirmed')
+  );
+
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_account_match_confidence_check;
+ALTER TABLE transactions
+  ADD CONSTRAINT transactions_account_match_confidence_check
+  CHECK (
+    account_match_confidence IS NULL
+    OR account_match_confidence IN ('exact', 'high', 'medium', 'low')
   );
 
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
@@ -241,6 +265,11 @@ CREATE INDEX IF NOT EXISTS idx_transactions_refund_reference
 CREATE INDEX IF NOT EXISTS idx_transactions_refund_duplicate
   ON transactions(user_id, refund_of_transaction_id, amount, created_at DESC)
   WHERE type = 'refund';
+CREATE INDEX IF NOT EXISTS idx_transactions_account_match_status
+  ON transactions(user_id, account_match_status);
+CREATE INDEX IF NOT EXISTS idx_transactions_primary_evidence
+  ON transactions(user_id, primary_evidence_id)
+  WHERE primary_evidence_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION validate_refund_transaction_link()
 RETURNS trigger AS $$
@@ -291,6 +320,103 @@ UPDATE transactions
 SET account_id = COALESCE(from_account_id, to_account_id)
 WHERE account_id IS NULL
   AND (from_account_id IS NOT NULL OR to_account_id IS NOT NULL);
+
+-- Transaction evidence --------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS transaction_evidence (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  signal_id text NOT NULL,
+  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
+  source_type text NOT NULL CHECK (source_type IN ('sms', 'notification', 'accessibility', 'manual', 'imported')),
+  source_package text,
+  source_app text,
+  sender text,
+  amount numeric,
+  direction text CHECK (direction IS NULL OR direction IN ('debit', 'credit', 'transfer', 'unknown')),
+  captured_at timestamptz NOT NULL DEFAULT now(),
+  reference_number text,
+  merchant_or_person text,
+  bank_name text,
+  account_last4 text CHECK (account_last4 IS NULL OR account_last4 ~ '^[0-9]{4}$'),
+  card_last4 text CHECK (card_last4 IS NULL OR card_last4 ~ '^[0-9]{4}$'),
+  instrument_hint text CHECK (
+    instrument_hint IS NULL
+    OR instrument_hint IN ('bank_account', 'debit_card', 'credit_card', 'wallet', 'loan', 'unknown')
+  ),
+  upi_id_masked text,
+  upi_id_hash text,
+  confidence_level text NOT NULL DEFAULT 'low' CHECK (confidence_level IN ('exact', 'high', 'medium', 'low')),
+  match_status text NOT NULL DEFAULT 'unlinked' CHECK (
+    match_status IN ('unlinked', 'linked', 'ambiguous', 'review_required', 'ignored')
+  ),
+  match_reason_code text,
+  raw_source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON COLUMN transaction_evidence.raw_source_metadata IS
+  'Redacted metadata only. Allowed examples: len/length, hash, source, sender, package, kind, reasons, parserVersion. Never raw SMS, notification body, OTP, phone, address, full account/card number, raw UPI ID, or raw payload JSON.';
+COMMENT ON COLUMN transaction_evidence.upi_id_masked IS
+  'Masked UPI ID only, for example yash***@oksbi or ****@ybl. Do not store a full raw UPI ID here.';
+COMMENT ON COLUMN transaction_evidence.account_last4 IS
+  'Last four digits only. Do not store full account numbers.';
+COMMENT ON COLUMN transaction_evidence.card_last4 IS
+  'Last four digits only. Do not store full card numbers.';
+
+ALTER TABLE transaction_evidence ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own transaction evidence" ON transaction_evidence;
+CREATE POLICY "Users manage own transaction evidence"
+  ON transaction_evidence FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transaction_evidence_user_signal
+  ON transaction_evidence(user_id, signal_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_transaction
+  ON transaction_evidence(user_id, transaction_id)
+  WHERE transaction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_reference
+  ON transaction_evidence(user_id, reference_number)
+  WHERE reference_number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_amount_captured
+  ON transaction_evidence(user_id, amount, captured_at);
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_account_last4
+  ON transaction_evidence(user_id, account_last4)
+  WHERE account_last4 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_card_last4
+  ON transaction_evidence(user_id, card_last4)
+  WHERE card_last4 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_match_status
+  ON transaction_evidence(user_id, match_status);
+CREATE INDEX IF NOT EXISTS idx_transaction_evidence_source_package_captured
+  ON transaction_evidence(user_id, source_package, captured_at DESC)
+  WHERE source_package IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION set_transaction_evidence_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_set_transaction_evidence_updated_at ON transaction_evidence;
+CREATE TRIGGER trigger_set_transaction_evidence_updated_at
+  BEFORE UPDATE ON transaction_evidence
+  FOR EACH ROW
+  EXECUTE FUNCTION set_transaction_evidence_updated_at();
+
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_primary_evidence_id_fkey;
+ALTER TABLE transactions
+  ADD CONSTRAINT transactions_primary_evidence_id_fkey
+  FOREIGN KEY (primary_evidence_id) REFERENCES transaction_evidence(id) ON DELETE SET NULL NOT VALID;
 
 -- User identifiers ------------------------------------------------------------
 
@@ -824,6 +950,133 @@ CREATE TRIGGER trigger_validate_debit_card_bank_account_owner
   BEFORE INSERT OR UPDATE ON debit_cards
   FOR EACH ROW
   EXECUTE FUNCTION validate_debit_card_bank_account_owner();
+
+-- Account app mappings --------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS account_app_mappings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  app_package text NOT NULL,
+  app_label text,
+  payment_method_hash text,
+  payment_method_masked text,
+  owner_type text NOT NULL CHECK (owner_type IN ('bank_account', 'credit_card', 'debit_card', 'wallet')),
+  owner_id uuid NOT NULL,
+  account_last4 text CHECK (account_last4 IS NULL OR account_last4 ~ '^[0-9]{4}$'),
+  card_last4 text CHECK (card_last4 IS NULL OR card_last4 ~ '^[0-9]{4}$'),
+  bank_name text,
+  confidence_level text NOT NULL DEFAULT 'medium' CHECK (confidence_level IN ('medium', 'low')),
+  use_count integer NOT NULL DEFAULT 0 CHECK (use_count >= 0),
+  last_confirmed_at timestamptz,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE account_app_mappings IS
+  'User-confirmed payment app mappings. Medium/low confidence hint only; never overrides bank SMS evidence.';
+COMMENT ON COLUMN account_app_mappings.payment_method_masked IS
+  'Masked payment method only. Do not store raw UPI IDs or full account/card numbers.';
+COMMENT ON COLUMN account_app_mappings.payment_method_hash IS
+  'Hash of the payment method token. Do not store raw UPI IDs here.';
+
+ALTER TABLE account_app_mappings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own account app mappings" ON account_app_mappings;
+CREATE POLICY "Users manage own account app mappings"
+  ON account_app_mappings FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_account_app_mappings_package_status
+  ON account_app_mappings(user_id, app_package, status);
+CREATE INDEX IF NOT EXISTS idx_account_app_mappings_payment_hash
+  ON account_app_mappings(user_id, payment_method_hash)
+  WHERE payment_method_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_account_app_mappings_owner
+  ON account_app_mappings(user_id, owner_type, owner_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_app_mappings_active_unique
+  ON account_app_mappings(
+    user_id,
+    app_package,
+    COALESCE(payment_method_hash, '__none__'),
+    owner_type,
+    owner_id
+  )
+  WHERE status = 'active';
+
+CREATE OR REPLACE FUNCTION validate_account_app_mapping_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NEW.owner_type = 'bank_account' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM bank_accounts
+      WHERE id = NEW.owner_id
+        AND user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Mapped bank account must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  ELSIF NEW.owner_type = 'credit_card' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM credit_cards
+      WHERE id = NEW.owner_id
+        AND user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Mapped credit card must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  ELSIF NEW.owner_type = 'debit_card' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM debit_cards
+      WHERE id = NEW.owner_id
+        AND user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Mapped debit card must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  ELSIF NEW.owner_type = 'wallet' THEN
+    RAISE EXCEPTION 'Wallet mappings are not supported until a wallet owner table exists'
+      USING ERRCODE = '0A000';
+  ELSE
+    RAISE EXCEPTION 'Unsupported mapping owner type'
+      USING ERRCODE = '22023';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_account_app_mapping_owner ON account_app_mappings;
+CREATE TRIGGER trigger_validate_account_app_mapping_owner
+  BEFORE INSERT OR UPDATE ON account_app_mappings
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_account_app_mapping_owner();
+
+CREATE OR REPLACE FUNCTION set_account_app_mapping_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_set_account_app_mapping_updated_at ON account_app_mappings;
+CREATE TRIGGER trigger_set_account_app_mapping_updated_at
+  BEFORE UPDATE ON account_app_mappings
+  FOR EACH ROW
+  EXECUTE FUNCTION set_account_app_mapping_updated_at();
 
 -- Detected accounts ----------------------------------------------------------
 

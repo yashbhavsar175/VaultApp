@@ -16,15 +16,22 @@ import Toast from 'react-native-toast-message';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card } from '../../components';
 import BalanceCorrectionModal, { BalanceCorrectionKindOption } from '../../components/BalanceCorrectionModal';
+import BalanceHistoryModal from '../../components/BalanceHistoryModal';
 import { getBankAccounts, addBankAccount, updateBankAccount, deleteBankAccount } from '../../lib/database/financial';
 import { getAllBankNames } from '../../lib/services/smsParser';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
+import { formatCurrencyDisplay } from '../../utils/format';
+import { formatUpiIdsForDisplay } from '../../utils/upi';
 import {
   BankAccountBalanceView,
+  BankAccountDetailView,
   getAccountBalanceViewModels,
+  getBalanceFreshnessLabel,
+  getBalanceKindLabel,
   getBalanceConfidenceLabel,
   getBalanceSourceLabel,
+  getBankAccountDetailView,
   getPendingDetectedBalanceSummary,
   PendingDetectedBalanceSummary,
 } from '../../lib/services/balanceViewModel';
@@ -52,8 +59,10 @@ const emptyPendingDetectedSummary: PendingDetectedBalanceSummary = {
   loan: 0,
 };
 
+const ACCOUNT_ACTION_SIZE = 44;
+
 function formatBalanceUpdatedAt(lastUpdated: string | null): string {
-  if (!lastUpdated) return 'Calculated balance';
+  if (!lastUpdated) return 'No update yet';
 
   const updatedAt = new Date(lastUpdated).getTime();
   if (!Number.isFinite(updatedAt)) return 'Updated recently';
@@ -130,6 +139,9 @@ export default function BankConfigScreen() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingAccount, setEditingAccount] = useState<BankAccount | null>(null);
   const [correctionTarget, setCorrectionTarget] = useState<CorrectionTarget | null>(null);
+  const [historyAccount, setHistoryAccount] = useState<BankAccount | null>(null);
+  const [historyDetail, setHistoryDetail] = useState<BankAccountDetailView | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   
   // Form state
   const [bankName, setBankName] = useState('');
@@ -381,6 +393,38 @@ export default function BankConfigScreen() {
     });
   };
 
+  const openBalanceHistory = async (account: BankAccount) => {
+    setHistoryAccount(account);
+    setHistoryDetail(null);
+    setHistoryLoading(true);
+    try {
+      setHistoryDetail(await getBankAccountDetailView(account.id));
+    } catch (error) {
+      console.warn('[Balances] Failed to load balance history', {
+        message: error instanceof Error ? error.message : 'unknown_error',
+      });
+      Toast.show({
+        type: 'error',
+        text1: 'Could not load balance history',
+      });
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const closeBalanceHistory = () => {
+    setHistoryAccount(null);
+    setHistoryDetail(null);
+    setHistoryLoading(false);
+  };
+
+  const openCorrectionFromHistory = () => {
+    if (!historyAccount) return;
+    const target = correctionTargetForAccount(historyAccount);
+    closeBalanceHistory();
+    setCorrectionTarget(target);
+  };
+
   const selectBank = (bank: string) => {
     setBankName(bank);
     setShowBankSearch(false);
@@ -453,21 +497,36 @@ export default function BankConfigScreen() {
               <TouchableOpacity
                 onPress={() => (navigation as any).navigate('DetectedAccountsScreen')}
                 accessibilityLabel="Review detected accounts"
+                accessibilityRole="button"
                 style={{
-                alignSelf: 'flex-start',
-                flexDirection: 'row',
-                alignItems: 'center',
-                backgroundColor: colors.accent + '14',
-                borderRadius: 999,
-                paddingHorizontal: spacing.md,
-                paddingVertical: spacing.xs,
-                marginBottom: spacing.md,
-              }}>
-                <MaterialCommunityIcons name="radar" size={14} color={colors.accent} />
-                <Text style={[typography.caption, { color: colors.accent, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                  minHeight: 48,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: colors.accent + '12',
+                  borderColor: colors.accent + '30',
+                  borderWidth: 1,
+                  borderRadius: 14,
+                  paddingHorizontal: spacing.md,
+                  paddingVertical: spacing.sm,
+                  marginBottom: spacing.lg,
+                }}>
+                <View style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: colors.accent + '18',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginRight: spacing.sm,
+                }}>
+                  <MaterialCommunityIcons name="radar" size={18} color={colors.accent} />
+                </View>
+                <Text
+                  numberOfLines={1}
+                  style={[typography.bodyBold, { color: colors.accent, flex: 1, fontSize: 14 }]}>
                   {pendingDetectedSummary.total} detected {pendingDetectedSummary.total === 1 ? 'account needs' : 'accounts need'} review
                 </Text>
-                <MaterialCommunityIcons name="chevron-right" size={14} color={colors.accent} style={{ marginLeft: spacing.xs }} />
+                <MaterialCommunityIcons name="chevron-right" size={20} color={colors.accent} style={{ marginLeft: spacing.sm }} />
               </TouchableOpacity>
             )}
             <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
@@ -483,9 +542,10 @@ export default function BankConfigScreen() {
               const confidenceLabel = balanceView?.confidenceLabel ?? getBalanceConfidenceLabel('estimated');
               const freshnessLabel = formatBalanceUpdatedAt(balanceView?.lastUpdated ?? null);
               const freshnessColor = balanceView?.staleWarning ? '#f59e0b' : colors.subtext;
-              
+              const upiDisplay = formatUpiIdsForDisplay(account.upi_ids);
+
               return (
-                <Card key={account.id} style={{ marginBottom: spacing.md, padding: spacing.md }}>
+                <Card key={account.id} style={{ marginBottom: spacing.lg, padding: spacing.lg }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
                     <View style={{
                       width: 48,
@@ -498,112 +558,132 @@ export default function BankConfigScreen() {
                       <MaterialCommunityIcons name={iconName} size={24} color={iconColor} />
                     </View>
                     
-                    <View style={{ flex: 1, marginLeft: spacing.md }}>
-                      <Text style={[typography.bodyBold, { color: colors.text, fontSize: 16 }]}>
+                    <View style={{ flex: 1, marginLeft: spacing.md, minWidth: 0 }}>
+                      <Text
+                        numberOfLines={1}
+                        style={[typography.bodyBold, { color: colors.text, fontSize: 17 }]}>
                         {account.bank_name}
                       </Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                        <View style={{
-                          backgroundColor: iconColor + '15',
-                          paddingHorizontal: 8,
-                          paddingVertical: 2,
-                          borderRadius: 6,
-                        }}>
-                          <Text style={[typography.caption, { color: iconColor, fontSize: 10, fontWeight: '600' }]}>
-                            {account.account_type === 'credit_card' ? 'CREDIT CARD' : 
-                             account.account_type === 'current' ? 'CURRENT' :
-                             account.account_type === 'loan' ? 'LOAN' : 'SAVINGS'}
-                          </Text>
-                        </View>
-                        <Text style={[typography.caption, { color: colors.subtext, marginLeft: 8 }]}>
-                          •••• {account.account_last4}
-                        </Text>
-                      </View>
+                      <Text
+                        numberOfLines={1}
+                        style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 12 }]}>
+                        {account.account_type === 'credit_card' ? 'Credit card' :
+                         account.account_type === 'current' ? 'Current account' :
+                         account.account_type === 'loan' ? 'Loan account' : 'Savings account'} · •••• {account.account_last4}
+                      </Text>
                       
-                      {account.upi_ids && account.upi_ids.length > 0 && (
+                      {!!upiDisplay && (
                         <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
                           <MaterialCommunityIcons name="qrcode" size={14} color={colors.accent} />
-                          <Text style={[typography.caption, { color: colors.accent, marginLeft: 4, fontSize: 11 }]}>
-                            {account.upi_ids.join(', ')}
+                          <Text
+                            numberOfLines={1}
+                            style={[typography.caption, { color: colors.accent, marginLeft: 4, fontSize: 11, flexShrink: 1 }]}>
+                            {upiDisplay}
                           </Text>
                         </View>
                       )}
                       
                       {account.account_type === 'credit_card' && account.credit_limit && (
                         <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
-                          Limit: ₹{account.credit_limit.toLocaleString('en-IN')}
+                          Limit: {formatCurrencyDisplay(account.credit_limit)}
                         </Text>
                       )}
 
-                      <View style={{ marginTop: spacing.sm }}>
+                      <View style={{ marginTop: spacing.md }}>
                         <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
                           {account.account_type === 'loan' ? 'Outstanding' : isCredit ? 'Balance' : 'Latest Balance'}
                         </Text>
-                        <Text style={[typography.bodyBold, { color: colors.text, fontSize: 18, marginTop: 2 }]}>
-                          ₹{displayBalance.toLocaleString('en-IN')}
+                        <Text
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.78}
+                          style={[typography.h3, { color: colors.text, fontSize: 24, lineHeight: 30, marginTop: 2 }]}>
+                          {formatCurrencyDisplay(displayBalance)}
                         </Text>
-                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-                          <View style={{
-                            backgroundColor: colors.accent + '15',
-                            borderRadius: 999,
-                            paddingHorizontal: 8,
-                            paddingVertical: 3,
-                          }}>
-                            <Text style={[typography.caption, { color: colors.accent, fontSize: 10, fontWeight: '700' }]}>
-                              {sourceLabel}
-                            </Text>
-                          </View>
-                          <View style={{
-                            backgroundColor: (balanceView?.confidence === 'exact' ? '#10b981' : '#f59e0b') + '15',
-                            borderRadius: 999,
-                            paddingHorizontal: 8,
-                            paddingVertical: 3,
-                          }}>
-                            <Text style={[typography.caption, {
-                              color: balanceView?.confidence === 'exact' ? '#10b981' : '#f59e0b',
-                              fontSize: 10,
-                              fontWeight: '700',
-                            }]}>
-                              {confidenceLabel}
-                            </Text>
-                          </View>
-                        </View>
-                        <Text style={[typography.caption, { color: freshnessColor, marginTop: 4, fontSize: 11 }]}>
-                          {freshnessLabel}
+                        <Text
+                          numberOfLines={1}
+                          style={[typography.caption, { color: freshnessColor, marginTop: 6, fontSize: 12 }]}>
+                          {sourceLabel} · {confidenceLabel} · {freshnessLabel}
                         </Text>
                       </View>
                     </View>
-                    
-                    <View style={{ flexDirection: 'row', gap: 8, marginLeft: spacing.sm }}>
+                  </View>
+
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: spacing.sm,
+                    marginTop: spacing.md,
+                    paddingTop: spacing.md,
+                    borderTopWidth: 1,
+                    borderTopColor: colors.border,
+                  }}>
+                      <TouchableOpacity
+                        onPress={() => openBalanceHistory(account)}
+                        accessibilityLabel="View balance history"
+                        accessibilityRole="button"
+                        style={{
+                          minHeight: ACCOUNT_ACTION_SIZE,
+                          flex: 1,
+                          backgroundColor: colors.accent + '12',
+                          borderRadius: 12,
+                          paddingHorizontal: spacing.sm,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}>
+                        <MaterialCommunityIcons name="history" size={18} color={colors.accent} />
+                        <Text numberOfLines={1} style={[typography.caption, { color: colors.accent, marginLeft: spacing.xs, fontWeight: '700' }]}>
+                          History
+                        </Text>
+                      </TouchableOpacity>
                       <TouchableOpacity
                         onPress={() => setCorrectionTarget(correctionTargetForAccount(account))}
                         accessibilityLabel="Update balance"
+                        accessibilityRole="button"
                         style={{
+                          minHeight: ACCOUNT_ACTION_SIZE,
+                          flex: 1,
                           backgroundColor: '#10b981' + '15',
-                          borderRadius: 8,
-                          padding: 10,
+                          borderRadius: 12,
+                          paddingHorizontal: spacing.sm,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
                         }}>
                         <MaterialCommunityIcons name="wallet-plus-outline" size={18} color="#10b981" />
+                        <Text numberOfLines={1} style={[typography.caption, { color: '#10b981', marginLeft: spacing.xs, fontWeight: '700' }]}>
+                          Update
+                        </Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         onPress={() => openEditModal(account)}
+                        accessibilityLabel="Edit account"
+                        accessibilityRole="button"
                         style={{
+                          width: ACCOUNT_ACTION_SIZE,
+                          minHeight: ACCOUNT_ACTION_SIZE,
                           backgroundColor: colors.accent + '15',
-                          borderRadius: 8,
-                          padding: 10,
+                          borderRadius: 12,
+                          alignItems: 'center',
+                          justifyContent: 'center',
                         }}>
                         <MaterialCommunityIcons name="pencil" size={18} color={colors.accent} />
                       </TouchableOpacity>
                       <TouchableOpacity
                         onPress={() => handleDelete(account)}
+                        accessibilityLabel="Delete account"
+                        accessibilityRole="button"
                         style={{
-                          backgroundColor: '#ef4444' + '15',
-                          borderRadius: 8,
-                          padding: 10,
+                          width: ACCOUNT_ACTION_SIZE,
+                          minHeight: ACCOUNT_ACTION_SIZE,
+                          backgroundColor: '#ef4444' + '10',
+                          borderRadius: 12,
+                          alignItems: 'center',
+                          justifyContent: 'center',
                         }}>
                         <MaterialCommunityIcons name="delete" size={18} color="#ef4444" />
                       </TouchableOpacity>
-                    </View>
                   </View>
                 </Card>
               );
@@ -807,6 +887,29 @@ export default function BankConfigScreen() {
           defaultKind={correctionTarget.defaultKind}
           onClose={() => setCorrectionTarget(null)}
           onSaved={handleCorrectionSaved}
+        />
+      )}
+
+      {historyAccount && (
+        <BalanceHistoryModal
+          visible={Boolean(historyAccount)}
+          title={historyAccount.bank_name}
+          subtitle={`${historyAccount.account_type === 'current' ? 'Current' : historyAccount.account_type === 'loan' ? 'Loan' : historyAccount.account_type === 'credit_card' ? 'Credit Card' : 'Savings'} •••• ${historyAccount.account_last4}`}
+          balanceLabel={historyAccount.account_type === 'loan' ? 'Outstanding' : historyAccount.account_type === 'credit_card' ? 'Balance' : 'Current displayed balance'}
+          balanceAmount={historyDetail?.displayBalance ?? balanceViews[historyAccount.id]?.displayBalance ?? historyAccount.balance ?? historyAccount.starting_balance ?? 0}
+          balanceKindLabel={historyDetail ? getBalanceKindLabel(historyDetail.balanceKind) : getBalanceKindLabel(balanceViews[historyAccount.id]?.balanceKind || 'current_balance')}
+          sourceLabel={historyDetail?.sourceLabel ?? balanceViews[historyAccount.id]?.sourceLabel ?? getBalanceSourceLabel('calculated')}
+          confidenceLabel={historyDetail?.confidenceLabel ?? balanceViews[historyAccount.id]?.confidenceLabel ?? getBalanceConfidenceLabel('estimated')}
+          freshnessLabel={historyDetail?.lastUpdated ? getBalanceFreshnessLabel(historyDetail.lastUpdated) : formatBalanceUpdatedAt(balanceViews[historyAccount.id]?.lastUpdated ?? null)}
+          loading={historyLoading}
+          history={historyDetail?.history ?? []}
+          metrics={[
+            { label: 'Type', value: historyAccount.account_type === 'current' ? 'Current' : historyAccount.account_type === 'loan' ? 'Loan' : historyAccount.account_type === 'credit_card' ? 'Credit Card' : 'Savings' },
+            { label: 'Starting', value: formatCurrencyDisplay(historyAccount.starting_balance ?? 0) },
+          ]}
+          emptyFallbackLabel="No balance history yet"
+          onClose={closeBalanceHistory}
+          onUpdateBalance={openCorrectionFromHistory}
         />
       )}
 

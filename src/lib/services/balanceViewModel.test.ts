@@ -1,5 +1,8 @@
 import {
   buildAccountBalanceViewModelsForRows,
+  buildBalanceHistoryViewForRows,
+  buildBankAccountDetailViewForRows,
+  buildCreditCardDetailViewForRows,
   buildCreditCardBalanceViewModelsForRows,
   selectBestBalanceSnapshot,
   summarizePendingDetectedAccounts,
@@ -24,7 +27,7 @@ function snapshot(overrides: Partial<BalanceSnapshot>): BalanceSnapshot {
     detected_at: overrides.detected_at || '2026-05-28T10:00:00.000Z',
     source_sender_or_package: null,
     raw_source_metadata: overrides.raw_source_metadata || {},
-    note: null,
+    note: overrides.note ?? null,
     created_at: overrides.created_at || overrides.detected_at || '2026-05-28T10:00:00.000Z',
   };
 }
@@ -132,6 +135,114 @@ describe('balance view model', () => {
       sourceLabel: 'Manual',
       confidenceLabel: 'Exact',
     }));
+  });
+
+  it('builds newest-first balance history without raw metadata exposure', () => {
+    const view = buildBalanceHistoryViewForRows('bank_account', 'bank_1', [
+      snapshot({
+        id: 'older',
+        owner_id: 'bank_1',
+        amount: 1000,
+        detected_at: '2026-05-28T10:00:00.000Z',
+        raw_source_metadata: { body: 'raw sms should not appear' },
+        note: 'raw sms leaked 123456',
+      }),
+      snapshot({
+        id: 'newer',
+        owner_id: 'bank_1',
+        amount: 1200,
+        source: 'manual',
+        detected_at: '2026-05-29T10:00:00.000Z',
+        note: 'Verified in app',
+      }),
+    ]);
+
+    expect(view.items.map(item => item.id)).toEqual(['newer', 'older']);
+    expect(view.items[0]).toEqual(expect.objectContaining({
+      balanceKind: 'available_balance',
+      balanceKindLabel: 'Available',
+      sourceLabel: 'Manual',
+      confidenceLabel: 'Exact',
+      noteSafe: 'Verified in app',
+    }));
+    expect(view.items[1].noteSafe).toBeNull();
+    expect(JSON.stringify(view)).not.toContain('raw_source_metadata');
+    expect(JSON.stringify(view)).not.toContain('raw sms should not appear');
+  });
+
+  it('filters older unsafe note shapes from balance history', () => {
+    const view = buildBalanceHistoryViewForRows('bank_account', 'bank_1', [
+      snapshot({
+        id: 'payload_json',
+        owner_id: 'bank_1',
+        note: 'payload JSON: {"body":"debited at merchant"}',
+      }),
+      snapshot({
+        id: 'notification_text',
+        owner_id: 'bank_1',
+        note: 'Notification message from bank app',
+      }),
+      snapshot({
+        id: 'safe_note',
+        owner_id: 'bank_1',
+        note: 'Verified in app',
+      }),
+    ]);
+
+    expect(view.items.find(item => item.id === 'payload_json')?.noteSafe).toBeNull();
+    expect(view.items.find(item => item.id === 'notification_text')?.noteSafe).toBeNull();
+    expect(view.items.find(item => item.id === 'safe_note')?.noteSafe).toBe('Verified in app');
+    expect(JSON.stringify(view)).not.toMatch(/payload JSON|Notification message|debited at merchant/i);
+  });
+
+  it('returns an empty history view safely', () => {
+    const view = buildBalanceHistoryViewForRows('bank_account', 'bank_1', []);
+
+    expect(view).toEqual({
+      ownerType: 'bank_account',
+      ownerId: 'bank_1',
+      items: [],
+      hasHistory: false,
+    });
+  });
+
+  it('includes latest balance and history in bank account detail', () => {
+    const detail = buildBankAccountDetailViewForRows(
+      bankAccount,
+      [
+        snapshot({
+          id: 'sms',
+          owner_id: 'bank_1',
+          amount: 2500,
+          source: 'sms',
+        }),
+        snapshot({
+          id: 'manual',
+          owner_id: 'bank_1',
+          amount: 3000,
+          source: 'manual',
+          detected_at: '2026-05-29T10:00:00.000Z',
+        }),
+      ],
+      [
+        snapshot({
+          id: 'manual',
+          owner_id: 'bank_1',
+          amount: 3000,
+          source: 'manual',
+          detected_at: '2026-05-29T10:00:00.000Z',
+        }),
+      ]
+    );
+
+    expect(detail).toEqual(expect.objectContaining({
+      accountId: 'bank_1',
+      displayBalance: 3000,
+      source: 'manual',
+      confidence: 'exact',
+      hasHistory: true,
+    }));
+    expect(detail.history).toHaveLength(1);
   });
 
   it('uses newer exact SMS over older exact SMS', () => {
@@ -314,6 +425,36 @@ describe('balance view model', () => {
     }));
   });
 
+  it('keeps credit card source chips tied to the displayed outstanding amount', () => {
+    const views = buildCreditCardBalanceViewModelsForRows([creditCard], [
+      snapshot({
+        id: 'sms_outstanding',
+        owner_type: 'credit_card',
+        owner_id: 'card_1',
+        balance_kind: 'outstanding',
+        amount: 2468.12,
+        source: 'sms',
+      }),
+      snapshot({
+        id: 'manual_minimum_due',
+        owner_type: 'credit_card',
+        owner_id: 'card_1',
+        balance_kind: 'minimum_due',
+        amount: 321,
+        source: 'manual',
+      }),
+    ]);
+
+    expect(views[0]).toEqual(expect.objectContaining({
+      outstanding: 2468.12,
+      minimumDue: 321,
+      source: 'sms',
+      confidence: 'exact',
+      sourceLabel: 'SMS',
+      confidenceLabel: 'Exact',
+    }));
+  });
+
   it('uses manual exact loan outstanding snapshots for loan accounts', () => {
     const loanAccount: BankAccount = {
       ...bankAccount,
@@ -435,6 +576,92 @@ describe('balance view model', () => {
     }));
     expect(serialized).not.toContain('raw_source_metadata');
     expect(serialized).not.toContain('raw sms');
+  });
+
+  it('includes credit card outstanding, limit, due, minimum due, and history groups', () => {
+    const detail = buildCreditCardDetailViewForRows(
+      creditCard,
+      [
+        snapshot({
+          id: 'outstanding',
+          owner_type: 'credit_card',
+          owner_id: 'card_1',
+          balance_kind: 'outstanding',
+          amount: 8000,
+          source: 'sms',
+        }),
+        snapshot({
+          id: 'limit',
+          owner_type: 'credit_card',
+          owner_id: 'card_1',
+          balance_kind: 'credit_limit',
+          amount: 40000,
+          source: 'sms',
+        }),
+        snapshot({
+          id: 'due',
+          owner_type: 'credit_card',
+          owner_id: 'card_1',
+          balance_kind: 'due_amount',
+          amount: 1200,
+          source: 'sms',
+        }),
+        snapshot({
+          id: 'minimum_due',
+          owner_type: 'credit_card',
+          owner_id: 'card_1',
+          balance_kind: 'minimum_due',
+          amount: 300,
+          source: 'sms',
+        }),
+      ],
+      [],
+      [
+        snapshot({
+          id: 'outstanding',
+          owner_type: 'credit_card',
+          owner_id: 'card_1',
+          balance_kind: 'outstanding',
+          amount: 8000,
+          source: 'sms',
+        }),
+        snapshot({
+          id: 'minimum_due',
+          owner_type: 'credit_card',
+          owner_id: 'card_1',
+          balance_kind: 'minimum_due',
+          amount: 300,
+          source: 'sms',
+        }),
+      ]
+    );
+
+    expect(detail).toEqual(expect.objectContaining({
+      outstanding: 8000,
+      creditLimit: 40000,
+      dueAmount: 1200,
+      minimumDue: 300,
+      utilizationPercent: 20,
+    }));
+    expect(detail.historyByKind.outstanding?.[0].amount).toBe(8000);
+    expect(detail.historyByKind.minimum_due?.[0].balanceKindLabel).toBe('Minimum Due');
+  });
+
+  it('keeps credit card detail safe when limit is zero and history is empty', () => {
+    const zeroLimitCard: CreditCard = {
+      ...creditCard,
+      credit_limit: 0,
+      current_outstanding: 900,
+    };
+    const detail = buildCreditCardDetailViewForRows(zeroLimitCard, [], [], []);
+
+    expect(detail).toEqual(expect.objectContaining({
+      creditLimit: 0,
+      availableLimit: 0,
+      utilizationPercent: 0,
+      history: [],
+      historyByKind: {},
+    }));
   });
 
   it('summarizes pending detected accounts by type', () => {

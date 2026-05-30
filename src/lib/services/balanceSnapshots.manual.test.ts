@@ -3,6 +3,7 @@ import {
   buildManualBalanceCorrectionSnapshotInput,
   createManualBalanceCorrectionSnapshot,
   parseManualBalanceCorrectionAmount,
+  sanitizeBalanceSourceMetadata,
 } from './balanceSnapshots';
 
 jest.mock('../core', () => ({
@@ -220,6 +221,19 @@ describe('manual balance correction snapshots', () => {
       kind: 'balance_correction',
     });
     expect(JSON.stringify(inserts.balance_snapshots[0])).not.toContain('123456789012');
+  });
+
+  it('preserves safe redacted hashes even when they are numeric-looking', () => {
+    expect(sanitizeBalanceSourceMetadata({
+      hash: '26212621',
+      len: 116,
+      source: 'sms',
+      raw_sms: 'Full raw SMS should be dropped',
+    })).toEqual({
+      hash: '26212621',
+      len: 116,
+      source: 'sms',
+    });
   });
 
   it.each(['', 'abc', '-1', '12.345'])('blocks invalid manual amount input: %s', (value) => {

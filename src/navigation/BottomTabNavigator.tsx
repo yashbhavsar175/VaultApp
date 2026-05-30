@@ -20,7 +20,7 @@ type TabIconProps = {
 };
 
 const HIDDEN_DASHBOARD_TAB_SCREENS = ['Transactions', 'TransactionDetail', 'Banks', 'Analytics', 'DetectedAccountsScreen'];
-const HIDDEN_SETTINGS_TAB_SCREENS = ['BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'Places', 'PorterTest'];
+const HIDDEN_SETTINGS_TAB_SCREENS = ['Banks', 'BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'Places', 'PorterTest'];
 
 function TabBarButton(props: any) {
   // Strip null values from navigation props — TouchableOpacity only accepts undefined

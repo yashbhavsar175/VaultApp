@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -89,6 +89,14 @@ export default function DetectedAccountsScreen() {
   const [billingCycleDate, setBillingCycleDate] = useState('1');
   const [linkedBankAccountId, setLinkedBankAccountId] = useState('');
   const [debitCardLabel, setDebitCardLabel] = useState('');
+  const actionInFlightRef = useRef(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    };
+  }, []);
 
   const loadData = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
@@ -142,11 +150,7 @@ export default function DetectedAccountsScreen() {
     setAccountType(inferAccountTypeHint(detection.account_type_hint));
     setCardLast4(cardDigits);
     setCardName(displayBankName && cardDigits ? `${displayBankName} card ${cardDigits}` : 'Detected card');
-    setCreditLimit(
-      detection.balance_kind === 'credit_limit' && detection.confidence === 'exact' && detection.balance_amount !== null
-        ? String(detection.balance_amount)
-        : ''
-    );
+    setCreditLimit('');
     setDueDate('1');
     setBillingCycleDate('1');
     setDebitCardLabel(cardDigits ? `Debit card ${cardDigits}` : '');
@@ -164,7 +168,18 @@ export default function DetectedAccountsScreen() {
     setEditor(null);
   };
 
+  const showConfirmDialogAfterModalClose = (dialog: ConfirmDialogState, closeCurrentModal?: () => void) => {
+    closeCurrentModal?.();
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    confirmTimerRef.current = setTimeout(() => {
+      confirmTimerRef.current = null;
+      setConfirmDialog(dialog);
+    }, 0);
+  };
+
   const runAction = async (action: () => Promise<unknown>, successMessage: string) => {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
     setWorking(true);
     try {
       await action();
@@ -181,6 +196,7 @@ export default function DetectedAccountsScreen() {
         text2: shortErrorMessage(error),
       });
     } finally {
+      actionInFlightRef.current = false;
       setWorking(false);
     }
   };
@@ -190,7 +206,7 @@ export default function DetectedAccountsScreen() {
 
     const detection = editor.detection;
     if (editor.kind === 'bank_account') {
-      setConfirmDialog({
+      showConfirmDialogAfterModalClose({
         title: 'Create bank account?',
         message: `Create ${bankName || 'this bank account'} ending ${accountLast4 || '----'} from this detection? No transaction will be created.`,
         confirmText: 'Create',
@@ -203,12 +219,12 @@ export default function DetectedAccountsScreen() {
           }),
           'Bank account confirmed'
         ),
-      });
+      }, () => setEditor(null));
       return;
     }
 
     if (editor.kind === 'credit_card') {
-      setConfirmDialog({
+      showConfirmDialogAfterModalClose({
         title: 'Create credit card?',
         message: `Create ${cardName || 'this credit card'} ending ${cardLast4 || '----'} from this detection? No card transaction will be created.`,
         confirmText: 'Create',
@@ -224,11 +240,11 @@ export default function DetectedAccountsScreen() {
           }),
           'Credit card confirmed'
         ),
-      });
+      }, () => setEditor(null));
       return;
     }
 
-    setConfirmDialog({
+    showConfirmDialogAfterModalClose({
       title: 'Create debit card?',
       message: `Link debit card ending ${cardLast4 || '----'} to the selected bank account? No transaction will be created.`,
       confirmText: 'Link',
@@ -241,11 +257,11 @@ export default function DetectedAccountsScreen() {
         }),
         'Debit card linked'
       ),
-    });
+    }, () => setEditor(null));
   };
 
   const requestMerge = (detection: DetectedAccount, owner: ExistingOwnerOption) => {
-    setConfirmDialog({
+    showConfirmDialogAfterModalClose({
       title: 'Link detection?',
       message: `Link this detection to ${owner.label}? No account, card, or transaction will be created.`,
       confirmText: 'Link',
@@ -257,7 +273,7 @@ export default function DetectedAccountsScreen() {
         }),
         'Detection linked'
       ),
-    });
+    }, () => setMergeDetection(null));
   };
 
   const requestIgnore = (detection: DetectedAccount) => {

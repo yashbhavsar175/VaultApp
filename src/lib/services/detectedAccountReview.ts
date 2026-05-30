@@ -8,10 +8,7 @@ import {
   DebitCard,
   DetectedAccount,
 } from '../../types';
-import {
-  buildBalanceSnapshotInsert,
-  normalizeLast4,
-} from './balanceSnapshots';
+import { normalizeLast4 } from './balanceSnapshots';
 import { getDebitCards } from './debitCards';
 import { getPendingDetectedAccounts } from './detectedAccounts';
 import { CACHE_KEYS, removeCache } from './cache';
@@ -148,9 +145,11 @@ function safeLast4(value?: string | null): string | null {
 }
 
 function requireLast4(value: string, label: string): string {
-  const last4 = safeLast4(value);
-  if (!last4) throw new Error(`${label} last4 must be exactly four digits`);
-  return last4;
+  const trimmed = value.trim();
+  if (!/^[0-9]{4}$/.test(trimmed)) {
+    throw new Error(`${label} last4 must be exactly four digits`);
+  }
+  return trimmed;
 }
 
 function requireBankName(value: string): string {
@@ -417,54 +416,6 @@ export async function getDetectedAccountReviewData(): Promise<DetectedAccountRev
   };
 }
 
-async function getPendingDetection(userId: string, id: string): Promise<DetectedAccount> {
-  const { data, error } = await supabase
-    .from('detected_accounts')
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', userId)
-    .eq('status', 'pending')
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data?.id) throw new Error('Detection is no longer pending');
-  return data as DetectedAccount;
-}
-
-function ensureDetectionType(
-  detection: DetectedAccount,
-  expectedType: DetectedAccount['detection_type']
-): void {
-  if (detection.detection_type !== expectedType) {
-    throw new Error(`Detection is not a ${detectionTypeLabel(expectedType).toLowerCase()}`);
-  }
-}
-
-async function markDetectedResolved(
-  userId: string,
-  id: string,
-  status: Extract<DetectedAccount['status'], 'confirmed' | 'merged' | 'ignored'>,
-  ownerType?: ConfirmableOwnerType,
-  ownerId?: string
-): Promise<DetectedAccount> {
-  const { data, error } = await supabase
-    .from('detected_accounts')
-    .update({
-      status,
-      matched_owner_type: ownerType || null,
-      matched_owner_id: ownerId || null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .eq('user_id', userId)
-    .eq('status', 'pending')
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as DetectedAccount;
-}
-
 function compatibleBalanceKinds(ownerType: BalanceOwnerType): BalanceKind[] {
   if (ownerType === 'bank_account') return BANK_SNAPSHOT_KINDS;
   if (ownerType === 'credit_card') return CREDIT_CARD_SNAPSHOT_KINDS;
@@ -472,12 +423,105 @@ function compatibleBalanceKinds(ownerType: BalanceOwnerType): BalanceKind[] {
   return [];
 }
 
-async function createSnapshotFromDetection(
+type DetectedAccountRpcName =
+  | 'confirm_detected_bank_account'
+  | 'confirm_detected_credit_card'
+  | 'confirm_detected_debit_card'
+  | 'merge_detected_account'
+  | 'ignore_detected_account_rpc';
+
+interface DetectedAccountRpcRow {
+  owner_id: string | null;
+  status: DetectedAccount['status'];
+}
+
+async function callDetectedAccountRpc(
+  rpcName: DetectedAccountRpcName,
+  params: Record<string, unknown>
+): Promise<DetectedAccountRpcRow> {
+  const { data, error } = await supabase.rpc(rpcName, params);
+
+  if (error) {
+    throw new Error(error.message || 'Could not update this detection');
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== 'object') {
+    throw new Error('Detection review did not return a result');
+  }
+
+  const ownerId = 'owner_id' in row && typeof row.owner_id === 'string' ? row.owner_id : null;
+  const status = 'status' in row && typeof row.status === 'string' ? row.status : null;
+  if (!status || !['confirmed', 'merged', 'ignored'].includes(status)) {
+    throw new Error('Detection review returned an invalid status');
+  }
+
+  return { owner_id: ownerId, status: status as DetectedAccount['status'] };
+}
+
+async function getDetectionById(userId: string, id: string): Promise<DetectedAccount> {
+  const { data, error } = await supabase
+    .from('detected_accounts')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) throw new Error('Detection was not found');
+  return data as DetectedAccount;
+}
+
+async function getBankAccountById(userId: string, id: string): Promise<BankAccount> {
+  const { data, error } = await supabase
+    .from('bank_accounts')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) throw new Error('Bank account was not found');
+  return data as BankAccount;
+}
+
+async function getCreditCardById(userId: string, id: string): Promise<CreditCard> {
+  const { data, error } = await supabase
+    .from('credit_cards')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) throw new Error('Credit card was not found');
+  return data as CreditCard;
+}
+
+async function getDebitCardById(userId: string, id: string): Promise<DebitCard> {
+  const { data, error } = await supabase
+    .from('debit_cards')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) throw new Error('Debit card was not found');
+  return data as DebitCard;
+}
+
+function ownerIdFromRpc(row: DetectedAccountRpcRow, detection: DetectedAccount): string {
+  const ownerId = row.owner_id || detection.matched_owner_id;
+  if (!ownerId) throw new Error('Detection review completed without an owner');
+  return ownerId;
+}
+
+async function getSnapshotFromDetection(
   userId: string,
   detection: DetectedAccount,
   ownerType: BalanceOwnerType,
-  ownerId: string,
-  detectedAt: string = detection.last_seen_at || new Date().toISOString()
+  ownerId: string
 ): Promise<BalanceSnapshot | null> {
   if (detection.balance_amount === null || detection.balance_amount === undefined || !detection.balance_kind) {
     return null;
@@ -487,124 +531,33 @@ async function createSnapshotFromDetection(
   if (!Number.isFinite(amount) || amount < 0) return null;
   if (!compatibleBalanceKinds(ownerType).includes(detection.balance_kind)) return null;
 
-  const existing = await supabase
+  const { data, error } = await supabase
     .from('balance_snapshots')
-    .select('id')
+    .select('*')
     .eq('user_id', userId)
     .eq('owner_type', ownerType)
     .eq('owner_id', ownerId)
     .eq('balance_kind', detection.balance_kind)
     .eq('amount', amount)
     .eq('source', detection.source)
-    .eq('detected_at', detectedAt)
-    .limit(1)
-    .maybeSingle();
-
-  if (existing.error) throw existing.error;
-  if (existing.data?.id) return null;
-
-  const payload = buildBalanceSnapshotInsert(userId, {
-    owner_type: ownerType,
-    owner_id: ownerId,
-    detected_bank_name: detection.detected_bank_name,
-    account_last4: detection.account_last4,
-    card_last4: detection.card_last4,
-    balance_kind: detection.balance_kind,
-    amount,
-    currency: 'INR',
-    source: detection.source,
-    confidence: detection.confidence,
-    detected_at: detectedAt,
-    source_sender_or_package: detection.source_sender_or_package,
-    raw_source_metadata: {
-      source: detection.source,
-      kind: 'detected_account_confirmation',
-    },
-  });
-
-  const { data, error } = await supabase
-    .from('balance_snapshots')
-    .insert(payload)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as BalanceSnapshot;
-}
-
-async function findDuplicateBankAccount(
-  userId: string,
-  bankName: string,
-  accountLast4: string
-): Promise<BankAccount | null> {
-  const { data, error } = await supabase
-    .from('bank_accounts')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('account_last4', accountLast4);
-
-  if (error) throw error;
-  const rows = (data || []) as BankAccount[];
-  return rows.find(account =>
-    sameBank(account.bank_name, bankName) &&
-    account.account_type !== 'credit_card' &&
-    account.account_type !== 'loan'
-  ) || null;
-}
-
-async function findDuplicateCreditCard(
-  userId: string,
-  cardLast4: string
-): Promise<CreditCard | null> {
-  const { data, error } = await supabase
-    .from('credit_cards')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('last_4_digits', cardLast4)
+    .eq('detected_at', detection.last_seen_at)
+    .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error) throw error;
-  return (data as CreditCard | null) || null;
-}
-
-async function findDuplicateDebitCard(
-  userId: string,
-  bankAccountId: string,
-  cardLast4: string
-): Promise<DebitCard | null> {
-  const { data, error } = await supabase
-    .from('debit_cards')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('bank_account_id', bankAccountId)
-    .eq('card_last4', cardLast4)
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return (data as DebitCard | null) || null;
+  return (data as BalanceSnapshot | null) || null;
 }
 
 function accountTypeFromInput(type: ConfirmDetectedBankAccountInput['accountType']): ConfirmDetectedBankAccountInput['accountType'] {
   return type === 'current' ? 'current' : 'savings';
 }
 
-function creditLimitFromDetection(detection: DetectedAccount, explicitLimit?: number | null): number {
+function creditLimitFromInput(explicitLimit?: number | null): number {
   if (explicitLimit !== undefined && explicitLimit !== null) {
     const limit = Number(explicitLimit);
     if (!Number.isFinite(limit) || limit < 0) throw new Error('Credit limit must be non-negative');
     return limit;
-  }
-
-  if (
-    detection.balance_kind === 'credit_limit' &&
-    detection.confidence === 'exact' &&
-    detection.balance_amount !== null &&
-    detection.balance_amount !== undefined
-  ) {
-    const limit = Number(detection.balance_amount);
-    return Number.isFinite(limit) && limit >= 0 ? limit : 0;
   }
 
   return 0;
@@ -621,41 +574,20 @@ export async function confirmDetectedBankAccount(input: ConfirmDetectedBankAccou
   snapshot: BalanceSnapshot | null;
 }> {
   const userId = await getCurrentUserId();
-  const detection = await getPendingDetection(userId, input.detectedAccountId);
-  ensureDetectionType(detection, 'bank_account');
-
   const bankName = requireBankName(input.bankName);
   const accountLast4 = requireLast4(input.accountLast4, 'Account');
-  const duplicate = await findDuplicateBankAccount(userId, bankName, accountLast4);
-  if (duplicate) {
-    throw new DetectedAccountDuplicateError(
-      'A matching bank account already exists. Link this detection instead.',
-      bankOption(duplicate)
-    );
-  }
 
-  const payload = {
-    user_id: userId,
-    bank_name: bankName,
-    account_last4: accountLast4,
-    account_type: accountTypeFromInput(input.accountType),
-    starting_balance: 0,
-    balance: 0,
-    credit_limit: 0,
-    loan_total: 0,
-    upi_ids: [],
-  };
+  const rpcResult = await callDetectedAccountRpc('confirm_detected_bank_account', {
+    p_detection_id: input.detectedAccountId,
+    p_bank_name: bankName,
+    p_account_last4: accountLast4,
+    p_account_type: accountTypeFromInput(input.accountType),
+  });
 
-  const { data, error } = await supabase
-    .from('bank_accounts')
-    .insert(payload)
-    .select()
-    .single();
-
-  if (error) throw error;
-  const account = data as BankAccount;
-  const snapshot = await createSnapshotFromDetection(userId, detection, 'bank_account', account.id);
-  const detectedAccount = await markDetectedResolved(userId, detection.id, 'confirmed', 'bank_account', account.id);
+  const detectedAccount = await getDetectionById(userId, input.detectedAccountId);
+  const ownerId = ownerIdFromRpc(rpcResult, detectedAccount);
+  const account = await getBankAccountById(userId, ownerId);
+  const snapshot = await getSnapshotFromDetection(userId, detectedAccount, 'bank_account', ownerId);
   await notifyAccountsChanged();
 
   return { account, detectedAccount, snapshot };
@@ -667,40 +599,23 @@ export async function confirmDetectedCreditCard(input: ConfirmDetectedCreditCard
   snapshot: BalanceSnapshot | null;
 }> {
   const userId = await getCurrentUserId();
-  const detection = await getPendingDetection(userId, input.detectedAccountId);
-  ensureDetectionType(detection, 'credit_card');
-
   const bankName = requireBankName(input.bankName);
   const cardLast4 = requireLast4(input.cardLast4, 'Card');
-  const duplicate = await findDuplicateCreditCard(userId, cardLast4);
-  if (duplicate) {
-    throw new DetectedAccountDuplicateError(
-      'A matching credit card already exists. Link this detection instead.',
-      creditCardOption(duplicate)
-    );
-  }
 
-  const payload = {
-    user_id: userId,
-    bank_name: bankName,
-    card_name: sanitizeDetectedDisplayText(input.cardName, `${bankName} card ${cardLast4}`),
-    last_4_digits: cardLast4,
-    credit_limit: creditLimitFromDetection(detection, input.creditLimit),
-    current_outstanding: 0,
-    due_date: requireDay(input.dueDate, 1),
-    billing_cycle_date: requireDay(input.billingCycleDate, 1),
-  };
+  const rpcResult = await callDetectedAccountRpc('confirm_detected_credit_card', {
+    p_detection_id: input.detectedAccountId,
+    p_bank_name: bankName,
+    p_card_name: sanitizeDetectedDisplayText(input.cardName, `${bankName} card ${cardLast4}`),
+    p_card_last4: cardLast4,
+    p_credit_limit: creditLimitFromInput(input.creditLimit),
+    p_due_date: requireDay(input.dueDate, 1),
+    p_billing_cycle_date: requireDay(input.billingCycleDate, 1),
+  });
 
-  const { data, error } = await supabase
-    .from('credit_cards')
-    .insert(payload)
-    .select()
-    .single();
-
-  if (error) throw error;
-  const creditCard = data as CreditCard;
-  const snapshot = await createSnapshotFromDetection(userId, detection, 'credit_card', creditCard.id);
-  const detectedAccount = await markDetectedResolved(userId, detection.id, 'confirmed', 'credit_card', creditCard.id);
+  const detectedAccount = await getDetectionById(userId, input.detectedAccountId);
+  const ownerId = ownerIdFromRpc(rpcResult, detectedAccount);
+  const creditCard = await getCreditCardById(userId, ownerId);
+  const snapshot = await getSnapshotFromDetection(userId, detectedAccount, 'credit_card', ownerId);
   emitFinanceDataChanged({ areas: ['accounts'], source: 'detected_account_review' });
 
   return { creditCard, detectedAccount, snapshot };
@@ -712,83 +627,25 @@ export async function confirmDetectedDebitCard(input: ConfirmDetectedDebitCardIn
   snapshot: BalanceSnapshot | null;
 }> {
   const userId = await getCurrentUserId();
-  const detection = await getPendingDetection(userId, input.detectedAccountId);
-  ensureDetectionType(detection, 'debit_card');
-
   const cardLast4 = requireLast4(input.cardLast4, 'Debit card');
-  const { data: bankAccount, error: bankError } = await supabase
-    .from('bank_accounts')
-    .select('*')
-    .eq('id', input.bankAccountId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (bankError) throw bankError;
-  if (!bankAccount?.id) throw new Error('Choose a linked bank account first');
-
-  const duplicate = await findDuplicateDebitCard(userId, input.bankAccountId, cardLast4);
-  if (duplicate) {
-    throw new DetectedAccountDuplicateError(
-      'A matching debit card already exists. Link this detection instead.',
-      debitCardOption(duplicate)
-    );
+  if (!input.bankAccountId?.trim()) {
+    throw new Error('Choose a linked bank account first');
   }
 
-  const payload = {
-    user_id: userId,
-    bank_account_id: input.bankAccountId,
-    bank_name: sanitizeDetectedDisplayText(detection.detected_bank_name || bankAccount.bank_name, '') || null,
-    card_last4: cardLast4,
-    card_network: null,
-    card_label: input.cardLabel ? sanitizeDetectedDisplayText(input.cardLabel, '') || null : null,
-    status: 'active' as const,
-    detected_confidence: detection.confidence,
-    source_sender_or_package: detection.source_sender_or_package || null,
-    last_seen_at: detection.last_seen_at || null,
-    updated_at: new Date().toISOString(),
-  };
+  const rpcResult = await callDetectedAccountRpc('confirm_detected_debit_card', {
+    p_detection_id: input.detectedAccountId,
+    p_bank_account_id: input.bankAccountId,
+    p_card_last4: cardLast4,
+    p_card_label: input.cardLabel ? sanitizeDetectedDisplayText(input.cardLabel, '') || null : null,
+  });
 
-  const { data, error } = await supabase
-    .from('debit_cards')
-    .insert(payload)
-    .select()
-    .single();
-
-  if (error) throw error;
-  const debitCard = data as DebitCard;
-  const snapshot = await createSnapshotFromDetection(userId, detection, 'bank_account', input.bankAccountId);
-  const detectedAccount = await markDetectedResolved(userId, detection.id, 'confirmed', 'debit_card', debitCard.id);
+  const detectedAccount = await getDetectionById(userId, input.detectedAccountId);
+  const ownerId = ownerIdFromRpc(rpcResult, detectedAccount);
+  const debitCard = await getDebitCardById(userId, ownerId);
+  const snapshot = await getSnapshotFromDetection(userId, detectedAccount, 'bank_account', input.bankAccountId);
   emitFinanceDataChanged({ areas: ['accounts'], source: 'detected_account_review' });
 
   return { debitCard, detectedAccount, snapshot };
-}
-
-async function assertOwnerBelongsToUser(
-  userId: string,
-  ownerType: ConfirmableOwnerType,
-  ownerId: string
-): Promise<void> {
-  const table = ownerType === 'bank_account'
-    ? 'bank_accounts'
-    : ownerType === 'credit_card'
-      ? 'credit_cards'
-      : 'debit_cards';
-  const { data, error } = await supabase
-    .from(table)
-    .select('id')
-    .eq('id', ownerId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data?.id) throw new Error('Selected owner was not found');
-}
-
-function expectedMergeOwnerType(detectionType: DetectedAccount['detection_type']): ConfirmableOwnerType | null {
-  if (detectionType === 'bank_account') return 'bank_account';
-  if (detectionType === 'credit_card') return 'credit_card';
-  if (detectionType === 'debit_card') return 'debit_card';
-  return null;
 }
 
 export async function mergeDetectedAccount(input: MergeDetectedAccountInput): Promise<{
@@ -796,15 +653,14 @@ export async function mergeDetectedAccount(input: MergeDetectedAccountInput): Pr
   snapshot: BalanceSnapshot | null;
 }> {
   const userId = await getCurrentUserId();
-  const detection = await getPendingDetection(userId, input.detectedAccountId);
-  const expectedOwnerType = expectedMergeOwnerType(detection.detection_type);
-  if (!expectedOwnerType || input.ownerType !== expectedOwnerType) {
-    throw new Error('This detection cannot be linked to the selected owner type');
-  }
+  await callDetectedAccountRpc('merge_detected_account', {
+    p_detection_id: input.detectedAccountId,
+    p_owner_type: input.ownerType,
+    p_owner_id: input.ownerId,
+  });
 
-  await assertOwnerBelongsToUser(userId, input.ownerType, input.ownerId);
-  const snapshot = await createSnapshotFromDetection(userId, detection, input.ownerType, input.ownerId);
-  const detectedAccount = await markDetectedResolved(userId, detection.id, 'merged', input.ownerType, input.ownerId);
+  const detectedAccount = await getDetectionById(userId, input.detectedAccountId);
+  const snapshot = await getSnapshotFromDetection(userId, detectedAccount, input.ownerType, input.ownerId);
   emitFinanceDataChanged({ areas: ['accounts'], source: 'detected_account_review' });
 
   return { detectedAccount, snapshot };
@@ -812,8 +668,11 @@ export async function mergeDetectedAccount(input: MergeDetectedAccountInput): Pr
 
 export async function ignoreDetectedAccount(id: string): Promise<DetectedAccount> {
   const userId = await getCurrentUserId();
-  await getPendingDetection(userId, id);
-  const detectedAccount = await markDetectedResolved(userId, id, 'ignored');
+  await callDetectedAccountRpc('ignore_detected_account_rpc', {
+    p_detection_id: id,
+  });
+
+  const detectedAccount = await getDetectionById(userId, id);
   emitFinanceDataChanged({ areas: ['accounts'], source: 'detected_account_review' });
   return detectedAccount;
 }

@@ -61,6 +61,42 @@ export interface CreditCardBalanceView {
   staleWarning?: boolean;
 }
 
+export interface BalanceHistoryItem {
+  id: string;
+  balanceKind: BalanceKind;
+  balanceKindLabel: string;
+  amount: number;
+  source: BalanceSource;
+  confidence: BalanceConfidence;
+  detectedAt: string;
+  freshnessLabel: string;
+  sourceLabel: string;
+  confidenceLabel: string;
+  noteSafe: string | null;
+}
+
+export interface BalanceHistoryOptions {
+  limit?: number;
+  balanceKind?: BalanceKind;
+}
+
+export interface BalanceHistoryView {
+  ownerType: BalanceOwnerType;
+  ownerId: string;
+  items: BalanceHistoryItem[];
+  hasHistory: boolean;
+}
+
+export interface BankAccountDetailView extends BankAccountBalanceView {
+  history: BalanceHistoryItem[];
+  hasHistory: boolean;
+}
+
+export interface CreditCardDetailView extends CreditCardBalanceView {
+  history: BalanceHistoryItem[];
+  historyByKind: Partial<Record<BalanceKind, BalanceHistoryItem[]>>;
+}
+
 export interface PendingDetectedBalanceSummary {
   total: number;
   bank_account: number;
@@ -80,6 +116,18 @@ type SnapshotRow = Pick<
   | 'confidence'
   | 'detected_at'
   | 'created_at'
+>;
+
+type HistorySnapshotRow = Pick<
+  BalanceSnapshot,
+  | 'id'
+  | 'balance_kind'
+  | 'amount'
+  | 'source'
+  | 'confidence'
+  | 'detected_at'
+  | 'created_at'
+  | 'note'
 >;
 
 type StatementRow = Pick<
@@ -173,10 +221,61 @@ export function getBalanceConfidenceLabel(confidence: BalanceConfidence): string
   }
 }
 
+export function getBalanceKindLabel(kind: BalanceKind): string {
+  switch (kind) {
+    case 'available_balance':
+      return 'Available';
+    case 'current_balance':
+      return 'Current';
+    case 'outstanding':
+      return 'Outstanding';
+    case 'available_limit':
+      return 'Available Limit';
+    case 'credit_limit':
+      return 'Credit Limit';
+    case 'due_amount':
+      return 'Due Amount';
+    case 'minimum_due':
+      return 'Minimum Due';
+    case 'loan_outstanding':
+      return 'Loan Outstanding';
+    default:
+      return 'Balance';
+  }
+}
+
 export function isBalanceStale(detectedAt?: string | null, now = Date.now()): boolean {
   if (!detectedAt) return false;
   const time = new Date(detectedAt).getTime();
   return Number.isFinite(time) && now - time > STALE_BALANCE_MS;
+}
+
+export function getBalanceFreshnessLabel(detectedAt?: string | null, now = Date.now()): string {
+  if (!detectedAt) return 'Calculated balance';
+
+  const time = new Date(detectedAt).getTime();
+  if (!Number.isFinite(time)) return 'Updated recently';
+
+  const diffMs = now - time;
+  if (diffMs < 60 * 1000) return 'Just now';
+  const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (days <= 0) return 'Updated today';
+  if (days === 1) return 'Updated 1 day ago';
+  return `Updated ${days} days ago`;
+}
+
+function safeSnapshotNote(note?: string | null): string | null {
+  const trimmed = note?.trim();
+  if (!trimmed) return null;
+  if (/\b(raw|sms|notification|payload|json|otp|phone|address|message|body|account\s*number|card\s*number|full\s*account|full\s*card)\b/i.test(trimmed)) return null;
+  if (/\d{6,}/.test(trimmed)) return null;
+  const cleaned = trimmed
+    .replace(/[^\w\s.,:;()/-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+    .trim();
+  return cleaned || null;
 }
 
 function toLatestBalanceValue(snapshot: SnapshotRow): LatestBalanceValue {
@@ -190,6 +289,56 @@ function toLatestBalanceValue(snapshot: SnapshotRow): LatestBalanceValue {
     confidenceLabel: getBalanceConfidenceLabel(snapshot.confidence),
     isEstimated: snapshot.confidence !== 'exact',
     staleWarning: isBalanceStale(snapshot.detected_at),
+  };
+}
+
+export function buildBalanceHistoryItemsForRows(rows: HistorySnapshotRow[]): BalanceHistoryItem[] {
+  return [...rows]
+    .sort((left, right) => {
+      const timeDiff = detectedTime({
+        ...right,
+        owner_type: 'bank_account',
+        owner_id: null,
+      }) - detectedTime({
+        ...left,
+        owner_type: 'bank_account',
+        owner_id: null,
+      });
+      if (timeDiff !== 0) return timeDiff;
+      return String(right.id).localeCompare(String(left.id));
+    })
+    .map(row => ({
+      id: row.id,
+      balanceKind: row.balance_kind,
+      balanceKindLabel: getBalanceKindLabel(row.balance_kind),
+      amount: toNumber(row.amount),
+      source: row.source,
+      confidence: row.confidence,
+      detectedAt: row.detected_at,
+      freshnessLabel: getBalanceFreshnessLabel(row.detected_at),
+      sourceLabel: getBalanceSourceLabel(row.source),
+      confidenceLabel: getBalanceConfidenceLabel(row.confidence),
+      noteSafe: safeSnapshotNote(row.note),
+    }));
+}
+
+export function buildBalanceHistoryViewForRows(
+  ownerType: BalanceOwnerType,
+  ownerId: string,
+  rows: HistorySnapshotRow[],
+  options: BalanceHistoryOptions = {}
+): BalanceHistoryView {
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+  const filtered = options.balanceKind
+    ? rows.filter(row => row.balance_kind === options.balanceKind)
+    : rows;
+  const items = buildBalanceHistoryItemsForRows(filtered).slice(0, limit);
+
+  return {
+    ownerType,
+    ownerId,
+    items,
+    hasHistory: items.length > 0,
   };
 }
 
@@ -351,13 +500,7 @@ export function buildCreditCardBalanceViewModelsForRows(
     const dueAmount = pickBestBalanceValue([latest.due_amount]) || null;
     const minimumDue = pickBestBalanceValue([latest.minimum_due]) || null;
     const statement = latestStatementForCard(statements, card.id);
-    const displaySource = pickBestBalanceValue([
-      outstanding,
-      availableLimit,
-      creditLimit,
-      dueAmount,
-      minimumDue,
-    ]) || outstanding;
+    const displaySource = outstanding;
     const limitAmount = Math.max(creditLimit.amount, 0);
 
     return {
@@ -380,6 +523,48 @@ export function buildCreditCardBalanceViewModelsForRows(
       staleWarning: displaySource.staleWarning,
     };
   });
+}
+
+export function buildBankAccountDetailViewForRows(
+  account: BankAccount,
+  snapshots: SnapshotRow[],
+  historyRows: HistorySnapshotRow[],
+  options: BalanceHistoryOptions = {}
+): BankAccountDetailView {
+  const balanceView = buildAccountBalanceViewModelsForRows([account], snapshots)[0];
+  const history = buildBalanceHistoryViewForRows(
+    account.account_type === 'loan' ? 'loan' : account.account_type === 'credit_card' ? 'credit_card' : 'bank_account',
+    account.id,
+    historyRows,
+    options
+  );
+
+  return {
+    ...balanceView,
+    history: history.items,
+    hasHistory: history.hasHistory,
+  };
+}
+
+export function buildCreditCardDetailViewForRows(
+  card: CreditCard,
+  snapshots: SnapshotRow[],
+  statements: StatementRow[] = [],
+  historyRows: HistorySnapshotRow[] = [],
+  options: BalanceHistoryOptions = {}
+): CreditCardDetailView {
+  const balanceView = buildCreditCardBalanceViewModelsForRows([card], snapshots, statements)[0];
+  const history = buildBalanceHistoryViewForRows('credit_card', card.id, historyRows, options);
+  const historyByKind = history.items.reduce<Partial<Record<BalanceKind, BalanceHistoryItem[]>>>((groups, item) => {
+    groups[item.balanceKind] = [...(groups[item.balanceKind] || []), item];
+    return groups;
+  }, {});
+
+  return {
+    ...balanceView,
+    history: history.items,
+    historyByKind,
+  };
 }
 
 export function summarizePendingDetectedAccounts(
@@ -437,6 +622,31 @@ async function fetchStatementsForCards(userId: string, cardIds: string[]): Promi
   return (data || []) as StatementRow[];
 }
 
+async function fetchHistoryForOwner(
+  userId: string,
+  ownerType: BalanceOwnerType,
+  ownerId: string,
+  options: BalanceHistoryOptions = {}
+): Promise<HistorySnapshotRow[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+  let query = supabase
+    .from('balance_snapshots')
+    .select('id, balance_kind, amount, source, confidence, detected_at, created_at, note')
+    .eq('user_id', userId)
+    .eq('owner_type', ownerType)
+    .eq('owner_id', ownerId)
+    .order('detected_at', { ascending: false })
+    .limit(limit);
+
+  if (options.balanceKind) {
+    query = query.eq('balance_kind', options.balanceKind);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []) as HistorySnapshotRow[];
+}
+
 export async function getLatestBalanceForOwner(
   ownerType: BalanceOwnerType,
   ownerId: string
@@ -445,6 +655,60 @@ export async function getLatestBalanceForOwner(
   const snapshots = await fetchSnapshotsForOwners(userId, ownerType, [ownerId]);
   const grouped = groupSnapshotsByOwnerAndKind(snapshots);
   return latestByKindForOwner(grouped, ownerId);
+}
+
+export async function getBalanceHistoryView(
+  ownerType: BalanceOwnerType,
+  ownerId: string,
+  options: BalanceHistoryOptions = {}
+): Promise<BalanceHistoryView> {
+  const userId = await getCurrentUserId();
+  const rows = await fetchHistoryForOwner(userId, ownerType, ownerId, options);
+  return buildBalanceHistoryViewForRows(ownerType, ownerId, rows, options);
+}
+
+export async function getBankAccountDetailView(accountId: string): Promise<BankAccountDetailView> {
+  const userId = await getCurrentUserId();
+  const { data, error } = await supabase
+    .from('bank_accounts')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('id', accountId)
+    .single();
+
+  if (error) throw error;
+  const account = data as BankAccount;
+  const ownerType: BalanceOwnerType = account.account_type === 'loan'
+    ? 'loan'
+    : account.account_type === 'credit_card'
+      ? 'credit_card'
+      : 'bank_account';
+  const [snapshots, historyRows] = await Promise.all([
+    fetchSnapshotsForOwners(userId, ownerType, [account.id]),
+    fetchHistoryForOwner(userId, ownerType, account.id),
+  ]);
+
+  return buildBankAccountDetailViewForRows(account, snapshots, historyRows);
+}
+
+export async function getCreditCardDetailView(creditCardId: string): Promise<CreditCardDetailView> {
+  const userId = await getCurrentUserId();
+  const { data, error } = await supabase
+    .from('credit_cards')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('id', creditCardId)
+    .single();
+
+  if (error) throw error;
+  const card = data as CreditCard;
+  const [snapshots, statements, historyRows] = await Promise.all([
+    fetchSnapshotsForOwners(userId, 'credit_card', [creditCardId]),
+    fetchStatementsForCards(userId, [creditCardId]),
+    fetchHistoryForOwner(userId, 'credit_card', creditCardId),
+  ]);
+
+  return buildCreditCardDetailViewForRows(card, snapshots, statements, historyRows);
 }
 
 export async function getAccountBalanceViewModels(): Promise<BankAccountBalanceView[]> {
