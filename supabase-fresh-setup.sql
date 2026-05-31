@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS bank_accounts (
   credit_limit numeric NOT NULL DEFAULT 0,
   loan_total numeric NOT NULL DEFAULT 0,
   upi_ids text[] DEFAULT '{}',
+  is_archived boolean NOT NULL DEFAULT false,
+  archived_at timestamptz,
   created_at timestamptz DEFAULT now()
 );
 
@@ -59,6 +61,8 @@ ALTER TABLE bank_accounts
   ADD COLUMN IF NOT EXISTS credit_limit numeric NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS loan_total numeric NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS upi_ids text[] DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS is_archived boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS archived_at timestamptz,
   ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
 
 ALTER TABLE bank_accounts
@@ -67,7 +71,8 @@ ALTER TABLE bank_accounts
   ALTER COLUMN balance SET DEFAULT 0,
   ALTER COLUMN credit_limit SET DEFAULT 0,
   ALTER COLUMN loan_total SET DEFAULT 0,
-  ALTER COLUMN upi_ids SET DEFAULT '{}';
+  ALTER COLUMN upi_ids SET DEFAULT '{}',
+  ALTER COLUMN is_archived SET DEFAULT false;
 
 UPDATE bank_accounts
 SET account_type = 'current'
@@ -88,6 +93,8 @@ CREATE POLICY "Users manage own banks"
 
 CREATE INDEX IF NOT EXISTS bank_accounts_user_id_idx ON bank_accounts(user_id);
 CREATE INDEX IF NOT EXISTS bank_accounts_last4_idx ON bank_accounts(account_last4);
+CREATE INDEX IF NOT EXISTS idx_bank_accounts_user_archived ON bank_accounts(user_id, is_archived);
+CREATE INDEX IF NOT EXISTS idx_bank_accounts_user_archived_created ON bank_accounts(user_id, is_archived, created_at DESC);
 
 -- Transactions ---------------------------------------------------------------
 
@@ -528,10 +535,19 @@ CREATE TABLE IF NOT EXISTS credit_cards (
   current_outstanding numeric(12, 2) NOT NULL DEFAULT 0,
   due_date integer NOT NULL CHECK (due_date >= 1 AND due_date <= 31),
   billing_cycle_date integer NOT NULL CHECK (billing_cycle_date >= 1 AND billing_cycle_date <= 31),
+  is_archived boolean NOT NULL DEFAULT false,
+  archived_at timestamptz,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   UNIQUE(user_id, last_4_digits)
 );
+
+ALTER TABLE credit_cards
+  ADD COLUMN IF NOT EXISTS is_archived boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+
+ALTER TABLE credit_cards
+  ALTER COLUMN is_archived SET DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS cc_transactions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -592,6 +608,8 @@ CREATE POLICY "Users can delete own cc transactions"
 
 CREATE INDEX IF NOT EXISTS idx_credit_cards_user_id ON credit_cards(user_id);
 CREATE INDEX IF NOT EXISTS idx_credit_cards_last_4_digits ON credit_cards(last_4_digits);
+CREATE INDEX IF NOT EXISTS idx_credit_cards_user_archived ON credit_cards(user_id, is_archived);
+CREATE INDEX IF NOT EXISTS idx_credit_cards_user_archived_created ON credit_cards(user_id, is_archived, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cc_transactions_user_id ON cc_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_cc_transactions_card_id ON cc_transactions(card_id);
 CREATE INDEX IF NOT EXISTS idx_cc_transactions_date ON cc_transactions(transaction_date DESC);

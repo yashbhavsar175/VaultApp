@@ -27,7 +27,6 @@ import {
   getBankAccounts, 
   addBankAccount, 
   updateBankAccount, 
-  deleteBankAccount,
   addCreditCard,
 } from '../../lib/database/financial';
 import { getTransactions } from '../../lib/core';
@@ -38,7 +37,7 @@ import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } 
 import BalanceCorrectionModal, { BalanceCorrectionKindOption } from '../../components/BalanceCorrectionModal';
 import BalanceHistoryModal from '../../components/BalanceHistoryModal';
 import { getBankColor, getBankSuggestions } from '../../config';
-import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
+import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { formatCurrencyDisplay as formatAmount } from '../../utils/format';
 import {
@@ -61,6 +60,15 @@ import {
   getTransactionSourceLabel,
   inferTransactionCategory,
 } from '../../utils/transactionPresentation';
+import {
+  AccountRemovalImpact,
+  ArchivedFinancialOwners,
+  RemovableOwnerType,
+  getAccountRemovalImpact,
+  getArchivedOwners,
+  removeOrArchiveOwner,
+  restoreArchivedOwner,
+} from '../../lib/services/accountRemoval';
 import { BarChart, PieChart } from 'react-native-gifted-charts';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -93,6 +101,12 @@ interface CorrectionTarget {
 type HistoryTarget =
   | { type: 'bank_account'; account: BankAccount }
   | { type: 'credit_card'; card: CreditCardBalanceView };
+
+type RemovalTarget = {
+  ownerType: RemovableOwnerType;
+  ownerId: string;
+  label: string;
+};
 
 const bankCorrectionKinds: BalanceCorrectionKindOption[] = [
   { kind: 'available_balance', label: 'Available' },
@@ -180,12 +194,37 @@ function formatDueDateLabel(paymentDueDate?: string | null): string | null {
   return dueDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
 }
 
+function buildRemovalMessage(label: string, impact: AccountRemovalImpact): string {
+  const historyCount = Object.values(impact.counts).reduce((sum, count) => sum + count, 0);
+  const action = impact.canHardDelete
+      ? 'This item has no linked history or stored balance, so it can be permanently removed.'
+    : impact.willArchive
+      ? 'This hides the account/card from your active list. It does not delete transactions or change balances.'
+      : 'This item has history or a stored balance and cannot be removed until archive support is added for this type.';
+  const countLine = `Safety dependencies found: ${historyCount}.`;
+  const warnings = impact.warnings.length > 0 ? `\n\n${impact.warnings.join('\n')}` : '';
+
+  return [
+    impact.willArchive ? `Hide ${label} from active lists?` : `Remove ${label}?`,
+    action,
+    countLine,
+    'If this account/card has history, it will be hidden instead of permanently deleted.',
+    'This will not delete transactions.',
+    'This will not change your balances.',
+  ].join('\n\n') + warnings;
+}
+
 export function BanksScreen() {
   const navigation = useNavigation();
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>({});
   const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);
+  const [archivedOwners, setArchivedOwners] = useState<ArchivedFinancialOwners>({
+    bankAccounts: [],
+    creditCards: [],
+  });
+  const [showArchived, setShowArchived] = useState(false);
   const [pendingDetectedSummary, setPendingDetectedSummary] = useState<PendingDetectedBalanceSummary>(
     EMPTY_PENDING_BALANCE_SUMMARY
   );
@@ -241,6 +280,17 @@ export function BanksScreen() {
     }
   }, []);
 
+  const loadArchivedOwners = useCallback(async () => {
+    try {
+      setArchivedOwners(await getArchivedOwners());
+    } catch (error) {
+      console.warn('[Accounts] Failed to load archived owners:', {
+        message: error instanceof Error ? error.message : 'unknown_error',
+      });
+      setArchivedOwners({ bankAccounts: [], creditCards: [] });
+    }
+  }, []);
+
   const loadData = useCallback(async (forceFresh = false) => {
     try {
       // Show cached data instantly
@@ -254,6 +304,7 @@ export function BanksScreen() {
           }
           setLoading(false);
           loadBalanceViews();
+          loadArchivedOwners();
 
           // Skip network call if cache is fresh
           if (!cached.isStale) return;
@@ -270,6 +321,7 @@ export function BanksScreen() {
       }
       setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
       await loadBalanceViews();
+      await loadArchivedOwners();
     } catch (error) {
       console.error('Error loading data:', error);
       Toast.show({
@@ -280,7 +332,7 @@ export function BanksScreen() {
     } finally {
       setLoading(false);
     }
-  }, [loadBalanceViews]);
+  }, [loadArchivedOwners, loadBalanceViews]);
 
   useEffect(() => {
     loadData();
@@ -314,6 +366,7 @@ export function BanksScreen() {
       setBanks(banksData);
       await setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
       await loadBalanceViews();
+      await loadArchivedOwners();
       Toast.show({
         type: 'success',
         text1: 'Refreshed',
@@ -422,38 +475,74 @@ export function BanksScreen() {
     setShowAddModal(true);
   };
 
+  const openRemoveConfirm = async (target: RemovalTarget) => {
+    try {
+      const impact = await getAccountRemovalImpact(target.ownerType, target.ownerId);
+      const canRemove = impact.canHardDelete || impact.willArchive;
+      setConfirmDialog({
+        visible: true,
+        title: canRemove ? (impact.willArchive ? 'Hide Account/Card' : 'Remove Account/Card') : 'Cannot Remove Yet',
+        message: buildRemovalMessage(target.label, impact),
+        confirmText: canRemove ? (impact.willArchive ? 'Hide' : 'Remove') : 'OK',
+        isDestructive: canRemove && impact.canHardDelete,
+        onConfirm: async () => {
+          setConfirmDialog(null);
+          if (!canRemove) return;
+
+          try {
+            const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);
+            Toast.show({
+              type: 'success',
+              text1: result.action === 'archived' ? 'Hidden' : 'Removed',
+              text2: result.action === 'archived'
+                ? 'Item was hidden from active lists'
+                : 'Item was removed safely',
+            });
+            loadData(true);
+          } catch {
+            loadData(true);
+            Toast.show({
+              type: 'error',
+              text1: 'Remove failed',
+              text2: 'No transactions or balances were changed',
+            });
+          }
+        },
+      });
+    } catch {
+      Toast.show({
+        type: 'error',
+        text1: 'Remove unavailable',
+        text2: 'Could not check linked history',
+      });
+    }
+  };
+
   const handleDeleteBank = (bank: BankAccount) => {
-    setConfirmDialog({
-      visible: true,
-      title: 'Delete Bank Account',
-      message: `Delete ${bank.bank_name} ••${bank.account_last4}?`,
-      confirmText: 'Delete',
-      isDestructive: true,
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        setBanks(prev => prev.filter(b => b.id !== bank.id));
-        updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
-          current ? current.filter(b => b.id !== bank.id) : current
-        );
-        
-        try {
-          await deleteBankAccount(bank.id);
-          Toast.show({
-            type: 'success',
-            text1: 'Deleted',
-            text2: 'Bank account deleted successfully',
-          });
-          loadData(true);
-        } catch {
-          loadData(true);
-          Toast.show({
-            type: 'error',
-            text1: 'Error',
-            text2: 'Failed to delete bank account',
-          });
-        }
-      }
+    openRemoveConfirm({
+      ownerType: 'bank_account',
+      ownerId: bank.id,
+      label: `${bank.bank_name} ••${bank.account_last4}`,
     });
+  };
+
+  const handleRestoreArchivedOwner = async (target: RemovalTarget) => {
+    try {
+      await restoreArchivedOwner(target.ownerType, target.ownerId);
+      Toast.show({
+        type: 'success',
+        text1: 'Restored',
+        text2: 'Item is back in your active list',
+      });
+      await loadData(true);
+    } catch {
+      Toast.show({
+        type: 'error',
+        text1: 'Restore failed',
+        text2: 'No transactions or balances were changed',
+      });
+      await loadArchivedOwners();
+    }
   };
 
   const resetForm = () => {
@@ -721,7 +810,7 @@ export function BanksScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => handleDeleteBank(item)}
-            accessibilityLabel="Delete bank account"
+            accessibilityLabel="Hide or remove bank account"
             accessibilityRole="button"
             style={{
               width: FINANCIAL_ACTION_SIZE,
@@ -731,10 +820,105 @@ export function BanksScreen() {
               alignItems: 'center',
               justifyContent: 'center',
             }}>
-            <MaterialCommunityIcons name="delete" size={18} color={colors.error} />
+            <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.error} />
           </TouchableOpacity>
           </View>
       </Card>
+    );
+  };
+
+  const renderArchivedSection = () => {
+    const archivedCount = archivedOwners.bankAccounts.length + archivedOwners.creditCards.length;
+    if (archivedCount === 0) return null;
+
+    return (
+      <View style={{ marginTop: spacing.sm, marginBottom: spacing.lg }}>
+        <TouchableOpacity
+          onPress={() => setShowArchived(value => !value)}
+          accessibilityLabel="Show archived accounts and cards"
+          accessibilityRole="button"
+          style={{
+            minHeight: 44,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingVertical: spacing.sm,
+          }}>
+          <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '700' }]}>
+            Hidden ({archivedCount})
+          </Text>
+          <MaterialCommunityIcons name={showArchived ? 'chevron-up' : 'chevron-down'} size={20} color={colors.subtext} />
+        </TouchableOpacity>
+
+        {showArchived && (
+          <View>
+            {archivedOwners.bankAccounts.map(account => (
+              <Card key={`archived-bank-${account.id}`} style={{ marginBottom: spacing.md, padding: spacing.md }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <MaterialCommunityIcons name="bank-off" size={20} color={colors.subtext} />
+                  <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={[typography.bodyBold, { color: colors.text }]}>
+                      {account.bank_name}
+                    </Text>
+                    <Text numberOfLines={1} style={[typography.caption, { color: colors.subtext }]}>
+                      Hidden account ••{account.account_last4}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => handleRestoreArchivedOwner({
+                      ownerType: 'bank_account',
+                      ownerId: account.id,
+                      label: `${account.bank_name} ••${account.account_last4}`,
+                    })}
+                    accessibilityLabel="Restore hidden account"
+                    accessibilityRole="button"
+                    style={{
+                      minHeight: 40,
+                      paddingHorizontal: spacing.md,
+                      borderRadius: 10,
+                      backgroundColor: colors.accent + '12',
+                      justifyContent: 'center',
+                    }}>
+                    <Text style={[typography.caption, { color: colors.accent, fontWeight: '700' }]}>Restore</Text>
+                  </TouchableOpacity>
+                </View>
+              </Card>
+            ))}
+            {archivedOwners.creditCards.map(card => (
+              <Card key={`archived-card-${card.id}`} style={{ marginBottom: spacing.md, padding: spacing.md }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <MaterialCommunityIcons name="credit-card-off-outline" size={20} color={colors.subtext} />
+                  <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={[typography.bodyBold, { color: colors.text }]}>
+                      {card.card_name || card.bank_name}
+                    </Text>
+                    <Text numberOfLines={1} style={[typography.caption, { color: colors.subtext }]}>
+                      Hidden card ••{card.last_4_digits}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => handleRestoreArchivedOwner({
+                      ownerType: 'credit_card',
+                      ownerId: card.id,
+                      label: `${card.card_name || card.bank_name} ••${card.last_4_digits}`,
+                    })}
+                    accessibilityLabel="Restore hidden credit card"
+                    accessibilityRole="button"
+                    style={{
+                      minHeight: 40,
+                      paddingHorizontal: spacing.md,
+                      borderRadius: 10,
+                      backgroundColor: colors.accent + '12',
+                      justifyContent: 'center',
+                    }}>
+                    <Text style={[typography.caption, { color: colors.accent, fontWeight: '700' }]}>Restore</Text>
+                  </TouchableOpacity>
+                </View>
+              </Card>
+            ))}
+          </View>
+        )}
+      </View>
     );
   };
 
@@ -803,7 +987,8 @@ export function BanksScreen() {
         keyExtractor={item => item.id}
         contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}
         ListFooterComponent={() => (
-          creditCardViews.length > 0 ? (
+          <>
+          {creditCardViews.length > 0 ? (
             <View style={{ marginTop: spacing.sm }}>
               <Text style={[typography.caption, {
                 color: colors.subtext,
@@ -933,12 +1118,32 @@ export function BanksScreen() {
                           Update
                         </Text>
                       </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => openRemoveConfirm({
+                          ownerType: 'credit_card',
+                          ownerId: card.creditCardId,
+                          label: `${card.cardName || card.bankName} ••${card.cardLast4}`,
+                        })}
+                        accessibilityLabel="Hide or remove credit card"
+                        accessibilityRole="button"
+                        style={{
+                          width: FINANCIAL_ACTION_SIZE,
+                          minHeight: FINANCIAL_ACTION_SIZE,
+                          backgroundColor: colors.error + '10',
+                          borderRadius: 12,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}>
+                        <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.error} />
+                      </TouchableOpacity>
                     </View>
                   </Card>
                 );
               })}
             </View>
-          ) : null
+          ) : null}
+          {renderArchivedSection()}
+          </>
         )}
         refreshControl={
           <RefreshControl

@@ -11,20 +11,62 @@
 import { supabase } from '../core';
 import { BankAccount } from '../../types';
 
+type ArchiveListOptions = {
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+};
+
+const archiveFallbackWarnings = new Set<string>();
+
+function isMissingArchiveColumnError(error: any): boolean {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42703'
+    || message.includes('is_archived')
+    || message.includes('archived_at');
+}
+
+function warnArchiveFallbackOnce(table: 'bank_accounts' | 'credit_cards', error: any): void {
+  if (archiveFallbackWarnings.has(table)) return;
+  archiveFallbackWarnings.add(table);
+  console.warn('[Accounts] Archive fields unavailable; loading without archive filter', {
+    table,
+    code: error?.code || 'unknown',
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANK ACCOUNTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export async function getBankAccounts(): Promise<BankAccount[]> {
+export async function getBankAccounts(options: ArchiveListOptions = {}): Promise<BankAccount[]> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user found');
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('bank_accounts')
       .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: true });
+      .eq('user_id', user.id);
+
+    if (options.archivedOnly) {
+      query = query.eq('is_archived', true);
+    } else if (!options.includeArchived) {
+      query = query.eq('is_archived', false);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: true });
+
+    if (error && isMissingArchiveColumnError(error)) {
+      if (options.archivedOnly) return [];
+      warnArchiveFallbackOnce('bank_accounts', error);
+      const { data: fallbackData, error: fallbackError } = await supabase
+        .from('bank_accounts')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true });
+      if (fallbackError) throw fallbackError;
+      return fallbackData || [];
+    }
 
     if (error) throw error;
     return data || [];
@@ -114,6 +156,8 @@ export interface CreditCard {
   current_outstanding: number;
   due_date: number;
   billing_cycle_date: number;
+  is_archived?: boolean;
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -150,15 +194,34 @@ export interface AddCCTransactionData {
 }
 
 // Get all credit cards for user
-export async function getCreditCards(): Promise<CreditCard[]> {
+export async function getCreditCards(options: ArchiveListOptions = {}): Promise<CreditCard[]> {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('credit_cards')
     .select('*')
-    .eq('user_id', userData.user.id)
-    .order('created_at', { ascending: false });
+    .eq('user_id', userData.user.id);
+
+  if (options.archivedOnly) {
+    query = query.eq('is_archived', true);
+  } else if (!options.includeArchived) {
+    query = query.eq('is_archived', false);
+  }
+
+  const { data, error } = await query.order('created_at', { ascending: false });
+
+  if (error && isMissingArchiveColumnError(error)) {
+    if (options.archivedOnly) return [];
+    warnArchiveFallbackOnce('credit_cards', error);
+    const { data: fallbackData, error: fallbackError } = await supabase
+      .from('credit_cards')
+      .select('*')
+      .eq('user_id', userData.user.id)
+      .order('created_at', { ascending: false });
+    if (fallbackError) throw fallbackError;
+    return fallbackData || [];
+  }
 
   if (error) throw error;
   return data || [];

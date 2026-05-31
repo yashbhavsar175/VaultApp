@@ -717,10 +717,28 @@ export async function getAccountBalanceViewModels(): Promise<BankAccountBalanceV
     .from('bank_accounts')
     .select('*')
     .eq('user_id', userId)
+    .eq('is_archived', false)
     .order('created_at', { ascending: true });
 
+  if (error && isMissingArchiveColumnError(error)) {
+    warnArchiveFallbackOnce('bank_accounts', error);
+    const { data: fallbackAccounts, error: fallbackError } = await supabase
+      .from('bank_accounts')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+    if (fallbackError) throw fallbackError;
+    return buildAccountBalanceViewModels(userId, (fallbackAccounts || []) as BankAccount[]);
+  }
+
   if (error) throw error;
-  const accountRows = (accounts || []) as BankAccount[];
+  return buildAccountBalanceViewModels(userId, (accounts || []) as BankAccount[]);
+}
+
+async function buildAccountBalanceViewModels(
+  userId: string,
+  accountRows: BankAccount[]
+): Promise<BankAccountBalanceView[]> {
   const loanAccountIds = accountRows.filter(account => account.account_type === 'loan').map(account => account.id);
   const creditCardAccountIds = accountRows.filter(account => account.account_type === 'credit_card').map(account => account.id);
   const bankAccountIds = accountRows
@@ -741,10 +759,28 @@ export async function getCreditCardBalanceViewModels(): Promise<CreditCardBalanc
     .from('credit_cards')
     .select('*')
     .eq('user_id', userId)
+    .eq('is_archived', false)
     .order('created_at', { ascending: false });
 
+  if (error && isMissingArchiveColumnError(error)) {
+    warnArchiveFallbackOnce('credit_cards', error);
+    const { data: fallbackCards, error: fallbackError } = await supabase
+      .from('credit_cards')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (fallbackError) throw fallbackError;
+    return buildCreditCardBalanceViewModels(userId, (fallbackCards || []) as CreditCard[]);
+  }
+
   if (error) throw error;
-  const cardRows = (cards || []) as CreditCard[];
+  return buildCreditCardBalanceViewModels(userId, (cards || []) as CreditCard[]);
+}
+
+async function buildCreditCardBalanceViewModels(
+  userId: string,
+  cardRows: CreditCard[]
+): Promise<CreditCardBalanceView[]> {
   const snapshots = await fetchSnapshotsForOwners(userId, 'credit_card', cardRows.map(card => card.id));
   const statements = await fetchStatementsForCards(userId, cardRows.map(card => card.id));
 
@@ -761,4 +797,21 @@ export async function getPendingDetectedBalanceSummary(): Promise<PendingDetecte
 
   if (error) throw error;
   return summarizePendingDetectedAccounts((data || []) as Pick<DetectedAccount, 'detection_type'>[]);
+}
+function isMissingArchiveColumnError(error: any): boolean {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42703'
+    || message.includes('is_archived')
+    || message.includes('archived_at');
+}
+
+const archiveFallbackWarnings = new Set<string>();
+
+function warnArchiveFallbackOnce(table: 'bank_accounts' | 'credit_cards', error: any): void {
+  if (archiveFallbackWarnings.has(table)) return;
+  archiveFallbackWarnings.add(table);
+  console.warn('[Balances] Archive fields unavailable; loading without archive filter', {
+    table,
+    code: error?.code || 'unknown',
+  });
 }

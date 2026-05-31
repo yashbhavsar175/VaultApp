@@ -9,10 +9,19 @@ CREATE TABLE IF NOT EXISTS credit_cards (
   current_outstanding DECIMAL(12, 2) NOT NULL DEFAULT 0,
   due_date INTEGER NOT NULL CHECK (due_date >= 1 AND due_date <= 31),
   billing_cycle_date INTEGER NOT NULL CHECK (billing_cycle_date >= 1 AND billing_cycle_date <= 31),
+  is_archived BOOLEAN NOT NULL DEFAULT false,
+  archived_at TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(user_id, last_4_digits)
 );
+
+ALTER TABLE credit_cards
+  ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE;
+
+ALTER TABLE credit_cards
+  ALTER COLUMN is_archived SET DEFAULT false;
 
 -- Credit Card Transactions Table
 CREATE TABLE IF NOT EXISTS cc_transactions (
@@ -76,6 +85,8 @@ CREATE POLICY "Users can delete own cc transactions"
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_credit_cards_user_id ON credit_cards(user_id);
 CREATE INDEX IF NOT EXISTS idx_credit_cards_last_4_digits ON credit_cards(last_4_digits);
+CREATE INDEX IF NOT EXISTS idx_credit_cards_user_archived ON credit_cards(user_id, is_archived);
+CREATE INDEX IF NOT EXISTS idx_credit_cards_user_archived_created ON credit_cards(user_id, is_archived, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cc_transactions_user_id ON cc_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_cc_transactions_card_id ON cc_transactions(card_id);
 CREATE INDEX IF NOT EXISTS idx_cc_transactions_date ON cc_transactions(transaction_date DESC);

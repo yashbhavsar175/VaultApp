@@ -114,6 +114,8 @@ export interface BankAccount {
   credit_limit: number;
   loan_total: number;
   upi_ids: string[];
+  is_archived?: boolean;
+  archived_at?: string | null;
   created_at: string;
 }
 

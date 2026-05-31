@@ -12,6 +12,8 @@ create table if not exists bank_accounts (
   credit_limit numeric not null default 0,
   loan_total numeric not null default 0,
   upi_ids text[] default '{}',
+  is_archived boolean not null default false,
+  archived_at timestamptz,
   created_at timestamptz default now()
 );
 
@@ -24,7 +26,9 @@ add column if not exists starting_balance numeric not null default 0,
 add column if not exists balance numeric not null default 0,
 add column if not exists credit_limit numeric not null default 0,
 add column if not exists loan_total numeric not null default 0,
-add column if not exists upi_ids text[] default '{}';
+add column if not exists upi_ids text[] default '{}',
+add column if not exists is_archived boolean not null default false,
+add column if not exists archived_at timestamptz;
 
 alter table bank_accounts
 alter column account_type set default 'savings',
@@ -32,7 +36,8 @@ alter column starting_balance set default 0,
 alter column balance set default 0,
 alter column credit_limit set default 0,
 alter column loan_total set default 0,
-alter column upi_ids set default '{}';
+alter column upi_ids set default '{}',
+alter column is_archived set default false;
 
 update bank_accounts
 set account_type = 'current'
@@ -56,6 +61,8 @@ create policy "Users manage own banks"
 -- Create index for faster queries
 create index if not exists bank_accounts_user_id_idx on bank_accounts(user_id);
 create index if not exists bank_accounts_last4_idx on bank_accounts(account_last4);
+create index if not exists idx_bank_accounts_user_archived on bank_accounts(user_id, is_archived);
+create index if not exists idx_bank_accounts_user_archived_created on bank_accounts(user_id, is_archived, created_at desc);
 
 -- Verify table creation
 select * from bank_accounts limit 1;

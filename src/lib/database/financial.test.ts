@@ -1,5 +1,5 @@
 import { supabase } from '../core';
-import { addEMIPayment, calculateEMIComponents } from './financial';
+import { addEMIPayment, calculateEMIComponents, getBankAccounts, getCreditCards } from './financial';
 
 jest.mock('../core', () => ({
   supabase: {
@@ -145,5 +145,97 @@ describe('loan EMI helpers', () => {
       principal: 9000,
       interest: 1000,
     });
+  });
+});
+
+describe('financial account archive filtering', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: { id: 'user_1' } },
+    });
+  });
+
+  function mockListQuery(rows: any[] = [], error: any = null) {
+    const order = jest.fn().mockResolvedValue({ data: error ? null : rows, error });
+    const chain: { eq: jest.Mock; order: jest.Mock } = {
+      eq: jest.fn(),
+      order,
+    };
+    chain.eq.mockReturnValue(chain);
+    const select = jest.fn(() => chain);
+    return { select, eq: chain.eq, order };
+  }
+
+  it('excludes archived bank accounts by default', async () => {
+    const query = mockListQuery();
+    mockSupabase.from.mockReturnValue(query);
+
+    await getBankAccounts();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('bank_accounts');
+    expect(query.eq).toHaveBeenCalledWith('user_id', 'user_1');
+    expect(query.eq).toHaveBeenCalledWith('is_archived', false);
+  });
+
+  it('falls back safely when bank archive columns are not deployed yet', async () => {
+    const archiveError = {
+      code: '42703',
+      message: 'column bank_accounts.is_archived does not exist',
+    };
+    const failedQuery = mockListQuery([], archiveError);
+    const fallbackQuery = mockListQuery([{ id: 'bank_1', user_id: 'user_1' }]);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSupabase.from
+      .mockReturnValueOnce(failedQuery)
+      .mockReturnValueOnce(fallbackQuery);
+
+    const rows = await getBankAccounts();
+
+    expect(rows).toEqual([{ id: 'bank_1', user_id: 'user_1' }]);
+    expect(failedQuery.eq).toHaveBeenCalledWith('is_archived', false);
+    expect(fallbackQuery.eq).toHaveBeenCalledWith('user_id', 'user_1');
+    expect(fallbackQuery.eq).not.toHaveBeenCalledWith('is_archived', false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Accounts] Archive fields unavailable; loading without archive filter',
+      { table: 'bank_accounts', code: '42703' }
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('can fetch only hidden bank accounts for restore UI', async () => {
+    const query = mockListQuery();
+    mockSupabase.from.mockReturnValue(query);
+
+    await getBankAccounts({ archivedOnly: true });
+
+    expect(query.eq).toHaveBeenCalledWith('user_id', 'user_1');
+    expect(query.eq).toHaveBeenCalledWith('is_archived', true);
+  });
+
+  it('excludes archived credit cards by default', async () => {
+    const query = mockListQuery();
+    mockSupabase.from.mockReturnValue(query);
+
+    await getCreditCards();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('credit_cards');
+    expect(query.eq).toHaveBeenCalledWith('user_id', 'user_1');
+    expect(query.eq).toHaveBeenCalledWith('is_archived', false);
+  });
+
+  it('treats hidden credit-card lists as empty when archive columns are not deployed yet', async () => {
+    const archiveError = {
+      code: '42703',
+      message: 'column credit_cards.is_archived does not exist',
+    };
+    const failedQuery = mockListQuery([], archiveError);
+    mockSupabase.from.mockReturnValueOnce(failedQuery);
+
+    const rows = await getCreditCards({ archivedOnly: true });
+
+    expect(rows).toEqual([]);
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    expect(failedQuery.eq).toHaveBeenCalledWith('is_archived', true);
   });
 });
