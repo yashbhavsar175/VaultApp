@@ -89,7 +89,7 @@ jest.mock('@react-native-voice/voice', () => ({
   default: {
     start: jest.fn(),
     stop: jest.fn(),
-    destroy: jest.fn(() => ({ then: jest.fn() })),
+    destroy: jest.fn(() => Promise.resolve()),
     removeAllListeners: jest.fn(),
     onSpeechResults: jest.fn(),
     onSpeechError: jest.fn(),

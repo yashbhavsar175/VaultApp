@@ -32,7 +32,18 @@ interface CachedProfile {
   email?: string;
   name?: string;
   full_name?: string;
+  userId?: string;
 }
+
+export const getCachedProfileRouteHint = (
+  cachedProfile: CachedProfile | undefined,
+  expectedUserId: string,
+): ProfileStatus | null => {
+  const cachedUserMatches = cachedProfile?.userId === expectedUserId;
+  const cachedName = (cachedProfile?.full_name || cachedProfile?.name || '').trim();
+
+  return cachedUserMatches && cachedName ? 'complete' : null;
+};
 
 const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -49,6 +60,26 @@ const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, la
     if (timeoutId) clearTimeout(timeoutId);
   }
 };
+
+export const summarizeStartupError = (error: unknown) => {
+  if (error && typeof error === 'object') {
+    const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+    return {
+      code: typeof maybeError.code === 'string' ? maybeError.code : null,
+      name: typeof maybeError.name === 'string' ? maybeError.name : null,
+      status: typeof maybeError.status === 'number' || typeof maybeError.status === 'string' ? maybeError.status : null,
+    };
+  }
+
+  return {
+    code: null,
+    name: typeof error,
+    status: null,
+  };
+};
+
+const isStartupTimeout = (error: unknown, label: string, timeoutMs: number) =>
+  error instanceof Error && error.message === `${label} timed out after ${timeoutMs}ms`;
 
 const toastConfig = {
   success: (props: any) => (
@@ -140,12 +171,7 @@ function App() {
     try {
       const cached = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
       const cachedProfile = cached?.data;
-      const cachedEmailMatches = cachedProfile?.email && cachedProfile.email === nextSession.user.email;
-      const cachedName = (cachedProfile?.full_name || cachedProfile?.name || '').trim();
-
-      if (cachedEmailMatches && cachedName) {
-        return 'complete';
-      }
+      return getCachedProfileRouteHint(cachedProfile, nextSession.user.id);
     } catch {
       // Cache is only a route hint. Ignore corrupt or missing entries.
     }
@@ -179,7 +205,9 @@ function App() {
         // Only a successful profile response with no usable name is treated as incomplete.
         return 'incomplete';
       } catch (error) {
-        console.error('Error checking profile:', error);
+        console.warn('[AuthStartup] Live profile lookup failed', {
+          error: summarizeStartupError(error),
+        });
         return await getCachedProfileStatus(nextSession) ?? 'error';
       }
     })();
@@ -226,23 +254,44 @@ function App() {
           })
           .catch(error => {
             if (routeRevision === undefined || routeRevision === authRouteRevisionRef.current) {
-              console.warn('[AuthStartup] Cached profile route kept; live profile verification failed:', error);
+              console.warn('[AuthStartup] Cached profile route kept; live profile verification failed', {
+                error: summarizeStartupError(error),
+              });
             }
           });
 
         return cachedStatus;
       }
 
+      const liveProfileStatusPromise = resolveProfileStatus(nextSession);
       try {
         return await withStartupTimeout(
-          resolveProfileStatus(nextSession),
+          liveProfileStatusPromise,
           PROFILE_STARTUP_TIMEOUT_MS,
           'Profile check',
         );
       } catch (error) {
         const isStaleRoute = routeRevision !== undefined && routeRevision !== authRouteRevisionRef.current;
         if (!isStaleRoute) {
-          console.warn('[AuthStartup] Profile check unavailable:', error);
+          if (isStartupTimeout(error, 'Profile check', PROFILE_STARTUP_TIMEOUT_MS)) {
+            console.info('[AuthStartup] Profile check deferred', {
+              timeoutMs: PROFILE_STARTUP_TIMEOUT_MS,
+            });
+            void liveProfileStatusPromise.then(lateStatus => {
+              if (
+                !isMounted ||
+                routeRevision === undefined ||
+                routeRevision !== authRouteRevisionRef.current
+              ) {
+                return;
+              }
+              setProfileStatus(lateStatus);
+            });
+          } else {
+            console.warn('[AuthStartup] Profile check unavailable', {
+              error: summarizeStartupError(error),
+            });
+          }
         }
         return 'error';
       }
@@ -264,7 +313,9 @@ function App() {
             return null;
           }
 
-          console.warn('[AuthStartup] Session load fallback shows logged-out route:', error);
+          console.warn('[AuthStartup] Session load fallback shows logged-out route', {
+            error: summarizeStartupError(error),
+          });
 
           void initialSessionPromise
             .then(async ({ data: { session: lateSession } }) => {
@@ -278,7 +329,9 @@ function App() {
               prefetchForSession(lateSession);
             })
             .catch(lateError => {
-              console.warn('[AuthStartup] Late session recovery failed:', lateError);
+              console.warn('[AuthStartup] Late session recovery failed', {
+                error: summarizeStartupError(lateError),
+              });
             });
 
           return null;
@@ -305,7 +358,9 @@ function App() {
           setSession(null);
         }
       } catch (error) {
-        console.warn('[AuthStartup] Falling back to logged-out route:', error);
+        console.warn('[AuthStartup] Falling back to logged-out route', {
+          error: summarizeStartupError(error),
+        });
         if (!isMounted) return;
         prefetchedUserIdRef.current = null;
         setProfileStatus('unknown');
@@ -359,9 +414,13 @@ function App() {
       const cachedStatus = await getCachedProfileStatus(session);
       if (routeRevision === authRouteRevisionRef.current) {
         if (cachedStatus) {
-          console.warn('[AuthStartup] Profile retry unavailable; using cached profile route:', error);
+          console.warn('[AuthStartup] Profile retry unavailable; using cached profile route', {
+            error: summarizeStartupError(error),
+          });
         } else {
-          console.warn('[AuthStartup] Profile retry unavailable:', error);
+          console.warn('[AuthStartup] Profile retry unavailable', {
+            error: summarizeStartupError(error),
+          });
         }
       }
       return cachedStatus ?? 'error';

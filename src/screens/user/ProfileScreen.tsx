@@ -23,6 +23,7 @@ interface CachedProfile {
   email?: string;
   name?: string;
   full_name?: string;
+  userId?: string;
   phone?: string | null;
   monthly_budget?: number | null;
   currency?: string | null;
@@ -99,6 +100,7 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
         await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
           name: data.full_name || '',
           full_name: data.full_name || '',
+          userId: user.id,
           phone: data.phone || null,
           monthly_budget: data.monthly_budget ?? null,
           currency: data.currency || 'INR',
@@ -144,6 +146,7 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
       await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
         name: fullName.trim(),
         full_name: fullName.trim(),
+        userId: user.id,
         phone: phone.trim() || null,
         monthly_budget: monthlyBudget ? parseFloat(monthlyBudget) : null,
         currency,

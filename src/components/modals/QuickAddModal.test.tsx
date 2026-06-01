@@ -117,6 +117,25 @@ describe('QuickAddModal', () => {
     });
   });
 
+  it('cleans up voice listeners when the modal closes', async () => {
+    const voice = require('@react-native-voice/voice').default;
+    let renderer: ReactTestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = ReactTestRenderer.create(
+        <QuickAddModal visible onClose={jest.fn()} onSuccess={jest.fn()} />,
+      );
+    });
+
+    await act(async () => {
+      renderer!.update(
+        <QuickAddModal visible={false} onClose={jest.fn()} onSuccess={jest.fn()} />,
+      );
+    });
+
+    expect(voice.destroy).toHaveBeenCalled();
+    expect(voice.removeAllListeners).toHaveBeenCalled();
+  });
+
   it('renders English-only base copy and warning copy', async () => {
     let renderer: ReactTestRenderer.ReactTestRenderer;
     await act(async () => {

@@ -38,6 +38,7 @@ interface CachedProfile {
   email?: string;
   name?: string;
   full_name?: string;
+  userId?: string;
 }
 
 const DELIVERY_DEBUG_MODE_UNTIL_KEY = 'debug_delivery_mode_until';
@@ -454,6 +455,7 @@ export default function Settings() {
         await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
           name: profile?.full_name || '',
           full_name: profile?.full_name || '',
+          userId: user.id,
         });
       }
     } catch (error) {
@@ -526,6 +528,7 @@ export default function Settings() {
       await setCache<CachedProfile>(CACHE_KEYS.USER_PROFILE, {
         name: editedName.trim(),
         full_name: editedName.trim(),
+        userId: user.id,
       });
       Toast.show({
         type: 'success',

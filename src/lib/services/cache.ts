@@ -221,6 +221,7 @@ async function prefetchProfile() {
 
     await setCache(CACHE_KEYS.USER_PROFILE, {
       name: profile?.full_name || '',
+      userId: user.id,
     });
     console.log('🚀 [Prefetch] ✅ Profile', {
       hasUser: Boolean(user.id),
@@ -241,7 +242,9 @@ async function prefetchBanks() {
     await setCache(CACHE_KEYS.BANK_ACCOUNTS, data);
     console.log('🚀 [Prefetch] ✅ Banks:', data.length, 'accounts');
   } catch (e) {
-    console.warn('🚀 [Prefetch] ❌ Banks failed:', e);
+    console.warn('🚀 [Prefetch] ❌ Banks failed', {
+      error: summarizeErrorForLog(e),
+    });
   }
 }
 
@@ -265,7 +268,9 @@ async function prefetchPlaces() {
       console.log('🚀 [Prefetch] ✅ Photos:', photoUrls.length, 'images cached');
     }
   } catch (e) {
-    console.warn('🚀 [Prefetch] ❌ Places failed:', e);
+    console.warn('🚀 [Prefetch] ❌ Places failed', {
+      error: summarizeErrorForLog(e),
+    });
   }
 }
 
@@ -275,7 +280,9 @@ async function prefetchTransactions() {
     await setCache(CACHE_KEYS.TRANSACTIONS, data);
     console.log('🚀 [Prefetch] ✅ Transactions:', data.length, 'records');
   } catch (e) {
-    console.warn('🚀 [Prefetch] ❌ Transactions failed:', e);
+    console.warn('🚀 [Prefetch] ❌ Transactions failed', {
+      error: summarizeErrorForLog(e),
+    });
   }
 }
 
@@ -285,6 +292,8 @@ async function prefetchPeopleLedger() {
     await setCache(CACHE_KEYS.PEOPLE_LEDGER, data);
     console.log('🚀 [Prefetch] ✅ People Ledger:', data.length, 'entries');
   } catch (e) {
-    console.warn('🚀 [Prefetch] ❌ People Ledger failed:', e);
+    console.warn('🚀 [Prefetch] ❌ People Ledger failed', {
+      error: summarizeErrorForLog(e),
+    });
   }
 }

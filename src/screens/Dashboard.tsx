@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, InteractionManager, AppState, AppStateStatus, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, AppState, AppStateStatus, Animated } from 'react-native';
 import { formatCurrency as formatAmount } from '../utils/format';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -12,6 +12,7 @@ import { getPeopleLedger } from '../lib/database/userdata';
 import { getCached, setCache, CACHE_KEYS } from '../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/services/dataEvents';
 import { computeMonthlyTransactionTotals } from '../utils/financeSummary';
+import { runWhenIdle } from '../utils/runWhenIdle';
 
 // Enable LayoutAnimation on Android
 const isFabricEnabled = (globalThis as any).nativeFabricUIManager != null;
@@ -271,7 +272,7 @@ export default function Dashboard() {
 
   useFocusEffect(
     React.useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
+      const task = runWhenIdle(() => {
         if (isInitialLoad) {
           // First time: show skeleton loader
           loadData();

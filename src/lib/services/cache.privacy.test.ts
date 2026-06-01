@@ -163,6 +163,7 @@ describe('cache privacy sanitization', () => {
       expect(logs).not.toContain('user-task-28l-abcdef');
 
       const cached = await AsyncStorage.getItem(CACHE_KEYS.USER_PROFILE);
+      expect(cached).toContain('user-task-28l-abcdef');
       expect(cached).not.toContain('task28l.profile@example.com');
       expect(cached).not.toContain('email');
     } finally {
@@ -224,6 +225,61 @@ describe('cache privacy sanitization', () => {
       expect(logs).not.toContain('access_token');
       expect(logs).not.toContain('full_name');
       expect(logs).not.toContain('session');
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not dump raw Supabase payloads from background prefetch failures', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sensitiveError = {
+      code: 'PGRST500',
+      name: 'PostgrestError',
+      status: 500,
+      message: 'failed for task34a.prefetch@example.com',
+      session: { access_token: 'raw-prefetch-token' },
+      payload: { account: '123456789012', upi: 'private@oksbi' },
+    };
+    const profileSelect = jest.fn().mockReturnValue({
+      eq: jest.fn().mockReturnValue({
+        single: jest.fn().mockResolvedValue({
+          data: { full_name: 'Task34A Profile Person' },
+        }),
+      }),
+    });
+
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+      data: {
+        user: {
+          id: 'user-task-34a',
+          email: 'task34a.prefetch@example.com',
+        },
+      },
+    });
+    (supabase.from as jest.Mock).mockReturnValue({ select: profileSelect });
+    (getBankAccounts as jest.Mock).mockRejectedValue(sensitiveError);
+    (getPlaces as jest.Mock).mockRejectedValue(sensitiveError);
+    (getTransactions as jest.Mock).mockRejectedValue(sensitiveError);
+    (getPeopleLedger as jest.Mock).mockRejectedValue(sensitiveError);
+
+    try {
+      await prefetchAllData();
+
+      const logs = JSON.stringify([
+        ...logSpy.mock.calls,
+        ...warnSpy.mock.calls,
+      ]);
+
+      expect(logs).toContain('PGRST500');
+      expect(logs).not.toContain('task34a.prefetch@example.com');
+      expect(logs).not.toContain('raw-prefetch-token');
+      expect(logs).not.toContain('123456789012');
+      expect(logs).not.toContain('private@oksbi');
+      expect(logs).not.toContain('access_token');
+      expect(logs).not.toContain('session');
+      expect(logs).not.toContain('payload');
     } finally {
       logSpy.mockRestore();
       warnSpy.mockRestore();

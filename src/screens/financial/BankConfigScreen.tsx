@@ -8,7 +8,6 @@ import {
   TextInput,
   Modal,
   Alert,
-  InteractionManager,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -21,6 +20,7 @@ import { getBankAccounts, addBankAccount, updateBankAccount } from '../../lib/da
 import { getAllBankNames } from '../../lib/services/smsParser';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
+import { runWhenIdle } from '../../utils/runWhenIdle';
 import { formatCurrencyDisplay } from '../../utils/format';
 import { formatUpiIdsForDisplay } from '../../utils/upi';
 import {
@@ -325,7 +325,7 @@ export default function BankConfigScreen() {
   // Reload on focus (with debounce)
   useFocusEffect(
     useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
+      const task = runWhenIdle(() => {
         if (!isInitialLoad) {
           debouncedLoadSilently();
         }

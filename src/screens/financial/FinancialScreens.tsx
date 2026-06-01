@@ -14,7 +14,6 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
-  InteractionManager,
   TextInput,
   ScrollView,
   Dimensions,
@@ -39,6 +38,7 @@ import BalanceHistoryModal from '../../components/BalanceHistoryModal';
 import { getBankColor, getBankSuggestions } from '../../config';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
+import { runWhenIdle } from '../../utils/runWhenIdle';
 import { formatCurrencyDisplay as formatAmount } from '../../utils/format';
 import {
   BankAccountBalanceView,
@@ -366,7 +366,7 @@ export function BanksScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
+      const task = runWhenIdle(() => {
         loadData();
       });
       return () => task.cancel();
@@ -1876,7 +1876,7 @@ export function AnalyticsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
+      const task = runWhenIdle(() => {
         loadData();
       });
       return () => task.cancel();

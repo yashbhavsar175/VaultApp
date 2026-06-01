@@ -1,0 +1,159 @@
+diff --git a/node_modules/@react-navigation/stack/lib/module/views/Stack/Card.js b/node_modules/@react-navigation/stack/lib/module/views/Stack/Card.js
+index a51c3db..1f1dc06 100644
+--- a/node_modules/@react-navigation/stack/lib/module/views/Stack/Card.js
++++ b/node_modules/@react-navigation/stack/lib/module/views/Stack/Card.js
+@@ -2,7 +2,7 @@
+ 
+ import Color from 'color';
+ import * as React from 'react';
+-import { Animated, InteractionManager, Platform, StyleSheet, View } from 'react-native';
++import { Animated, Platform, StyleSheet, View } from 'react-native';
+ import useLatestCallback from 'use-latest-callback';
+ import { CardAnimationContext } from "../../utils/CardAnimationContext.js";
+ import { gestureActivationCriteria } from "../../utils/gestureActivationCriteria.js";
+@@ -75,7 +75,6 @@ function Card({
+ }) {
+   const didInitiallyAnimate = React.useRef(false);
+   const lastToValueRef = React.useRef(undefined);
+-  const interactionHandleRef = React.useRef(undefined);
+   const animationHandleRef = React.useRef(undefined);
+   const pendingGestureCallbackRef = React.useRef(undefined);
+   const pendingOnCloseCallbackRef = React.useRef(undefined);
+@@ -86,17 +85,6 @@ function Card({
+     height: new Animated.Value(layout.height)
+   }));
+   const [isSwiping] = React.useState(() => new Animated.Value(FALSE));
+-  const onStartInteraction = useLatestCallback(() => {
+-    if (interactionHandleRef.current === undefined) {
+-      interactionHandleRef.current = InteractionManager.createInteractionHandle();
+-    }
+-  });
+-  const onEndInteraction = useLatestCallback(() => {
+-    if (interactionHandleRef.current !== undefined) {
+-      InteractionManager.clearInteractionHandle(interactionHandleRef.current);
+-      interactionHandleRef.current = undefined;
+-    }
+-  });
+   const animate = useLatestCallback(({
+     closing: isClosingParam,
+     velocity
+@@ -132,7 +120,6 @@ function Card({
+       });
+     };
+     if (animated) {
+-      onStartInteraction();
+       animation(gesture, {
+         ...spec.config,
+         velocity,
+@@ -142,7 +129,6 @@ function Card({
+       }).start(({
+         finished
+       }) => {
+-        onEndInteraction();
+         clearTimeout(pendingGestureCallbackRef.current);
+         if (finished) {
+           onFinish();
+@@ -160,14 +146,12 @@ function Card({
+         clearTimeout(pendingGestureCallbackRef.current);
+         clearTimeout(pendingOnCloseCallbackRef.current);
+         isSwiping.setValue(TRUE);
+-        onStartInteraction();
+         onGestureBegin?.();
+         break;
+       case GestureState.CANCELLED:
+       case GestureState.FAILED:
+         {
+           isSwiping.setValue(FALSE);
+-          onEndInteraction();
+           const velocity = gestureDirection === 'vertical' || gestureDirection === 'vertical-inverted' ? nativeEvent.velocityY : nativeEvent.velocityX;
+           animate({
+             closing,
+@@ -223,7 +207,6 @@ function Card({
+   const previousPropsRef = React.useRef(null);
+   React.useEffect(() => {
+     return () => {
+-      onEndInteraction();
+       if (animationHandleRef.current) {
+         cancelAnimationFrame(animationHandleRef.current);
+       }
+diff --git a/node_modules/@react-navigation/stack/src/views/Stack/Card.tsx b/node_modules/@react-navigation/stack/src/views/Stack/Card.tsx
+index d4d214e..38514a1 100644
+--- a/node_modules/@react-navigation/stack/src/views/Stack/Card.tsx
++++ b/node_modules/@react-navigation/stack/src/views/Stack/Card.tsx
+@@ -3,7 +3,6 @@ import Color from 'color';
+ import * as React from 'react';
+ import {
+   Animated,
+-  InteractionManager,
+   Platform,
+   type StyleProp,
+   StyleSheet,
+@@ -158,7 +157,6 @@ function Card({
+   const didInitiallyAnimate = React.useRef(false);
+   const lastToValueRef = React.useRef<number | undefined>(undefined);
+ 
+-  const interactionHandleRef = React.useRef<number | undefined>(undefined);
+   const animationHandleRef = React.useRef<number | undefined>(undefined);
+   const pendingGestureCallbackRef =
+     React.useRef<ReturnType<typeof setTimeout>>(undefined);
+@@ -181,20 +179,6 @@ function Card({
+ 
+   const [isSwiping] = React.useState(() => new Animated.Value(FALSE));
+ 
+-  const onStartInteraction = useLatestCallback(() => {
+-    if (interactionHandleRef.current === undefined) {
+-      interactionHandleRef.current =
+-        InteractionManager.createInteractionHandle();
+-    }
+-  });
+-
+-  const onEndInteraction = useLatestCallback(() => {
+-    if (interactionHandleRef.current !== undefined) {
+-      InteractionManager.clearInteractionHandle(interactionHandleRef.current);
+-      interactionHandleRef.current = undefined;
+-    }
+-  });
+-
+   const animate = useLatestCallback(
+     ({
+       closing: isClosingParam,
+@@ -243,7 +227,6 @@ function Card({
+       };
+ 
+       if (animated) {
+-        onStartInteraction();
+         animation(gesture, {
+           ...spec.config,
+           velocity,
+@@ -251,7 +234,6 @@ function Card({
+           useNativeDriver,
+           isInteraction: false,
+         }).start(({ finished }) => {
+-          onEndInteraction();
+           clearTimeout(pendingGestureCallbackRef.current);
+ 
+           if (finished) {
+@@ -271,14 +253,11 @@ function Card({
+           clearTimeout(pendingGestureCallbackRef.current);
+           clearTimeout(pendingOnCloseCallbackRef.current);
+           isSwiping.setValue(TRUE);
+-          onStartInteraction();
+           onGestureBegin?.();
+           break;
+         case GestureState.CANCELLED:
+         case GestureState.FAILED: {
+           isSwiping.setValue(FALSE);
+-          onEndInteraction();
+-
+           const velocity =
+             gestureDirection === 'vertical' ||
+             gestureDirection === 'vertical-inverted'
+@@ -371,8 +350,6 @@ function Card({
+ 
+   React.useEffect(() => {
+     return () => {
+-      onEndInteraction();
+-
+       if (animationHandleRef.current) {
+         cancelAnimationFrame(animationHandleRef.current);
+       }

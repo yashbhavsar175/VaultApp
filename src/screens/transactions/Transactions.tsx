@@ -11,7 +11,6 @@ import {
   UIManager,
   Platform,
   Animated,
-  InteractionManager,
 } from 'react-native';
 
 const isFabricEnabled = (globalThis as any).nativeFabricUIManager != null;
@@ -33,6 +32,7 @@ import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
+import { runWhenIdle } from '../../utils/runWhenIdle';
 import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import {
@@ -292,7 +292,7 @@ export default function Transactions() {
   useFocusEffect(
     useCallback(() => {
       let isActive = true;
-      const task = InteractionManager.runAfterInteractions(() => {
+      const task = runWhenIdle(() => {
         if (isActive) {
           loadTransactions();
           loadPendingReviewCount();

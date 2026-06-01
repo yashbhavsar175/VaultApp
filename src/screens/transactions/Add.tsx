@@ -10,7 +10,6 @@ import {
   Modal,
   TouchableWithoutFeedback,
   Keyboard,
-  InteractionManager,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,6 +19,7 @@ import HapticFeedback from 'react-native-haptic-feedback';
 import { addTransaction, getUniqueCategories, parseTransactionWithAI, supabase } from '../../lib/core';
 import { Transaction, TransactionType, BankAccount } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
+import { runWhenIdle } from '../../utils/runWhenIdle';
 import { ScreenWrapper, Card, AppButton, AppHeader } from '../../components';
 import { getBankAccounts, updateBankAccount } from '../../lib/database/financial';
 import { getBankColor } from '../../config';
@@ -76,7 +76,7 @@ export default function Add() {
 
   useFocusEffect(
     React.useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
+      const task = runWhenIdle(() => {
         if (isInitialBankLoad) {
           // First time: show loader
           loadBanks();
