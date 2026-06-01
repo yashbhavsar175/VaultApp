@@ -85,3 +85,4 @@ When working on this app:
 - Be careful with cache consistency after add/update/delete operations.
 - Do not assume README is fully current; current source code has more features than the README.
 - Any schema change must be checked against both SQL files and TypeScript/database functions.
+- UI quality rule: App-facing UI copy must be English-only. Do not use Hinglish/Hindi in React Native screens, modals, buttons, labels, empty states, toasts, or tests that represent user-facing copy. Visible fallback icons such as '?' indicate an invalid/missing icon and must be treated as UI bugs. Every new UI card/action should use a verified icon name or a safe wrapper with fallback tests.

@@ -33,6 +33,141 @@ CREATE POLICY "Users can manage own profile"
   USING (auth.uid() = id)
   WITH CHECK (auth.uid() = id);
 
+-- Debt Freedom settings -------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS debt_freedom_settings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  confirmed_monthly_income numeric(14,2) CHECK (confirmed_monthly_income IS NULL OR confirmed_monthly_income >= 0),
+  essential_monthly_expenses numeric(14,2) CHECK (essential_monthly_expenses IS NULL OR essential_monthly_expenses >= 0),
+  emergency_contribution numeric(14,2) NOT NULL DEFAULT 0 CHECK (emergency_contribution >= 0),
+  target_monthly_income numeric(14,2) CHECK (target_monthly_income IS NULL OR target_monthly_income >= 0),
+  planned_monthly_debt_payment numeric(14,2) CHECK (planned_monthly_debt_payment IS NULL OR planned_monthly_debt_payment >= 0),
+  target_debt_free_months integer CHECK (target_debt_free_months IS NULL OR (target_debt_free_months > 0 AND target_debt_free_months <= 600)),
+  strategy text NOT NULL DEFAULT 'balanced' CHECK (strategy IN ('balanced', 'snowball', 'avalanche')),
+  income_mode text NOT NULL DEFAULT 'auto' CHECK (income_mode IN ('auto', 'confirmed', 'manual_estimate')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(user_id)
+);
+
+ALTER TABLE debt_freedom_settings
+  ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS confirmed_monthly_income numeric(14,2),
+  ADD COLUMN IF NOT EXISTS essential_monthly_expenses numeric(14,2),
+  ADD COLUMN IF NOT EXISTS emergency_contribution numeric(14,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS target_monthly_income numeric(14,2),
+  ADD COLUMN IF NOT EXISTS planned_monthly_debt_payment numeric(14,2),
+  ADD COLUMN IF NOT EXISTS target_debt_free_months integer,
+  ADD COLUMN IF NOT EXISTS strategy text NOT NULL DEFAULT 'balanced',
+  ADD COLUMN IF NOT EXISTS income_mode text NOT NULL DEFAULT 'auto',
+  ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+ALTER TABLE debt_freedom_settings
+  ALTER COLUMN emergency_contribution SET DEFAULT 0,
+  ALTER COLUMN strategy SET DEFAULT 'balanced',
+  ALTER COLUMN income_mode SET DEFAULT 'auto';
+
+ALTER TABLE debt_freedom_settings
+  ALTER COLUMN user_id SET NOT NULL,
+  ALTER COLUMN emergency_contribution SET NOT NULL,
+  ALTER COLUMN strategy SET NOT NULL,
+  ALTER COLUMN income_mode SET NOT NULL,
+  ALTER COLUMN created_at SET NOT NULL,
+  ALTER COLUMN updated_at SET NOT NULL;
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_user_id_key;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_user_id_key UNIQUE(user_id);
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_confirmed_monthly_income_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_confirmed_monthly_income_check
+  CHECK (confirmed_monthly_income IS NULL OR confirmed_monthly_income >= 0);
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_essential_monthly_expenses_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_essential_monthly_expenses_check
+  CHECK (essential_monthly_expenses IS NULL OR essential_monthly_expenses >= 0);
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_emergency_contribution_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_emergency_contribution_check
+  CHECK (emergency_contribution >= 0);
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_target_monthly_income_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_target_monthly_income_check
+  CHECK (target_monthly_income IS NULL OR target_monthly_income >= 0);
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_planned_monthly_debt_payment_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_planned_monthly_debt_payment_check
+  CHECK (planned_monthly_debt_payment IS NULL OR planned_monthly_debt_payment >= 0);
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_target_debt_free_months_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_target_debt_free_months_check
+  CHECK (target_debt_free_months IS NULL OR (target_debt_free_months > 0 AND target_debt_free_months <= 600));
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_strategy_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_strategy_check
+  CHECK (strategy IN ('balanced', 'snowball', 'avalanche'));
+
+ALTER TABLE debt_freedom_settings DROP CONSTRAINT IF EXISTS debt_freedom_settings_income_mode_check;
+ALTER TABLE debt_freedom_settings
+  ADD CONSTRAINT debt_freedom_settings_income_mode_check
+  CHECK (income_mode IN ('auto', 'confirmed', 'manual_estimate'));
+
+COMMENT ON TABLE debt_freedom_settings IS
+  'User-owned Debt Freedom Coach planning settings. Numeric planning targets only; never raw SMS, notification body, UPI, phone, address, profile object, or full account/card number.';
+
+ALTER TABLE debt_freedom_settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can select own debt freedom settings" ON debt_freedom_settings;
+CREATE POLICY "Users can select own debt freedom settings"
+  ON debt_freedom_settings FOR SELECT
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert own debt freedom settings" ON debt_freedom_settings;
+CREATE POLICY "Users can insert own debt freedom settings"
+  ON debt_freedom_settings FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own debt freedom settings" ON debt_freedom_settings;
+CREATE POLICY "Users can update own debt freedom settings"
+  ON debt_freedom_settings FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete own debt freedom settings" ON debt_freedom_settings;
+CREATE POLICY "Users can delete own debt freedom settings"
+  ON debt_freedom_settings FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_debt_freedom_settings_user_id
+  ON debt_freedom_settings(user_id);
+
+CREATE OR REPLACE FUNCTION set_debt_freedom_settings_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_set_debt_freedom_settings_updated_at ON debt_freedom_settings;
+CREATE TRIGGER trigger_set_debt_freedom_settings_updated_at
+  BEFORE UPDATE ON debt_freedom_settings
+  FOR EACH ROW
+  EXECUTE FUNCTION set_debt_freedom_settings_updated_at();
+
 -- Bank accounts ---------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS bank_accounts (
@@ -482,6 +617,165 @@ CREATE TRIGGER trigger_validate_transaction_primary_evidence_owner
   BEFORE INSERT OR UPDATE OF primary_evidence_id, user_id ON transactions
   FOR EACH ROW
   EXECUTE FUNCTION validate_transaction_primary_evidence_owner();
+
+-- Income Review decisions -----------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS income_review_decisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  transaction_id uuid REFERENCES transactions(id) ON DELETE CASCADE,
+  evidence_id uuid REFERENCES transaction_evidence(id) ON DELETE CASCADE,
+  signal_hash text,
+  decision text NOT NULL CHECK (decision IN ('count_as_income', 'not_income', 'needs_review')),
+  income_source_type text CHECK (income_source_type IN ('salary', 'gig_work', 'freelance', 'business', 'cash_deposit', 'other')),
+  confidence text NOT NULL DEFAULT 'user_confirmed' CHECK (confidence IN ('user_confirmed', 'system_suggested')),
+  reason_code text,
+  reviewed_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT income_review_decisions_target_check
+    CHECK (transaction_id IS NOT NULL OR evidence_id IS NOT NULL OR signal_hash IS NOT NULL)
+);
+
+ALTER TABLE income_review_decisions
+  ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS transaction_id uuid REFERENCES transactions(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS evidence_id uuid REFERENCES transaction_evidence(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS signal_hash text,
+  ADD COLUMN IF NOT EXISTS decision text,
+  ADD COLUMN IF NOT EXISTS income_source_type text,
+  ADD COLUMN IF NOT EXISTS confidence text NOT NULL DEFAULT 'user_confirmed',
+  ADD COLUMN IF NOT EXISTS reason_code text,
+  ADD COLUMN IF NOT EXISTS reviewed_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+ALTER TABLE income_review_decisions
+  ALTER COLUMN user_id SET NOT NULL,
+  ALTER COLUMN decision SET NOT NULL,
+  ALTER COLUMN confidence SET NOT NULL,
+  ALTER COLUMN reviewed_at SET NOT NULL,
+  ALTER COLUMN created_at SET NOT NULL,
+  ALTER COLUMN updated_at SET NOT NULL;
+
+ALTER TABLE income_review_decisions DROP CONSTRAINT IF EXISTS income_review_decisions_target_check;
+ALTER TABLE income_review_decisions
+  ADD CONSTRAINT income_review_decisions_target_check
+  CHECK (transaction_id IS NOT NULL OR evidence_id IS NOT NULL OR signal_hash IS NOT NULL);
+
+ALTER TABLE income_review_decisions DROP CONSTRAINT IF EXISTS income_review_decisions_decision_check;
+ALTER TABLE income_review_decisions
+  ADD CONSTRAINT income_review_decisions_decision_check
+  CHECK (decision IN ('count_as_income', 'not_income', 'needs_review'));
+
+ALTER TABLE income_review_decisions DROP CONSTRAINT IF EXISTS income_review_decisions_income_source_type_check;
+ALTER TABLE income_review_decisions
+  ADD CONSTRAINT income_review_decisions_income_source_type_check
+  CHECK (income_source_type IN ('salary', 'gig_work', 'freelance', 'business', 'cash_deposit', 'other'));
+
+ALTER TABLE income_review_decisions DROP CONSTRAINT IF EXISTS income_review_decisions_confidence_check;
+ALTER TABLE income_review_decisions
+  ADD CONSTRAINT income_review_decisions_confidence_check
+  CHECK (confidence IN ('user_confirmed', 'system_suggested'));
+
+COMMENT ON TABLE income_review_decisions IS
+  'User-owned income review decisions only. Stores transaction/evidence identifiers, safe signal hash, decision, source type, and reason code. Never raw SMS, notification body, UPI, phone, address, raw note, raw payloads, or full account/card number.';
+
+ALTER TABLE income_review_decisions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can select own income review decisions" ON income_review_decisions;
+CREATE POLICY "Users can select own income review decisions"
+  ON income_review_decisions FOR SELECT
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert own income review decisions" ON income_review_decisions;
+CREATE POLICY "Users can insert own income review decisions"
+  ON income_review_decisions FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own income review decisions" ON income_review_decisions;
+CREATE POLICY "Users can update own income review decisions"
+  ON income_review_decisions FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete own income review decisions" ON income_review_decisions;
+CREATE POLICY "Users can delete own income review decisions"
+  ON income_review_decisions FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_income_review_decisions_user_id
+  ON income_review_decisions(user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_income_review_decisions_user_transaction
+  ON income_review_decisions(user_id, transaction_id)
+  WHERE transaction_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_income_review_decisions_user_evidence
+  ON income_review_decisions(user_id, evidence_id)
+  WHERE evidence_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_income_review_decisions_user_signal_hash
+  ON income_review_decisions(user_id, signal_hash)
+  WHERE signal_hash IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION set_income_review_decisions_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_set_income_review_decisions_updated_at ON income_review_decisions;
+CREATE TRIGGER trigger_set_income_review_decisions_updated_at
+  BEFORE UPDATE ON income_review_decisions
+  FOR EACH ROW
+  EXECUTE FUNCTION set_income_review_decisions_updated_at();
+
+CREATE OR REPLACE FUNCTION validate_income_review_decision_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NEW.transaction_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM transactions t
+      WHERE t.id = NEW.transaction_id
+        AND t.user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Income review transaction must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  END IF;
+
+  IF NEW.evidence_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM transaction_evidence te
+      WHERE te.id = NEW.evidence_id
+        AND te.user_id = NEW.user_id
+    ) THEN
+      RAISE EXCEPTION 'Income review evidence must belong to the same user'
+        USING ERRCODE = '42501';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_income_review_decision_owner ON income_review_decisions;
+CREATE TRIGGER trigger_validate_income_review_decision_owner
+  BEFORE INSERT OR UPDATE OF user_id, transaction_id, evidence_id ON income_review_decisions
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_income_review_decision_owner();
+
 
 -- User identifiers ------------------------------------------------------------
 

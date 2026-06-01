@@ -261,8 +261,13 @@ export function BanksScreen() {
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   const lastDataStringRef = useRef<string | null>(null);
+  const bankDataRequestRef = useRef(0);
+  const balanceViewsRequestRef = useRef(0);
+  const archivedOwnersRequestRef = useRef(0);
+  const cardsAndAccountsReloadQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const loadBalanceViews = useCallback(async () => {
+    const requestId = ++balanceViewsRequestRef.current;
     try {
       const [accountViews, cardViews, pendingSummary] = await Promise.all([
         getAccountBalanceViewModels(),
@@ -270,10 +275,12 @@ export function BanksScreen() {
         getPendingDetectedBalanceSummary(),
       ]);
 
+      if (requestId !== balanceViewsRequestRef.current) return;
       setBalanceViews(Object.fromEntries(accountViews.map(view => [view.accountId, view])));
       setCreditCardViews(cardViews);
       setPendingDetectedSummary(pendingSummary);
     } catch (error) {
+      if (requestId !== balanceViewsRequestRef.current) return;
       console.warn('[Balances] Failed to load balance view models:', {
         message: error instanceof Error ? error.message : 'unknown_error',
       });
@@ -281,9 +288,13 @@ export function BanksScreen() {
   }, []);
 
   const loadArchivedOwners = useCallback(async () => {
+    const requestId = ++archivedOwnersRequestRef.current;
     try {
-      setArchivedOwners(await getArchivedOwners());
+      const owners = await getArchivedOwners();
+      if (requestId !== archivedOwnersRequestRef.current) return;
+      setArchivedOwners(owners);
     } catch (error) {
+      if (requestId !== archivedOwnersRequestRef.current) return;
       console.warn('[Accounts] Failed to load archived owners:', {
         message: error instanceof Error ? error.message : 'unknown_error',
       });
@@ -292,10 +303,12 @@ export function BanksScreen() {
   }, []);
 
   const loadData = useCallback(async (forceFresh = false) => {
+    const requestId = ++bankDataRequestRef.current;
     try {
       // Show cached data instantly
       if (!forceFresh) {
         const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+        if (requestId !== bankDataRequestRef.current) return;
         if (cached) {
           const cachedStr = JSON.stringify(cached.data);
           if (lastDataStringRef.current !== cachedStr) {
@@ -313,16 +326,20 @@ export function BanksScreen() {
 
       // Then fetch fresh from cloud
       const banksData = await getBankAccounts();
+      if (requestId !== bankDataRequestRef.current) return;
       const dataStr = JSON.stringify(banksData);
       
       if (lastDataStringRef.current !== dataStr) {
         lastDataStringRef.current = dataStr;
         setBanks(banksData);
       }
-      setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
+      await setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
+      if (requestId !== bankDataRequestRef.current) return;
       await loadBalanceViews();
+      if (requestId !== bankDataRequestRef.current) return;
       await loadArchivedOwners();
     } catch (error) {
+      if (requestId !== bankDataRequestRef.current) return;
       console.error('Error loading data:', error);
       Toast.show({
         type: 'error',
@@ -333,6 +350,15 @@ export function BanksScreen() {
       setLoading(false);
     }
   }, [loadArchivedOwners, loadBalanceViews]);
+
+  const reloadCardsAndAccounts = useCallback(() => {
+    const reload = cardsAndAccountsReloadQueueRef.current.then(
+      () => loadData(true),
+      () => loadData(true)
+    );
+    cardsAndAccountsReloadQueueRef.current = reload.catch(() => undefined);
+    return reload;
+  }, [loadData]);
 
   useEffect(() => {
     loadData();
@@ -351,10 +377,10 @@ export function BanksScreen() {
     useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
         if (financeDataChangedAffects(payload, ['accounts'])) {
-          loadData(true);
+          reloadCardsAndAccounts();
         }
       });
-    }, [loadData])
+    }, [reloadCardsAndAccounts])
   );
 
   const onRefresh = async () => {
@@ -491,6 +517,7 @@ export function BanksScreen() {
 
           try {
             const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);
+            await reloadCardsAndAccounts();
             Toast.show({
               type: 'success',
               text1: result.action === 'archived' ? 'Hidden' : 'Removed',
@@ -498,9 +525,8 @@ export function BanksScreen() {
                 ? 'Item was hidden from active lists'
                 : 'Item was removed safely',
             });
-            loadData(true);
           } catch {
-            loadData(true);
+            await reloadCardsAndAccounts();
             Toast.show({
               type: 'error',
               text1: 'Remove failed',
@@ -529,19 +555,19 @@ export function BanksScreen() {
   const handleRestoreArchivedOwner = async (target: RemovalTarget) => {
     try {
       await restoreArchivedOwner(target.ownerType, target.ownerId);
+      await reloadCardsAndAccounts();
       Toast.show({
         type: 'success',
         text1: 'Restored',
         text2: 'Item is back in your active list',
       });
-      await loadData(true);
     } catch {
+      await reloadCardsAndAccounts();
       Toast.show({
         type: 'error',
         text1: 'Restore failed',
         text2: 'No transactions or balances were changed',
       });
-      await loadArchivedOwners();
     }
   };
 

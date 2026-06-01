@@ -1047,6 +1047,42 @@ export default function Settings() {
               </View>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingVertical: spacing.sm }]}
+              onPress={() => (navigation as any).navigate('DebtFreedomCoach')}
+            >
+              <MaterialCommunityIcons name="target-account" size={22} color="#10b981" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Debt Freedom Coach
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Read-only debt payoff guidance
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingVertical: spacing.sm }]}
+              onPress={() => (navigation as any).navigate('IncomeReview')}
+            >
+              <MaterialCommunityIcons name="text-box-search-outline" size={22} color="#06b6d4" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Income Review
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Review credits before they count as income
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
             
             <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
 

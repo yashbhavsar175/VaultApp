@@ -30,4 +30,30 @@ describe('financial account navigation reachability', () => {
     expect(settingsScreen).toContain('Reconciliation Proposals');
     expect(settingsScreen).toContain("navigate('ReconciliationProposals')");
   });
+
+  it('exposes read-only Debt Freedom Coach from Settings', () => {
+    const settingsStack = read('src/navigation/SettingsStack.tsx');
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+    const settingsScreen = read('src/screens/user/Settings.tsx');
+
+    expect(settingsStack).toContain('DebtFreedomCoach: undefined');
+    expect(settingsStack).toContain('<Stack.Screen name="DebtFreedomCoach" component={DebtFreedomScreen} />');
+
+    expect(bottomTabs).toContain("'DebtFreedomCoach'");
+    expect(settingsScreen).toContain('Debt Freedom Coach');
+    expect(settingsScreen).toContain("navigate('DebtFreedomCoach')");
+  });
+
+  it('exposes Income Review from Settings', () => {
+    const settingsStack = read('src/navigation/SettingsStack.tsx');
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+    const settingsScreen = read('src/screens/user/Settings.tsx');
+
+    expect(settingsStack).toContain('IncomeReview: undefined');
+    expect(settingsStack).toContain('<Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />');
+
+    expect(bottomTabs).toContain("'IncomeReview'");
+    expect(settingsScreen).toContain('Income Review');
+    expect(settingsScreen).toContain("navigate('IncomeReview')");
+  });
 });

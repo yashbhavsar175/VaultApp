@@ -4,6 +4,8 @@ import Settings from '../screens/user/Settings';
 import { BanksScreen, BankConfigScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
 import PorterTestScreen from '../screens/porter/PorterTestScreen';
 import ReconciliationProposalsScreen from '../screens/transactions/ReconciliationProposalsScreen';
+import DebtFreedomScreen from '../screens/financial/DebtFreedomScreen';
+import IncomeReviewScreen from '../screens/financial/IncomeReviewScreen';
 
 export type SettingsStackParamList = {
   SettingsHome: undefined;
@@ -12,6 +14,8 @@ export type SettingsStackParamList = {
   DetectedAccountsScreen: undefined;
   SMSTestScreen: undefined;
   ReconciliationProposals: undefined;
+  DebtFreedomCoach: undefined;
+  IncomeReview: undefined;
   Places: undefined;
   PorterTest: undefined;
 };
@@ -37,6 +41,8 @@ export default function SettingsStack() {
       <Stack.Screen name="DetectedAccountsScreen" component={DetectedAccountsScreen} />
       <Stack.Screen name="SMSTestScreen" component={SMSTestScreen} />
       <Stack.Screen name="ReconciliationProposals" component={ReconciliationProposalsScreen} />
+      <Stack.Screen name="DebtFreedomCoach" component={DebtFreedomScreen} />
+      <Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />
       <Stack.Screen name="Places" component={PlacesScreen} />
       <Stack.Screen name="PorterTest" component={PorterTestScreen} />
     </Stack.Navigator>

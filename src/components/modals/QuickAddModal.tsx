@@ -60,9 +60,9 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
     // Greeting detection
     if (/\b(hello|hi|hey|hola|namaste|namaskar|ram ram|jai|hii+|helo+)\b/.test(lower)) {
       const greetings = [
-        { emoji: '👋', msg: `Hello ji! Greetings se account nahi bharta, amount batao na!` },
-        { emoji: '🙏', msg: `Namaste! Par yahan sirf "500 chai diya" jaise bolo!` },
-        { emoji: '😊', msg: `Hi toh bol diya, ab kitne paise gaye ya aaye wo bhi bolo!` },
+        { emoji: '👋', msg: `Hello! Add an amount, like "500 tea paid".` },
+        { emoji: '🙏', msg: `Hi there. Try a transaction such as "500 tea paid".` },
+        { emoji: '😊', msg: `Nice greeting. Now add the amount and whether it was income or expense.` },
       ];
       return greetings[words.length % greetings.length];
     }
@@ -70,63 +70,61 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
     // Love/emotion detection
     if (/\b(love|pyaar|pyar|ishq|dil|heart|miss|baby|jaan|sweetheart)\b/.test(lower)) {
       const love = [
-        { emoji: '💕', msg: `Pyaar se pet nahi bharta yaar! Kitne rupay ka pyaar hai?` },
-        { emoji: '😍', msg: `Aww! Par yahan dil nahi, paison ka hisaab rakhte hain!` },
-        { emoji: '💸', msg: `Love is free, but aapke expenses nahi! Amount bolo!` },
+        { emoji: '💕', msg: `That is sweet, but I still need an amount.` },
+        { emoji: '😍', msg: `Feelings noted. Add the money amount to save this.` },
+        { emoji: '💸', msg: `Love may be free, but transactions need an amount.` },
       ];
       return love[words.length % love.length];
     }
 
     // Name/person detection
     if (/\b(bhai|bro|brother|dost|friend|yaar|boss|sir|mam|papa|mummy|mom|dad)\b/.test(lower)) {
-      const person = words.find(w => /\b(bhai|bro|brother|dost|friend|yaar|boss|sir|papa|mummy)\b/.test(w)) || 'bhai';
-      return { emoji: '🤝', msg: `${person.charAt(0).toUpperCase() + person.slice(1)} ka naam liya, par kitne rupay ka scene hai?` };
+      return { emoji: '🤝', msg: `You mentioned a person. Add the amount and whether money came in or went out.` };
     }
 
     // Question detection
     if (/\b(kya|kaise|kab|kyun|why|what|how|when|where|kaha|kaun)\b/.test(lower) || lower.includes('?')) {
-      return { emoji: '❓', msg: `Sawaal mat poocho, jawab do! "500 petrol paid" bolo!` };
+      return { emoji: '❓', msg: `Use a transaction phrase instead, like "500 petrol paid".` };
     }
 
     // Food mentions without amount
     if (/\b(pizza|burger|biryani|chai|coffee|momos|samosa|dosa|maggi|noodles)\b/.test(lower)) {
-      const food = lower.match(/\b(pizza|burger|biryani|chai|coffee|momos|samosa|dosa|maggi|noodles)\b/)?.[0] || 'khana';
-      return { emoji: '🍕', msg: `${food.charAt(0).toUpperCase() + food.slice(1)} ka naam sunke bhook lagi! Par kitne ka tha?` };
+      return { emoji: '🍕', msg: `Food noted. Add the amount, like "250 lunch paid".` };
     }
 
     // Frustration/abuse detection  
     if (/\b(bakwas|bekar|faltu|stupid|pagal|mad|bore|boring|waste)\b/.test(lower)) {
-      return { emoji: '😤', msg: `Arre ${lower.split(' ')[0]} nahi, "1000 shopping kiya" esa bolo!` };
+      return { emoji: '😤', msg: `I can help. Try a transaction like "1000 shopping paid".` };
     }
 
     // Song/music/fun
     if (/\b(song|gaana|music|dance|party|masti|fun|game|cricket|football)\b/.test(lower)) {
-      return { emoji: '🎶', msg: `Party ke baad bill toh aayega na! Kitna kharcha hua bolo!` };
+      return { emoji: '🎶', msg: `Fun noted. Add the bill amount if this was a transaction.` };
     }
 
     // Repeated words (like "hello hello", "haha", etc)
     if (words.length >= 2 && words[0] === words[1]) {
-      return { emoji: '🔁', msg: `"${words[0]}" ek baar kaafi tha! Ab amount + type bolo!` };
+      return { emoji: '🔁', msg: `"${words[0]}" is enough. Now add amount and type.` };
     }
 
     // Very short input (1-2 chars meaningful)
     if (lower.replace(/\s/g, '').length <= 3) {
-      return { emoji: '🤏', msg: `Itna chhota input? Thoda aur detail do, jaise "200 auto paid"!` };
+      return { emoji: '🤏', msg: `A little more detail helps, like "200 auto paid".` };
     }
 
     // Very long gibberish
     if (words.length > 6) {
-      return { emoji: '📝', msg: `Essay likh rahe ho kya? Chhota rakho: "500 rent diya"!` };
+      return { emoji: '📝', msg: `Keep it short, like "500 rent paid".` };
     }
 
     // Default — use the actual text in the response
     const defaults = [
-      { emoji: '🤔', msg: `"${text}" bolke kya expect kar rahe ho? Amount bolo yaar!` },
-      { emoji: '🧐', msg: `"${text}" se koi transaction nahi banta! Try: "300 chai paid"` },
-      { emoji: '🤷', msg: `"${text}" samajh nahi aaya! Bolo: "bhai ne 500 diya"` },
-      { emoji: '😜', msg: `Kya "${text}"! Serious ho jao, amount aur type bolo!` },
-      { emoji: '🤖', msg: `Beep boop! "${text}" ka koi financial matlab nahi mila!` },
-      { emoji: '🎭', msg: `Acting band karo! "2000 shopping spent" esa bolna hai!` },
+      { emoji: '🤔', msg: `"${text}" does not look like a transaction yet. Add an amount.` },
+      { emoji: '🧐', msg: `"${text}" is missing transaction details. Try: "300 tea paid".` },
+      { emoji: '🤷', msg: `I could not read a transaction from "${text}". Try: "brother gave me 500".` },
+      { emoji: '😜', msg: `Add an amount and type for "${text}".` },
+      { emoji: '🤖', msg: `No financial meaning found for "${text}" yet.` },
+      { emoji: '🎭', msg: `Try a shorter transaction phrase, like "2000 shopping spent".` },
     ];
     const seed = text.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
     return defaults[seed % defaults.length];
@@ -146,7 +144,7 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
           body: JSON.stringify({
             contents: [{
               parts: [{
-                text: `You are a fun Hinglish assistant in finance app SpendSense. User typed "${text}" but it has no amount/type. Give a SHORT funny Hinglish warning (max 15 words) referencing "${text}". Pick one emoji. Reply ONLY: {"emoji":"😜","msg":"message"}`
+                text: `You are a concise English assistant in finance app SpendSense. User typed "${text}" but it has no amount/type. Give a SHORT friendly English warning (max 15 words) referencing "${text}". Pick one emoji. Reply ONLY: {"emoji":"😜","msg":"message"}`
               }]
             }],
             generationConfig: { temperature: 1.0, maxOutputTokens: 60 }
@@ -264,7 +262,7 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
         const hasPermission = await requestAudioPermission();
         if (hasPermission) {
           setInput(''); // clear existing input when starting new voice
-          await getVoiceModule().start('en-IN'); // en-IN forces Hinglish instead of Devanagari script
+          await getVoiceModule().start('en-IN'); // Keep recognition aligned with Indian English input.
         } else {
           Toast.show({ type: 'error', text1: 'Permission Denied', text2: 'Microphone access is required.' });
         }
