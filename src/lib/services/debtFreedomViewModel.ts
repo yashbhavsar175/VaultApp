@@ -13,6 +13,7 @@ import {
   CreditCardStatement,
   PeopleLedger,
   Transaction,
+  TransactionEvidence,
 } from '../../types';
 import {
   calculateDebtFreedomPlan,
@@ -45,6 +46,7 @@ type DebtFreedomSourceRows = {
   loans: Loan[];
   peopleLedger: PeopleLedger[];
   balanceSnapshots: BalanceSnapshot[];
+  incomeEvidence: TransactionEvidence[];
 };
 
 export type DebtFreedomCoachViewModelOptions = DebtFreedomOptions & {
@@ -115,6 +117,22 @@ const FAMILY_OR_FRIEND_TOKENS = [
 ];
 const REFUND_TOKENS = ['refund', 'reimbursement', 'reimburse'];
 const TRANSFER_TOKENS = ['self transfer', 'own account', 'personal transfer'];
+const INCOME_EVIDENCE_COLUMNS = [
+  'id',
+  'user_id',
+  'signal_id',
+  'transaction_id',
+  'source_type',
+  'source_package',
+  'source_app',
+  'amount',
+  'direction',
+  'captured_at',
+  'merchant_or_person',
+  'bank_name',
+  'confidence_level',
+  'match_status',
+].join(', ');
 
 function finitePositive(value?: number | null): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
@@ -126,6 +144,12 @@ function finiteNonNegative(value?: number | null): number | null {
 
 function normalizedText(...values: Array<string | null | undefined>): string {
   return values.filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function safeSignalHash(value?: string | null): string | null {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed) return null;
+  return /^[a-f0-9]{8,128}$/.test(trimmed) ? trimmed : null;
 }
 
 function looksSensitiveText(value?: string | null): boolean {
@@ -555,6 +579,71 @@ export function buildIncomeEventsFromTransactions(
   }, []);
 }
 
+function reviewedEvidenceDecisionFor(
+  evidence: TransactionEvidence,
+  decisions: IncomeReviewDecision[]
+): IncomeReviewDecision | null {
+  const signalHash = safeSignalHash(evidence.signal_id);
+  return decisions.find(decision => (
+    decision.decision === 'count_as_income'
+    && (
+      decision.evidence_id === evidence.id
+      || (signalHash && decision.signal_hash === signalHash)
+    )
+  )) || null;
+}
+
+function incomeSourceForReviewedDecision(
+  sourceType: IncomeReviewDecision['income_source_type']
+): IncomeEvent['sourceType'] {
+  switch (sourceType) {
+    case 'salary':
+    case 'gig_work':
+    case 'freelance':
+    case 'business':
+    case 'cash_deposit':
+      return sourceType;
+    default:
+      return 'unknown';
+  }
+}
+
+export function buildIncomeEventsFromReviewedEvidence(
+  evidenceRows: TransactionEvidence[],
+  decisions: IncomeReviewDecision[],
+  options: DebtFreedomOptions = {}
+): IncomeEvent[] {
+  return evidenceRows.reduce<IncomeEvent[]>((events, evidence) => {
+    if (evidence.transaction_id || evidence.direction !== 'credit') return events;
+    if (!isCurrentMonthDate(evidence.captured_at, options)) return events;
+    const amount = finitePositive(evidence.amount);
+    if (!amount) return events;
+
+    const decision = reviewedEvidenceDecisionFor(evidence, decisions);
+    if (!decision) return events;
+
+    events.push(classifyIncomeCandidate({
+      id: evidence.id,
+      amount,
+      receivedAt: evidence.captured_at,
+      sourceType: incomeSourceForReviewedDecision(decision.income_source_type),
+      label: 'Reviewed income',
+      category: null,
+      counterpartyLabel: null,
+      confidence: 'confirmed',
+      includeInIncome: true,
+      exclusionReason: null,
+      metadata: {
+        source: safeSignalHash(evidence.signal_id),
+        appPackage: null,
+        bankName: null,
+        referencePresent: false,
+      },
+    }));
+    return events;
+  }, []);
+}
+
 function rupee(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return 'Needs review';
   return `₹${Math.round(value).toLocaleString('en-IN')}`;
@@ -624,6 +713,19 @@ async function fetchTransactionsForUser(userId: string): Promise<Transaction[]> 
   return (data || []) as Transaction[];
 }
 
+async function fetchIncomeEvidenceForUser(userId: string): Promise<TransactionEvidence[]> {
+  const { data, error } = await supabase
+    .from('transaction_evidence')
+    .select(INCOME_EVIDENCE_COLUMNS)
+    .eq('user_id', userId)
+    .eq('direction', 'credit')
+    .order('captured_at', { ascending: false })
+    .limit(200);
+
+  if (error) throw error;
+  return (data || []) as unknown as TransactionEvidence[];
+}
+
 async function fetchCreditCardStatementsForUser(userId: string, cardIds: string[]): Promise<CreditCardStatement[]> {
   if (!cardIds.length) return [];
   const { data, error } = await supabase
@@ -680,9 +782,10 @@ async function fetchDebtFreedomRows(): Promise<DebtFreedomSourceRows> {
   const loanOwnerIds = bankAccounts
     .filter(account => account.account_type === 'loan')
     .map(account => ({ ownerType: 'loan' as const, ownerId: account.id }));
-  const [creditCardStatements, balanceSnapshots] = await Promise.all([
+  const [creditCardStatements, balanceSnapshots, incomeEvidence] = await Promise.all([
     fetchCreditCardStatementsForUser(userId, creditCards.map(card => card.id)),
     fetchBalanceSnapshotsForUser(userId, [...creditCardOwnerIds, ...loanOwnerIds]),
+    fetchIncomeEvidenceForUser(userId),
   ]);
 
   return {
@@ -693,6 +796,7 @@ async function fetchDebtFreedomRows(): Promise<DebtFreedomSourceRows> {
     loans,
     peopleLedger,
     balanceSnapshots,
+    incomeEvidence,
   };
 }
 
@@ -851,14 +955,19 @@ export async function getDebtFreedomCoachViewModel(
     loans: rows.loans || [],
     peopleLedger: rows.peopleLedger || [],
     balanceSnapshots: rows.balanceSnapshots || [],
+    incomeEvidence: rows.incomeEvidence || [],
   } : await fetchDebtFreedomRows();
 
   const debtItems = buildDebtItemsFromRows(sourceRows, planOptions);
-  const rawIncomeEvents = buildIncomeEventsFromTransactions(sourceRows.transactions, planOptions);
   const { decisions: incomeReviewDecisions, incomeReviewStatus } = await resolveIncomeReviewDecisions(options);
+  const rawIncomeEvents = [
+    ...buildIncomeEventsFromTransactions(sourceRows.transactions, planOptions),
+    ...buildIncomeEventsFromReviewedEvidence(sourceRows.incomeEvidence, incomeReviewDecisions, planOptions),
+  ];
   const incomeEvents = applyIncomeReviewDecisionsToIncomeEvents(rawIncomeEvents, incomeReviewDecisions);
   const pendingIncomeCandidateCount = buildIncomeReviewCandidatesFromRows({
     transactions: sourceRows.transactions,
+    evidence: sourceRows.incomeEvidence,
     decisions: incomeReviewDecisions,
   }).filter(candidate => !candidate.currentDecision && candidate.suggestedDecision === 'needs_review').length;
   const { settings, settingsStatus } = await resolveSettings(options);

@@ -104,6 +104,14 @@ function sourceHintLabel(value: IncomeReviewCandidate['sourceHint']): string {
   }
 }
 
+function defaultSourceType(candidate: IncomeReviewCandidate): IncomeReviewIncomeSourceType {
+  if (candidate.suggestedIncomeSourceType) return candidate.suggestedIncomeSourceType;
+  if (candidate.sourceHint === 'salary') return 'salary';
+  if (candidate.sourceHint === 'gig_payout') return 'gig_work';
+  if (candidate.sourceHint === 'bank_credit') return 'cash_deposit';
+  return 'other';
+}
+
 export default function IncomeReviewScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [candidates, setCandidates] = useState<IncomeReviewCandidate[]>([]);
@@ -150,7 +158,7 @@ export default function IncomeReviewScreen() {
           signal_hash: candidate.signalHash || null,
           decision,
           income_source_type: decision === 'count_as_income'
-            ? sourceByCandidate[candidate.id] || candidate.currentDecision?.income_source_type || candidate.suggestedIncomeSourceType || 'other'
+            ? sourceByCandidate[candidate.id] || candidate.currentDecision?.income_source_type || defaultSourceType(candidate)
             : null,
           reason_code: candidate.sourceHint,
         });
@@ -169,8 +177,7 @@ export default function IncomeReviewScreen() {
   const renderSourcePicker = (candidate: IncomeReviewCandidate) => {
     const selected = sourceByCandidate[candidate.id]
       || candidate.currentDecision?.income_source_type
-      || candidate.suggestedIncomeSourceType
-      || 'gig_work';
+      || defaultSourceType(candidate);
     return (
       <View style={styles.sourceWrap}>
         <View style={styles.sourceHeader}>

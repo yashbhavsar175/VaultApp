@@ -299,6 +299,29 @@ describe('DebtFreedomScreen', () => {
     expect(text).toContain('Optional. Leave income blank to use your current-month earning pace.');
   });
 
+  it('renders manual estimate income labels clearly', async () => {
+    const vm = baseViewModel({
+      plan: {
+        ...baseViewModel().plan,
+        monthlyIncomeUsed: 22000,
+        incomeProjection: {
+          ...baseViewModel().plan.incomeProjection,
+          monthlyIncome: 22000,
+          source: 'manual_estimate',
+        },
+      },
+      summary: {
+        ...baseViewModel().summary,
+        monthlyIncomeLabel: 'Manual estimate: ₹22,000',
+      },
+    });
+    const renderer = await renderLoaded(vm);
+    const text = renderedText(renderer);
+
+    expect(text).toContain('Manual estimate: ₹22,000');
+    expect(text).not.toContain('Manual estimate: ?');
+  });
+
   it('labels estimated credit card minimum payments without saving anything', async () => {
     const vm = baseViewModel({
       debtItems: [

@@ -237,6 +237,33 @@ describe('IncomeReviewScreen', () => {
     }));
   });
 
+  it('saves generic reviewed credits with the same fallback source shown in the picker', async () => {
+    mockedGetState
+      .mockResolvedValueOnce({
+        candidates: [candidate({ suggestedDecision: 'needs_review', suggestedIncomeSourceType: null })],
+        storageStatus: 'ready',
+      })
+      .mockResolvedValueOnce({ candidates: [], storageStatus: 'ready' });
+    mockedUpsert.mockResolvedValue({});
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<IncomeReviewScreen />);
+    });
+
+    expect(renderedText(renderer!)).toContain('Other');
+
+    await ReactTestRenderer.act(async () => {
+      await touchableByText(renderer!, 'Count as income')!.props.onPress();
+    });
+
+    expect(mockedUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      transaction_id: 'tx_1',
+      decision: 'count_as_income',
+      income_source_type: 'other',
+    }));
+  });
+
   it('resets an existing decision with delete service', async () => {
     mockedGetState
       .mockResolvedValueOnce({

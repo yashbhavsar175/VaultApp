@@ -122,6 +122,18 @@ describe('debtFreedom income classification', () => {
     expect(result.confidence).toBe('confirmed');
   });
 
+  it('allows an explicitly confirmed unknown credit from income review', () => {
+    const result = classifyIncomeCandidate(incomeEvent({
+      sourceType: 'unknown',
+      includeInIncome: true,
+      confidence: 'confirmed',
+    }));
+
+    expect(result.includeInIncome).toBe(true);
+    expect(result.confidence).toBe('confirmed');
+    expect(result.exclusionReason).toBeUndefined();
+  });
+
   it('allows a personal transfer only after explicit confirmation as income', () => {
     const result = classifyIncomeCandidate(incomeEvent({
       sourceType: 'personal_transfer',
@@ -462,6 +474,34 @@ describe('debtFreedom plan income and spending', () => {
 
     expect(result.monthlyIncomeUsed).toBe(18000);
     expect(result.incomeProjection.source).toBe('manual_estimate');
+  });
+
+  it('uses a manual estimate before current-month reviewed income pace', () => {
+    const result = plan({
+      income: {
+        estimatedMonthlyIncome: 22000,
+        incomeSource: 'manual_estimate',
+        incomeEvents: [incomeEvent({ amount: 600, receivedAt: '2026-06-01T10:00:00.000Z' })],
+      },
+    });
+
+    expect(result.monthlyIncomeUsed).toBe(22000);
+    expect(result.incomeProjection.monthlyIncome).toBe(22000);
+    expect(result.incomeProjection.source).toBe('manual_estimate');
+    expect(result.incomeProjection.projectedMonthEndIncome).toBe(6000);
+  });
+
+  it('falls back to current-month pace when manual estimate has no usable amount', () => {
+    const result = plan({
+      income: {
+        estimatedMonthlyIncome: 0,
+        incomeSource: 'manual_estimate',
+        incomeEvents: [incomeEvent({ amount: 600, receivedAt: '2026-06-01T10:00:00.000Z' })],
+      },
+    });
+
+    expect(result.monthlyIncomeUsed).toBe(6000);
+    expect(result.incomeProjection.source).toBe('current_month_daily_average');
   });
 
   it('returns null DTI and an income warning when income is missing', () => {

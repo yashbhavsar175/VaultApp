@@ -1,6 +1,7 @@
 import {
   buildDebtFreedomSummaryLabels,
   buildDebtItemsFromRows,
+  buildIncomeEventsFromReviewedEvidence,
   buildIncomeEventsFromTransactions,
   getDebtFreedomCoachViewModel,
 } from './debtFreedomViewModel';
@@ -11,6 +12,7 @@ import {
   CreditCardStatement,
   PeopleLedger,
   Transaction,
+  TransactionEvidence,
 } from '../../types';
 import { CreditCard, Loan } from '../database/financial';
 import { DebtFreedomSettings } from './debtFreedomSettings';
@@ -84,6 +86,36 @@ function transaction(overrides: Partial<Transaction>): Transaction {
     to_account_id: overrides.to_account_id,
     is_transfer_pending: overrides.is_transfer_pending,
     refund_of_transaction_id: overrides.refund_of_transaction_id,
+  };
+}
+
+function evidence(overrides: Partial<TransactionEvidence> = {}): TransactionEvidence {
+  return {
+    id: overrides.id || 'ev_1',
+    user_id: 'user_1',
+    signal_id: overrides.signal_id || 'abcdef123456',
+    transaction_id: overrides.transaction_id || null,
+    source_type: overrides.source_type || 'notification',
+    source_package: overrides.source_package === undefined ? 'com.porter.partner' : overrides.source_package,
+    source_app: overrides.source_app === undefined ? 'Porter' : overrides.source_app,
+    sender: null,
+    amount: overrides.amount ?? 900,
+    direction: overrides.direction || 'credit',
+    captured_at: overrides.captured_at || '2026-06-06T10:00:00.000Z',
+    reference_number: null,
+    merchant_or_person: overrides.merchant_or_person === undefined ? 'Porter payout' : overrides.merchant_or_person,
+    bank_name: null,
+    account_last4: null,
+    card_last4: null,
+    instrument_hint: 'unknown',
+    upi_id_masked: null,
+    upi_id_hash: null,
+    confidence_level: overrides.confidence_level || 'medium',
+    match_status: overrides.match_status || 'unlinked',
+    match_reason_code: null,
+    raw_source_metadata: {},
+    created_at: '2026-06-06T10:00:00.000Z',
+    updated_at: '2026-06-06T10:00:00.000Z',
   };
 }
 
@@ -462,6 +494,71 @@ describe('buildIncomeEventsFromTransactions', () => {
   });
 });
 
+describe('buildIncomeEventsFromReviewedEvidence', () => {
+  it('counts only user-reviewed evidence-only income signals', () => {
+    const events = buildIncomeEventsFromReviewedEvidence([
+      evidence({ id: 'reviewed', amount: 900 }),
+      evidence({ id: 'pending', amount: 700 }),
+      evidence({ id: 'linked', transaction_id: 'tx_1', amount: 500 }),
+    ], [
+      incomeDecision({
+        transaction_id: null,
+        evidence_id: 'reviewed',
+        decision: 'count_as_income',
+        income_source_type: 'gig_work',
+      }),
+      incomeDecision({
+        id: 'decision_not_income',
+        transaction_id: null,
+        evidence_id: 'pending',
+        decision: 'not_income',
+        income_source_type: null,
+      }),
+      incomeDecision({
+        id: 'decision_linked',
+        transaction_id: null,
+        evidence_id: 'linked',
+        decision: 'count_as_income',
+        income_source_type: 'gig_work',
+      }),
+    ], JUNE_OPTIONS);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual(expect.objectContaining({
+      id: 'reviewed',
+      amount: 900,
+      sourceType: 'gig_work',
+      confidence: 'confirmed',
+      includeInIncome: true,
+    }));
+  });
+
+  it('does not expose raw evidence metadata in reviewed income events', () => {
+    const events = buildIncomeEventsFromReviewedEvidence([
+      evidence({
+        id: 'privacy_ev',
+        signal_id: 'abcdefabcdef',
+        source_package: 'com.private.app',
+        merchant_or_person: 'private.person@oksbi phone 9876543210',
+        raw_source_metadata: { body: 'OTP 123456' },
+      }),
+    ], [
+      incomeDecision({
+        transaction_id: null,
+        evidence_id: 'privacy_ev',
+        decision: 'count_as_income',
+        income_source_type: 'other',
+      }),
+    ], JUNE_OPTIONS);
+
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain('private.person@oksbi');
+    expect(serialized).not.toContain('9876543210');
+    expect(serialized).not.toContain('OTP');
+    expect(serialized).not.toContain('com.private.app');
+  });
+});
+
 describe('getDebtFreedomCoachViewModel', () => {
   it('returns a plan from current-month daily average income and read-only rows', async () => {
     const viewModel = await getDebtFreedomCoachViewModel({
@@ -526,6 +623,51 @@ describe('getDebtFreedomCoachViewModel', () => {
     expect(viewModel.plan.incomeProjection.source).toBe('manual_estimate');
     expect(viewModel.summary.monthlyIncomeLabel).toBe('Manual estimate: ₹36,000');
     expect(viewModel.dataQuality.hasConfirmedIncome).toBe(false);
+  });
+
+  it('uses manual estimate settings before reviewed current-month income pace', async () => {
+    const viewModel = await getDebtFreedomCoachViewModel({
+      ...JUNE_OPTIONS,
+      settings: settings({
+        income_mode: 'manual_estimate',
+        confirmed_monthly_income: 22000,
+      }),
+      incomeReviewDecisions: [
+        incomeDecision({ transaction_id: 'reviewed_income', decision: 'count_as_income', income_source_type: 'gig_work' }),
+      ],
+      rows: {
+        transactions: [
+          transaction({ id: 'reviewed_income', category: 'Income', note: 'UPI credit received', amount: 600 }),
+        ],
+      },
+    });
+
+    expect(viewModel.plan.monthlyIncomeUsed).toBe(22000);
+    expect(viewModel.plan.incomeProjection.source).toBe('manual_estimate');
+    expect(viewModel.plan.incomeProjection.projectedMonthEndIncome).toBe(1800);
+    expect(viewModel.summary.monthlyIncomeLabel).toBe('Manual estimate: ₹22,000');
+  });
+
+  it('falls back from manual estimate settings to current-month pace when amount is missing', async () => {
+    const viewModel = await getDebtFreedomCoachViewModel({
+      ...JUNE_OPTIONS,
+      settings: settings({
+        income_mode: 'manual_estimate',
+        confirmed_monthly_income: null,
+      }),
+      incomeReviewDecisions: [
+        incomeDecision({ transaction_id: 'reviewed_income', decision: 'count_as_income', income_source_type: 'gig_work' }),
+      ],
+      rows: {
+        transactions: [
+          transaction({ id: 'reviewed_income', category: 'Income', note: 'UPI credit received', amount: 600 }),
+        ],
+      },
+    });
+
+    expect(viewModel.plan.monthlyIncomeUsed).toBe(1800);
+    expect(viewModel.plan.incomeProjection.source).toBe('current_month_daily_average');
+    expect(viewModel.summary.monthlyIncomeLabel).toBe('Estimate: ₹1,800');
   });
 
   it('passes settings for essentials, emergency, target income, planned payment, target months, and strategy', async () => {
@@ -640,6 +782,48 @@ describe('getDebtFreedomCoachViewModel', () => {
     }));
     expect(viewModel.dataQuality.needsIncomeReviewCount).toBe(0);
     expect(viewModel.incomeReviewStatus).toBe('loaded');
+  });
+
+  it('uses reviewed evidence-only income decisions in the current-month projection', async () => {
+    const viewModel = await getDebtFreedomCoachViewModel({
+      ...JUNE_OPTIONS,
+      incomeReviewDecisions: [
+        incomeDecision({
+          transaction_id: null,
+          evidence_id: 'ev_1',
+          decision: 'count_as_income',
+          income_source_type: 'gig_work',
+        }),
+      ],
+      rows: {
+        incomeEvidence: [
+          evidence({ id: 'ev_1', amount: 900 }),
+        ],
+      },
+    });
+
+    expect(viewModel.plan.monthlyIncomeUsed).toBe(2700);
+    expect(viewModel.incomeEvents[0]).toEqual(expect.objectContaining({
+      id: 'ev_1',
+      sourceType: 'gig_work',
+      confidence: 'confirmed',
+      includeInIncome: true,
+    }));
+    expect(viewModel.dataQuality.needsIncomeReviewCount).toBe(0);
+  });
+
+  it('surfaces evidence-only credits in the income review count without counting them as income', async () => {
+    const viewModel = await getDebtFreedomCoachViewModel({
+      ...JUNE_OPTIONS,
+      rows: {
+        incomeEvidence: [
+          evidence({ id: 'needs_review_ev', amount: 800, source_app: null, source_package: null, merchant_or_person: null }),
+        ],
+      },
+    });
+
+    expect(viewModel.plan.monthlyIncomeUsed).toBeNull();
+    expect(viewModel.dataQuality.needsIncomeReviewCount).toBe(1);
   });
 
   it('excludes reviewed not-income credits from the projection', async () => {

@@ -350,9 +350,7 @@ export function classifyIncomeCandidate(event: IncomeEvent): IncomeEvent {
   }
 
   if (REVIEW_REQUIRED_SOURCES.has(event.sourceType)) {
-    const explicitlyConfirmed = event.sourceType !== 'unknown'
-      && event.includeInIncome
-      && event.confidence === 'confirmed';
+    const explicitlyConfirmed = event.includeInIncome && event.confidence === 'confirmed';
     return explicitlyConfirmed
       ? sanitizeIncomeEvent(event, {})
       : sanitizeIncomeEvent(event, {
@@ -797,14 +795,6 @@ function resolveIncomeProjection(
     };
   }
 
-  if (pace.includedIncomeCount > 0 && pace.projectedMonthEndIncome !== null) {
-    return {
-      monthlyIncomeUsed: pace.projectedMonthEndIncome,
-      projection: pace,
-      isVariableEstimate: true,
-    };
-  }
-
   const manualEstimate = income.incomeSource === 'manual_estimate'
     ? finitePositive(income.estimatedMonthlyIncome)
     : null;
@@ -818,6 +808,14 @@ function resolveIncomeProjection(
         confidence: 'estimated',
         explanationToken: 'income_projection_manual_estimate',
       },
+      isVariableEstimate: true,
+    };
+  }
+
+  if (pace.includedIncomeCount > 0 && pace.projectedMonthEndIncome !== null) {
+    return {
+      monthlyIncomeUsed: pace.projectedMonthEndIncome,
+      projection: pace,
       isVariableEstimate: true,
     };
   }
