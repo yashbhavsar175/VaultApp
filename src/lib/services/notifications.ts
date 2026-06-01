@@ -423,6 +423,17 @@ async function recordLegacySmsBalanceSignalSafely(
         snapshots: result.snapshots.length,
         detectedCandidates: result.detectedCandidates.length,
       });
+      if (
+        result.snapshots.length > 0 ||
+        result.detectedCandidates.length > 0 ||
+        result.debitCards.length > 0 ||
+        result.creditCardStatements.length > 0
+      ) {
+        emitFinanceDataChanged({
+          areas: ['accounts', 'balances'],
+          source: 'smsParser:balance_signal',
+        });
+      }
     }
   } catch (error) {
     console.warn('[BalanceSignal] Failed to record legacy SMS balance signal', {

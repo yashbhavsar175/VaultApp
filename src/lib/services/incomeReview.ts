@@ -117,6 +117,7 @@ const TRANSACTION_COLUMNS = [
   'from_account_id',
   'to_account_id',
   'refund_of_transaction_id',
+  'primary_evidence_id',
 ].join(', ');
 const EVIDENCE_COLUMNS = [
   'id',
@@ -139,7 +140,9 @@ const GIG_TOKENS = ['porter', 'swiggy', 'zomato', 'rapido', 'zepto', 'delivery',
 const SALARY_TOKENS = ['salary'];
 const FREELANCE_TOKENS = ['freelance', 'freelancing'];
 const BUSINESS_TOKENS = ['business'];
-const PERSONAL_TOKENS = ['family', 'friend', 'mom', 'dad', 'papa', 'mummy', 'brother', 'sister', 'split'];
+const FAMILY_TRANSFER_TOKENS = ['family', 'friend', 'mom', 'dad', 'papa', 'mummy', 'mother', 'father', 'brother', 'sister', 'split'];
+const PERSON_TRANSFER_TOKENS = ['person', 'personal transfer', 'upi from', 'received from', 'paid by'];
+const CASH_DEPOSIT_TOKENS = ['cash deposit', 'cash deposited', 'bank deposit', 'deposit credited', 'deposited into'];
 const REFUND_TOKENS = ['refund', 'reimbursement', 'reimburse'];
 const BORROWED_TOKENS = ['borrowed', 'loan from friend'];
 const TRANSFER_TOKENS = ['self transfer', 'own account', 'personal transfer'];
@@ -286,7 +289,7 @@ function candidateFromTransaction(tx: Transaction, decisions: IncomeReviewDecisi
     id: `transaction:${tx.id}`,
     candidateType: 'transaction' as const,
     transactionId: tx.id,
-    evidenceId: null,
+    evidenceId: tx.primary_evidence_id || null,
     signalHash: null,
     amount,
     receivedAt: tx.created_at,
@@ -323,7 +326,7 @@ function candidateFromTransaction(tx: Transaction, decisions: IncomeReviewDecisi
       safeReason: 'Self transfers are not counted as income.',
       confidence: 'high',
     };
-  } else if (hasAnyToken(text, PERSONAL_TOKENS) || hasAnyToken(text, REFUND_TOKENS)) {
+  } else if (hasAnyToken(text, FAMILY_TRANSFER_TOKENS) || hasAnyToken(text, REFUND_TOKENS)) {
     candidate = {
       ...base,
       sourceHint: 'personal_transfer',
@@ -331,6 +334,16 @@ function candidateFromTransaction(tx: Transaction, decisions: IncomeReviewDecisi
       suggestedIncomeSourceType: null,
       safeLabel: 'Personal transfer',
       safeReason: 'Family or friend transfers are not counted automatically.',
+      confidence: 'medium',
+    };
+  } else if (hasAnyToken(text, CASH_DEPOSIT_TOKENS)) {
+    candidate = {
+      ...base,
+      sourceHint: 'bank_credit',
+      suggestedDecision: 'not_income',
+      suggestedIncomeSourceType: null,
+      safeLabel: 'Bank credit',
+      safeReason: 'Cash deposits are not counted as income unless you review them.',
       confidence: 'medium',
     };
   } else if (tx.type === 'income' && hasAnyToken(text, SALARY_TOKENS)) {
@@ -374,12 +387,15 @@ function candidateFromTransaction(tx: Transaction, decisions: IncomeReviewDecisi
       confidence: 'medium',
     };
   } else if (tx.type === 'income') {
+    const looksLikePersonCredit = hasAnyToken(text, PERSON_TRANSFER_TOKENS);
     candidate = {
       ...base,
-      sourceHint: text.includes('upi') ? 'upi_credit' : text.includes('bank') ? 'bank_credit' : 'unknown',
+      sourceHint: looksLikePersonCredit
+        ? 'personal_transfer'
+        : text.includes('upi') ? 'upi_credit' : text.includes('bank') ? 'bank_credit' : 'unknown',
       suggestedDecision: 'needs_review',
       suggestedIncomeSourceType: null,
-      safeLabel: text.includes('bank') ? 'Bank credit' : 'UPI credit',
+      safeLabel: looksLikePersonCredit ? 'Person transfer' : text.includes('bank') ? 'Bank credit' : 'UPI credit',
       safeReason: 'Credit needs review before it can count as income.',
       confidence: 'needs_review',
     };
@@ -407,6 +423,7 @@ function candidateFromEvidence(evidence: TransactionEvidence, decisions: IncomeR
     receivedAt: evidence.captured_at,
   };
 
+  const hasCounterpartyHint = Boolean(evidence.merchant_or_person?.trim());
   const candidate: Omit<IncomeReviewCandidate, 'currentDecision'> = hasAnyToken(text, GIG_TOKENS)
     ? {
         ...base,
@@ -417,6 +434,36 @@ function candidateFromEvidence(evidence: TransactionEvidence, decisions: IncomeR
         safeReason: 'This credit signal looks like a gig payout, but you can override it.',
         confidence: 'medium',
       }
+    : hasAnyToken(text, FAMILY_TRANSFER_TOKENS)
+      ? {
+          ...base,
+          sourceHint: 'personal_transfer',
+          suggestedDecision: 'not_income',
+          suggestedIncomeSourceType: null,
+          safeLabel: 'Personal transfer',
+          safeReason: 'Family or friend transfers are not counted automatically.',
+          confidence: 'medium',
+        }
+    : hasAnyToken(text, CASH_DEPOSIT_TOKENS)
+      ? {
+          ...base,
+          sourceHint: 'bank_credit',
+          suggestedDecision: 'not_income',
+          suggestedIncomeSourceType: null,
+          safeLabel: 'Bank credit',
+          safeReason: 'Cash deposits are not counted as income unless you review them.',
+          confidence: 'medium',
+        }
+    : hasCounterpartyHint
+      ? {
+          ...base,
+          sourceHint: 'personal_transfer',
+          suggestedDecision: 'needs_review',
+          suggestedIncomeSourceType: null,
+          safeLabel: 'Person transfer',
+          safeReason: 'Credit needs review before it can count as income.',
+          confidence: 'needs_review',
+        }
     : {
         ...base,
         sourceHint: evidence.source_type === 'sms' ? 'bank_credit' : 'upi_credit',
@@ -433,6 +480,75 @@ function candidateFromEvidence(evidence: TransactionEvidence, decisions: IncomeR
   };
 }
 
+function candidateIdentityKeys(candidate: IncomeReviewCandidate): string[] {
+  return [
+    candidate.transactionId ? `tx:${candidate.transactionId}` : null,
+    candidate.evidenceId ? `ev:${candidate.evidenceId}` : null,
+    candidate.signalHash ? `sig:${candidate.signalHash}` : null,
+  ].filter((key): key is string => Boolean(key));
+}
+
+function candidateRank(candidate: IncomeReviewCandidate): number {
+  if (candidate.candidateType === 'transaction') return 3;
+  if (candidate.transactionId) return 2;
+  if (candidate.candidateType === 'evidence') return 1;
+  return 0;
+}
+
+function betterCandidate(
+  current: IncomeReviewCandidate,
+  next: IncomeReviewCandidate
+): IncomeReviewCandidate {
+  const rankDelta = candidateRank(next) - candidateRank(current);
+  if (rankDelta > 0) return next;
+  if (rankDelta < 0) return current;
+  return new Date(next.receivedAt).getTime() > new Date(current.receivedAt).getTime() ? next : current;
+}
+
+function mergeCandidateCluster(cluster: IncomeReviewCandidate[]): IncomeReviewCandidate {
+  const selected = cluster.reduce(betterCandidate);
+  const transactionId = selected.transactionId || cluster.find(candidate => candidate.transactionId)?.transactionId || null;
+  const evidenceId = selected.evidenceId || cluster.find(candidate => candidate.evidenceId)?.evidenceId || null;
+  const signalHash = selected.signalHash || cluster.find(candidate => candidate.signalHash)?.signalHash || null;
+  const currentDecision = selected.currentDecision || cluster.find(candidate => candidate.currentDecision)?.currentDecision || null;
+
+  return {
+    ...selected,
+    id: transactionId ? `transaction:${transactionId}` : signalHash ? `signal:${signalHash}` : selected.id,
+    transactionId,
+    evidenceId,
+    signalHash,
+    currentDecision,
+  };
+}
+
+function dedupeIncomeReviewCandidates(candidates: IncomeReviewCandidate[]): IncomeReviewCandidate[] {
+  const clusters: IncomeReviewCandidate[][] = [];
+
+  for (const candidate of candidates) {
+    const keys = candidateIdentityKeys(candidate);
+    const matchingIndexes = clusters
+      .map((cluster, index) => (
+        cluster.some(member => candidateIdentityKeys(member).some(key => keys.includes(key))) ? index : -1
+      ))
+      .filter(index => index >= 0);
+
+    if (matchingIndexes.length === 0) {
+      clusters.push([candidate]);
+      continue;
+    }
+
+    const [firstIndex, ...restIndexes] = matchingIndexes;
+    clusters[firstIndex].push(candidate);
+    for (const index of restIndexes.reverse()) {
+      clusters[firstIndex].push(...clusters[index]);
+      clusters.splice(index, 1);
+    }
+  }
+
+  return clusters.map(mergeCandidateCluster);
+}
+
 export function buildIncomeReviewCandidatesFromRows(
   rows: {
     transactions?: Transaction[];
@@ -442,11 +558,12 @@ export function buildIncomeReviewCandidatesFromRows(
   options: Pick<GetIncomeReviewCandidatesOptions, 'showExcluded' | 'limit'> = {}
 ): IncomeReviewCandidate[] {
   const decisions = rows.decisions || [];
-  const candidates = [
+  const candidates = dedupeIncomeReviewCandidates([
     ...(rows.transactions || []).map(tx => candidateFromTransaction(tx, decisions)),
     ...(rows.evidence || []).map(evidence => candidateFromEvidence(evidence, decisions)),
   ]
     .filter((candidate): candidate is IncomeReviewCandidate => Boolean(candidate))
+  )
     .filter(candidate => options.showExcluded || candidate.suggestedDecision !== 'not_income' || candidate.currentDecision)
     .sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
 
@@ -538,22 +655,25 @@ async function findExistingDecision(
   userId: string,
   payload: ReturnType<typeof sanitizeDecisionInput>
 ): Promise<IncomeReviewDecision | null> {
-  let query = supabase
-    .from('income_review_decisions')
-    .select(DECISION_COLUMNS)
-    .eq('user_id', userId);
+  const lookups: Array<[string, string | null]> = [
+    ['transaction_id', payload.transaction_id],
+    ['evidence_id', payload.evidence_id],
+    ['signal_hash', payload.signal_hash],
+  ];
 
-  if (payload.transaction_id) {
-    query = query.eq('transaction_id', payload.transaction_id);
-  } else if (payload.evidence_id) {
-    query = query.eq('evidence_id', payload.evidence_id);
-  } else if (payload.signal_hash) {
-    query = query.eq('signal_hash', payload.signal_hash);
+  for (const [column, value] of lookups) {
+    if (!value) continue;
+    const { data, error } = await supabase
+      .from('income_review_decisions')
+      .select(DECISION_COLUMNS)
+      .eq('user_id', userId)
+      .eq(column, value)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) return data as unknown as IncomeReviewDecision;
   }
 
-  const { data, error } = await query.maybeSingle();
-  if (error) throw error;
-  return data as IncomeReviewDecision | null;
+  return null;
 }
 
 export async function upsertIncomeReviewDecision(

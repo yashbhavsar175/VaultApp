@@ -121,6 +121,18 @@ describe('IncomeReviewScreen', () => {
     mockedDelete.mockReset();
   });
 
+  it('loads excluded credit candidates so Dashboard review prompts have a review surface', async () => {
+    const renderer = await renderWithState({
+      candidates: [],
+      storageStatus: 'ready',
+    });
+
+    expect(mockedGetState).toHaveBeenCalledWith({ showExcluded: true });
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
   it('renders the loading state', () => {
     mockedGetState.mockReturnValue(new Promise(() => {}));
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
@@ -175,6 +187,7 @@ describe('IncomeReviewScreen', () => {
     expect(text).toContain('Income Review');
     expect(text).toContain('₹1,200');
     expect(text).toContain('Possible gig payout');
+    expect(text).toContain('Dashboard: Counted as reviewed income');
     expect(text).toContain('Source hint: Gig payout');
     expect(text).toContain('Count as income');
     expect(text).toContain('Not income');
@@ -262,6 +275,59 @@ describe('IncomeReviewScreen', () => {
       decision: 'count_as_income',
       income_source_type: 'other',
     }));
+  });
+
+  it('saves deduped transaction/evidence cards with the shared identity fields', async () => {
+    mockedGetState
+      .mockResolvedValueOnce({
+        candidates: [
+          candidate({
+            transactionId: 'tx_22700',
+            evidenceId: 'ev_22700',
+            signalHash: 'abcabc123456',
+            amount: 22700,
+            sourceHint: 'bank_credit',
+            safeLabel: 'Bank credit',
+          }),
+        ],
+        storageStatus: 'ready',
+      })
+      .mockResolvedValueOnce({ candidates: [], storageStatus: 'ready' });
+    mockedUpsert.mockResolvedValue({});
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<IncomeReviewScreen />);
+    });
+
+    expect(renderedText(renderer!)).toContain('Dashboard: Not counted until reviewed');
+
+    await ReactTestRenderer.act(async () => {
+      await touchableByText(renderer!, 'Not income')!.props.onPress();
+    });
+
+    expect(mockedUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      transaction_id: 'tx_22700',
+      evidence_id: 'ev_22700',
+      signal_hash: 'abcabc123456',
+      decision: 'not_income',
+      income_source_type: null,
+    }));
+  });
+
+  it('renders service-deduped candidates without duplicate React keys', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const renderer = await renderWithState({
+      candidates: [
+        candidate({ id: 'transaction:tx_1', transactionId: 'tx_1' }),
+        candidate({ id: 'signal:abcabc123456', transactionId: null, evidenceId: 'ev_1', signalHash: 'abcabc123456' }),
+      ],
+      storageStatus: 'ready',
+    });
+
+    expect(renderedText(renderer)).toContain('₹1,200');
+    expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('Encountered two children with the same key');
+    errorSpy.mockRestore();
   });
 
   it('resets an existing decision with delete service', async () => {

@@ -337,7 +337,7 @@ export default function BankConfigScreen() {
   useFocusEffect(
     useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
-        if (financeDataChangedAffects(payload, ['accounts'])) {
+        if (financeDataChangedAffects(payload, ['accounts', 'balances'])) {
           debouncedLoadSilently();
         }
       });

@@ -1,4 +1,7 @@
-import { recordBalanceSignalForUser } from './balanceSignalRecorder';
+import {
+  recordBalanceSignalForUser,
+  recordEstimatedBankBalanceMovementForUser,
+} from './balanceSignalRecorder';
 import { supabase } from '../core';
 
 jest.mock('../core', () => ({
@@ -356,6 +359,110 @@ describe('balance signal runtime recorder', () => {
       source: 'sms',
       kind: 'balance_signal',
       reasons: expect.any(Array),
+    }));
+  });
+
+  it('creates an estimated calculated snapshot from the latest known bank balance', async () => {
+    tables.bank_accounts.push({
+      id: 'bank_1',
+      user_id: 'user_1',
+      bank_name: 'Kotak Bank',
+      account_last4: '1447',
+      account_type: 'savings',
+      balance: 10000,
+    });
+    tables.balance_snapshots.push({
+      id: 'snap_existing',
+      user_id: 'user_1',
+      owner_type: 'bank_account',
+      owner_id: 'bank_1',
+      account_last4: '1447',
+      detected_bank_name: 'Kotak Bank',
+      balance_kind: 'available_balance',
+      amount: 10000,
+      source: 'sms',
+      confidence: 'exact',
+      detected_at: '2026-06-01T05:00:00.000Z',
+      created_at: '2026-06-01T05:00:00.000Z',
+      raw_source_metadata: { hash: '11111111' },
+    });
+
+    const snapshot = await recordEstimatedBankBalanceMovementForUser({
+      userId: 'user_1',
+      bankAccountId: 'bank_1',
+      amount: 5000,
+      direction: 'credit',
+      sourceType: 'notification',
+      timestamp: Date.UTC(2026, 5, 1, 5, 15),
+      sourceHash: 'abcdef12',
+      sourceLength: 56,
+      senderOrPackage: 'com.google.android.apps.nbu.paisa.user',
+    });
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      owner_type: 'bank_account',
+      owner_id: 'bank_1',
+      balance_kind: 'available_balance',
+      amount: 15000,
+      source: 'calculated',
+      confidence: 'estimated',
+    }));
+    expect(tables.balance_snapshots).toHaveLength(2);
+    expect(tables.balance_snapshots[1].raw_source_metadata).toEqual(expect.objectContaining({
+      hash: 'abcdef12',
+      kind: 'transaction_balance_estimate',
+      source: 'notification',
+    }));
+  });
+
+  it('does not invent an estimated balance without a previous known balance', async () => {
+    tables.bank_accounts.push({
+      id: 'bank_1',
+      user_id: 'user_1',
+      bank_name: 'Kotak Bank',
+      account_last4: '1447',
+      account_type: 'savings',
+      balance: null,
+    });
+
+    const snapshot = await recordEstimatedBankBalanceMovementForUser({
+      userId: 'user_1',
+      bankAccountId: 'bank_1',
+      amount: 5000,
+      direction: 'credit',
+      sourceType: 'notification',
+      sourceHash: 'abcdef12',
+    });
+
+    expect(snapshot).toBeNull();
+    expect(tables.balance_snapshots).toHaveLength(0);
+  });
+
+  it('subtracts a matched debit when creating an estimated calculated snapshot', async () => {
+    tables.bank_accounts.push({
+      id: 'bank_1',
+      user_id: 'user_1',
+      bank_name: 'Kotak Bank',
+      account_last4: '1447',
+      account_type: 'savings',
+      balance: 10000,
+    });
+
+    const snapshot = await recordEstimatedBankBalanceMovementForUser({
+      userId: 'user_1',
+      bankAccountId: 'bank_1',
+      amount: 1500,
+      direction: 'debit',
+      sourceType: 'sms',
+      sourceHash: 'abcdef12',
+    });
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      owner_type: 'bank_account',
+      owner_id: 'bank_1',
+      amount: 8500,
+      source: 'calculated',
+      confidence: 'estimated',
     }));
   });
 });

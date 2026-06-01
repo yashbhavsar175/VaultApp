@@ -86,3 +86,17 @@ When working on this app:
 - Do not assume README is fully current; current source code has more features than the README.
 - Any schema change must be checked against both SQL files and TypeScript/database functions.
 - UI quality rule: App-facing UI copy must be English-only. Do not use Hinglish/Hindi in React Native screens, modals, buttons, labels, empty states, toasts, or tests that represent user-facing copy. Visible fallback icons such as '?' indicate an invalid/missing icon and must be treated as UI bugs. Every new UI card/action should use a verified icon name or a safe wrapper with fallback tests.
+
+Low-Credit Safe Mode:
+- Minimize Codex usage while preserving safety.
+- Do not split into separate implement and review turns unless the task touches SQL/RLS/RPC, auth/session/cache, financial mutations, native dependencies, privacy logging, or parser/transaction behavior.
+- Prefer one pass: inspect -> make the smallest fix -> add focused tests -> run required verification -> report.
+- Run focused tests first when possible.
+- Run full `npx jest --runInBand` only after code changes are complete.
+- Run Android compile only if TypeScript, app, or native dependency changes require it.
+- Run install/runtime smoke only if UI, native dependency, startup/auth, SQL-live behavior, or runtime processor behavior changed.
+- Do not rerun unchanged checks only to repeat results.
+- Do not run broad runtime smoke for docs-only, test-only, or lockfile-only changes unless dependency or runtime behavior changed.
+- Do not use `npm audit fix --force`.
+- If no safe change is needed, report findings without editing.
+- Always keep privacy rules, no-fake-transaction rules, English-only UI, and no visible `?` icon fallback rules.

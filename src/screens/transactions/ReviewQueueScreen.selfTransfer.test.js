@@ -4,6 +4,15 @@ const fs = require('fs');
 const path = require('path');
 
 describe('ReviewQueueScreen self-transfer routing gate', () => {
+  it('uses confirmation wording for generic credits and debits', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'ReviewQueueScreen.tsx'), 'utf8');
+
+    expect(source).toContain('Count as income');
+    expect(source).toContain('Count as expense');
+    expect(source).not.toContain('Create Income');
+    expect(source).not.toContain('Create Expense');
+  });
+
   it('exposes self-transfer posting UI without income or expense wording', () => {
     const source = fs.readFileSync(path.join(__dirname, 'ReviewQueueScreen.tsx'), 'utf8');
 

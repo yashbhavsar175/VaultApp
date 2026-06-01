@@ -376,7 +376,7 @@ export function BanksScreen() {
   useFocusEffect(
     useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
-        if (financeDataChangedAffects(payload, ['accounts'])) {
+        if (financeDataChangedAffects(payload, ['accounts', 'balances'])) {
           reloadCardsAndAccounts();
         }
       });
@@ -1886,7 +1886,7 @@ export function AnalyticsScreen() {
   useFocusEffect(
     useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
-        if (financeDataChangedAffects(payload, ['transactions', 'accounts'])) {
+        if (financeDataChangedAffects(payload, ['transactions', 'accounts', 'balances'])) {
           loadDataSilently().catch(error => console.error('Error refreshing analytics after data event:', error));
         }
       });

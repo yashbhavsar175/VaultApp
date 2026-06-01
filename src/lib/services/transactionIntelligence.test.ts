@@ -33,7 +33,7 @@ describe('Transaction Intelligence Core', () => {
     expect(result.amount).toBe(40);
     expect(result.merchantOrPerson).toBe('SANDHU AMRITPAL');
     expect(result.confidenceLevel).toBe('high');
-    expect(result.decision).toBe('auto_add_candidate');
+    expect(result.decision).toBe('review_required');
   });
 
   it('classifies credit card bill payment correctly', () => {
@@ -111,6 +111,25 @@ describe('Transaction Intelligence Core', () => {
     expect(result.direction).toBe('neutral');
     expect(result.amount).toBe(1000);
     expect(result.confidenceLevel).toBe('medium');
+    expect(result.decision).toBe('review_required');
+  });
+
+  it.each([
+    ['Rs.11000 cash deposited into your bank account', 'cash_deposit', 'credit'],
+    ['Rs.11000 withdrawn from ATM', 'cash_withdrawal', 'debit'],
+    ['Rs.11000 received from brother via UPI', 'personal_transfer', 'credit'],
+    ['Rs.11000 loan repayment debited', 'debt_repayment', 'debit'],
+    ['Rs.11000 reimbursement credited', 'reimbursement', 'credit'],
+  ] as const)('keeps personal movement candidate "%s" in review', (rawText, autoClass, direction) => {
+    const result = processSignal({
+      rawText,
+      senderOrPackage: 'HDFCBK',
+      sourceType: 'sms',
+      timestamp: Date.now(),
+    });
+
+    expect(result.autoClass).toBe(autoClass);
+    expect(result.direction).toBe(direction);
     expect(result.decision).toBe('review_required');
   });
 

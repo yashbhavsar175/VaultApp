@@ -23,6 +23,8 @@ declare const process: { env?: { NODE_ENV?: string } };
 const LEGACY_AUTH_TOKEN_KEY = 'supabase.auth.token';
 const AUTH_STARTUP_TIMEOUT_MS = 4500;
 const PROFILE_STARTUP_TIMEOUT_MS = 6000;
+const AUTH_BOOTSTRAP_WATCHDOG_MS = 8000;
+const STARTUP_CACHE_CLEAR_TIMEOUT_MS = 1500;
 const INTRO_EXIT_FALLBACK_MS = 700;
 const SKIP_INTRO_FALLBACK = process.env?.NODE_ENV === 'test';
 
@@ -45,7 +47,7 @@ export const getCachedProfileRouteHint = (
   return cachedUserMatches && cachedName ? 'complete' : null;
 };
 
-const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+export const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -60,6 +62,8 @@ const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, la
     if (timeoutId) clearTimeout(timeoutId);
   }
 };
+
+export const deferAuthStateChange = (callback: () => void) => setTimeout(callback, 0);
 
 export const summarizeStartupError = (error: unknown) => {
   if (error && typeof error === 'object') {
@@ -117,6 +121,8 @@ function App() {
   const [introDone, setIntroDone] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
   const [profileStatus, setProfileStatus] = useState<ProfileStatus>('unknown');
+  const [startupRepairRequired, setStartupRepairRequired] = useState(false);
+  const [startupRetryRevision, setStartupRetryRevision] = useState(0);
   const authRouteRevisionRef = useRef(0);
   const inFlightProfileCheckRef = useRef<{ userId: string; promise: Promise<ProfileStatus> } | null>(null);
   const prefetchedUserIdRef = useRef<string | null>(null);
@@ -236,6 +242,20 @@ function App() {
   useEffect(() => {
     // Supabase persists sessions through the AsyncStorage-backed auth client.
     let isMounted = true;
+    const startupWatchdog = setTimeout(() => {
+      if (!isMounted) return;
+      ++authRouteRevisionRef.current;
+      console.info('[AuthStartup] Bootstrap watchdog opened repair route', {
+        timeoutMs: AUTH_BOOTSTRAP_WATCHDOG_MS,
+      });
+      setStartupRepairRequired(true);
+      setAuthReady(true);
+    }, AUTH_BOOTSTRAP_WATCHDOG_MS);
+    const markAuthReady = () => {
+      clearTimeout(startupWatchdog);
+      setStartupRepairRequired(false);
+      setAuthReady(true);
+    };
 
     const resolveProfileRoute = async (nextSession: Session, routeRevision?: number) => {
       const cachedStatus = await getCachedProfileStatus(nextSession);
@@ -299,6 +319,7 @@ function App() {
 
     const initAuth = async () => {
       const startupRevision = authRouteRevisionRef.current;
+      let sessionLoadTimedOut = false;
 
       try {
         void AsyncStorage.removeItem(LEGACY_AUTH_TOKEN_KEY).catch(() => undefined);
@@ -313,13 +334,25 @@ function App() {
             return null;
           }
 
-          console.warn('[AuthStartup] Session load fallback shows logged-out route', {
+          sessionLoadTimedOut = isStartupTimeout(error, 'Supabase session load', AUTH_STARTUP_TIMEOUT_MS);
+          console.warn(sessionLoadTimedOut
+            ? '[AuthStartup] Session load timed out; waiting for late recovery'
+            : '[AuthStartup] Session load fallback shows logged-out route', {
             error: summarizeStartupError(error),
           });
 
           void initialSessionPromise
             .then(async ({ data: { session: lateSession } }) => {
-              if (!isMounted || !lateSession?.user) return;
+              if (!isMounted) return;
+              if (!lateSession?.user) {
+                if (authRouteRevisionRef.current === startupRevision) {
+                  prefetchedUserIdRef.current = null;
+                  setProfileStatus('unknown');
+                  setSession(null);
+                  markAuthReady();
+                }
+                return;
+              }
               const routeRevision = ++authRouteRevisionRef.current;
               setSession(lateSession);
               setProfileStatus('checking');
@@ -327,6 +360,7 @@ function App() {
               if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
               setProfileStatus(nextProfileStatus);
               prefetchForSession(lateSession);
+              markAuthReady();
             })
             .catch(lateError => {
               console.warn('[AuthStartup] Late session recovery failed', {
@@ -339,7 +373,11 @@ function App() {
         if (!isMounted) return;
 
         if (authRouteRevisionRef.current !== startupRevision) {
-          setAuthReady(true);
+          markAuthReady();
+          return;
+        }
+
+        if (sessionLoadTimedOut) {
           return;
         }
 
@@ -367,13 +405,14 @@ function App() {
         setSession(null);
       }
       if (isMounted) {
-        setAuthReady(true);
+        markAuthReady();
       }
     };
 
     initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+    const deferredAuthTimers = new Set<ReturnType<typeof setTimeout>>();
+    const applyAuthStateChange = async (nextSession: Session | null) => {
       const routeRevision = ++authRouteRevisionRef.current;
       if (nextSession?.user) {
         setSession(nextSession);
@@ -388,13 +427,40 @@ function App() {
         setProfileStatus('unknown');
         setSession(null);
       }
+      if (isMounted && routeRevision === authRouteRevisionRef.current) {
+        markAuthReady();
+      }
+    };
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      const deferredTimer = deferAuthStateChange(() => {
+        deferredAuthTimers.delete(deferredTimer);
+        void applyAuthStateChange(nextSession).catch(error => {
+          if (!isMounted) return;
+          console.warn('[AuthStartup] Auth change route unavailable', {
+            error: summarizeStartupError(error),
+          });
+          if (nextSession?.user) {
+            setSession(nextSession);
+            setProfileStatus('error');
+          } else {
+            prefetchedUserIdRef.current = null;
+            setProfileStatus('unknown');
+            setSession(null);
+          }
+          markAuthReady();
+        });
+      });
+      deferredAuthTimers.add(deferredTimer);
     });
 
     return () => {
       isMounted = false;
+      clearTimeout(startupWatchdog);
+      deferredAuthTimers.forEach(clearTimeout);
       subscription.unsubscribe();
     };
-  }, [getCachedProfileStatus, prefetchForSession, resolveProfileStatus]);
+  }, [getCachedProfileStatus, prefetchForSession, resolveProfileStatus, startupRetryRevision]);
 
   const handleProfileComplete = () => {
     setProfileStatus('complete');
@@ -431,6 +497,26 @@ function App() {
     }
   }, [getCachedProfileStatus, resolveProfileStatus, session]);
 
+  const retryStartup = useCallback(() => {
+    ++authRouteRevisionRef.current;
+    setStartupRepairRequired(false);
+    setAuthReady(false);
+    setStartupRetryRevision(revision => revision + 1);
+  }, []);
+
+  const clearLocalStartupCache = useCallback(async () => {
+    await withStartupTimeout(
+      AsyncStorage.removeItem(CACHE_KEYS.USER_PROFILE),
+      STARTUP_CACHE_CLEAR_TIMEOUT_MS,
+      'Startup profile cache clear',
+    ).catch(error => {
+      console.warn('[AuthStartup] Local startup cache clear unavailable', {
+        error: summarizeStartupError(error),
+      });
+    });
+    retryStartup();
+  }, [retryStartup]);
+
   const handleIntroComplete = useCallback(() => {
     setIntroDone(true);
   }, []);
@@ -454,7 +540,9 @@ function App() {
     <ThemeProvider>
       <SafeAreaProvider>
         <NavigationContainer>
-          {session ? (
+          {startupRepairRequired ? (
+            <StartupRepairScreen onRetry={retryStartup} onClearLocalCache={clearLocalStartupCache} />
+          ) : session ? (
             profileStatus === 'complete' ? (
               <RootNavigator />
             ) : profileStatus === 'incomplete' ? (
@@ -480,6 +568,29 @@ function App() {
         {session && profileStatus === 'complete' && <PermissionPrompt />}
       </SafeAreaProvider>
     </ThemeProvider>
+  );
+}
+
+export function StartupRepairScreen({
+  onRetry,
+  onClearLocalCache,
+}: {
+  onRetry: () => void;
+  onClearLocalCache: () => void;
+}) {
+  return (
+    <View style={styles.routeStatusContainer}>
+      <Text style={styles.routeStatusTitle}>Startup needs a retry</Text>
+      <Text style={styles.routeStatusText}>
+        SpendSense could not finish preparing your session. Retry, or clear the local startup cache and try again.
+      </Text>
+      <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
+        <Text style={styles.retryButtonText}>Retry</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.clearCacheButton} onPress={onClearLocalCache}>
+        <Text style={styles.clearCacheButtonText}>Clear local startup cache</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -545,6 +656,17 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  clearCacheButton: {
+    marginTop: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  clearCacheButtonText: {
+    color: '#c4b5fd',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 });
 

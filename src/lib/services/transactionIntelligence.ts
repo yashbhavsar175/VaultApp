@@ -16,6 +16,12 @@ export type AutoTransactionClass =
   | 'upi_received'
   | 'refund'
   | 'cashback_reward'
+  | 'cash_deposit'
+  | 'cash_withdrawal'
+  | 'personal_transfer'
+  | 'reimbursement'
+  | 'borrowed_money'
+  | 'debt_repayment'
   | 'wallet_load'
   | 'self_transfer'
   | 'non_transaction'
@@ -160,6 +166,30 @@ function classify(text: string, amount: number | null, instrumentHint: SmartCand
       return { autoClass: 'self_transfer', direction: 'neutral' };
   }
 
+  if (/\b(?:cash|atm|bank)\s+deposit(?:ed)?\b|\bdeposit(?:ed)?\s+(?:cash|into (?:my|your) (?:bank )?account)\b/i.test(lower)) {
+      return { autoClass: 'cash_deposit', direction: 'credit' };
+  }
+
+  if (/\bwithdraw(?:al|n)?\b|\bwithdrawn\b/i.test(lower)) {
+      return { autoClass: 'cash_withdrawal', direction: 'debit' };
+  }
+
+  if (/\breimburse(?:ment|d)?\b/i.test(lower)) {
+      return { autoClass: 'reimbursement', direction: /debited|paid|sent/i.test(lower) ? 'debit' : 'credit' };
+  }
+
+  if (/\b(?:borrowed|loan from (?:family|friend|brother|sister|person))\b/i.test(lower)) {
+      return { autoClass: 'borrowed_money', direction: 'credit' };
+  }
+
+  if (/\b(?:loan|debt|borrowed money)\s+repay(?:ment|aid)?\b|\brepay(?:ment|aid)?\b.*\b(?:loan|debt|borrowed)\b/i.test(lower)) {
+      return { autoClass: 'debt_repayment', direction: 'debit' };
+  }
+
+  if (/\b(?:family|friend|brother|sister|mom|mother|dad|father|papa|mummy|bhai|dost|yaar|personal)\b/i.test(lower)) {
+      return { autoClass: 'personal_transfer', direction: /debited|paid|sent/i.test(lower) ? 'debit' : 'credit' };
+  }
+
   if (/payment.*received towards.*credit card|credit card bill.*paid/i.test(lower)) {
       return { autoClass: 'credit_card_bill_payment', direction: 'neutral' };
   }
@@ -290,6 +320,27 @@ function decide(autoClass: AutoTransactionClass, level: ConfidenceLevel, trusted
   if (autoClass === 'non_transaction') return 'ignore';
   if (autoClass === 'unknown_financial') {
     return level === 'low' ? 'ignore' : 'review_required';
+  }
+
+  if ([
+    'bank_credit',
+    'bank_debit',
+    'borrowed_money',
+    'cash_deposit',
+    'cash_withdrawal',
+    'credit_card_bill_payment',
+    'debt_repayment',
+    'loan_disbursal',
+    'loan_emi_payment',
+    'personal_transfer',
+    'refund',
+    'reimbursement',
+    'self_transfer',
+    'upi_payment',
+    'upi_received',
+    'wallet_load',
+  ].includes(autoClass)) {
+    return 'review_required';
   }
   
   if (level === 'high' && trustedSource) {

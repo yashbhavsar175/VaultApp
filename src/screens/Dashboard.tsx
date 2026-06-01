@@ -11,8 +11,19 @@ import { ScreenWrapper, Card, AppHeader, QuickAddModal } from '../components';
 import { getPeopleLedger } from '../lib/database/userdata';
 import { getCached, setCache, CACHE_KEYS } from '../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/services/dataEvents';
-import { computeMonthlyTransactionTotals } from '../utils/financeSummary';
+import {
+  computeDashboardReviewBreakdown,
+  computeDashboardReviewPromptSummary,
+  computeMonthlyTransactionTotals,
+} from '../utils/financeSummary';
 import { runWhenIdle } from '../utils/runWhenIdle';
+import {
+  getIncomeReviewCandidates,
+  getIncomeReviewDecisions,
+  IncomeReviewCandidate,
+  IncomeReviewDecision,
+} from '../lib/services/incomeReview';
+import { getReviewQueue, ReviewItem } from '../lib/services/autoTransactionReviewQueue';
 
 // Enable LayoutAnimation on Android
 const isFabricEnabled = (globalThis as any).nativeFabricUIManager != null;
@@ -31,8 +42,18 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [peopleLedger, setPeopleLedger] = useState<PeopleLedger[]>([]);
+  const [incomeReviewDecisions, setIncomeReviewDecisions] = useState<IncomeReviewDecision[]>([]);
+  const [incomeReviewCandidates, setIncomeReviewCandidates] = useState<IncomeReviewCandidate[]>([]);
+  const [transactionReviewItems, setTransactionReviewItems] = useState<ReviewItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // SECURITY: Privacy screen when app goes to background
   const [isPrivacyMode, setIsPrivacyMode] = useState(false);
@@ -124,9 +145,23 @@ export default function Dashboard() {
   const lentPeopleEntries = useMemo(() => peopleLedger.filter(e => e.type === 'lent'), [peopleLedger]);
 
   const monthlyTotals = useMemo(
-    () => computeMonthlyTransactionTotals(transactions, selectedDate),
-    [selectedDate, transactions]
+    () => computeMonthlyTransactionTotals(transactions, selectedDate, { incomeReviewDecisions }),
+    [incomeReviewDecisions, selectedDate, transactions]
   );
+  const reviewPromptSummary = useMemo(
+    () => computeDashboardReviewPromptSummary(transactions, selectedDate, { incomeReviewDecisions }),
+    [incomeReviewDecisions, selectedDate, transactions]
+  );
+  const reviewBreakdown = useMemo(
+    () => computeDashboardReviewBreakdown(reviewPromptSummary, incomeReviewCandidates, transactionReviewItems),
+    [incomeReviewCandidates, reviewPromptSummary, transactionReviewItems]
+  );
+  const reviewPromptCount = reviewBreakdown.totalReviewableCount;
+  const hasMixedReviewSources = reviewBreakdown.incomeReviewCount > 0
+    && reviewBreakdown.transactionReviewCount > 0;
+  const reviewPromptLabel = hasMixedReviewSources
+    ? `${reviewBreakdown.incomeReviewCount} ${reviewBreakdown.incomeReviewCount === 1 ? 'credit' : 'credits'} and ${reviewBreakdown.transactionReviewCount} ${reviewBreakdown.transactionReviewCount === 1 ? 'movement' : 'movements'} need review`
+    : `${reviewPromptCount} ${reviewPromptCount === 1 ? 'item needs' : 'items need'} review`;
 
   const {
     totalIncome,
@@ -144,6 +179,29 @@ export default function Dashboard() {
   const lastTransactionsRef = useRef<Transaction[]>([]);
   const lastPeopleRef = useRef<PeopleLedger[]>([]);
   const isSilentLoadInFlightRef = useRef(false);
+
+  const loadIncomeReviewDecisionsSilently = useCallback(async () => {
+    try {
+      const decisions = await getIncomeReviewDecisions();
+      if (isMountedRef.current) setIncomeReviewDecisions(decisions);
+    } catch {
+      console.warn('[Dashboard] Income review decisions unavailable');
+    }
+  }, []);
+
+  const loadReviewPromptDataSilently = useCallback(async () => {
+    try {
+      const [candidates, queueItems] = await Promise.all([
+        getIncomeReviewCandidates({ showExcluded: true }),
+        getReviewQueue(),
+      ]);
+      if (!isMountedRef.current) return;
+      setIncomeReviewCandidates(candidates);
+      setTransactionReviewItems(queueItems);
+    } catch {
+      console.warn('[Dashboard] Review prompt data unavailable');
+    }
+  }, []);
 
   const areTransactionsEqual = useCallback((left: Transaction[], right: Transaction[]) => {
     if (left.length !== right.length) return false;
@@ -194,6 +252,9 @@ export default function Dashboard() {
       } catch (error) {
         console.error('Error loading transactions:', error);
       }
+
+      await loadIncomeReviewDecisionsSilently();
+      await loadReviewPromptDataSilently();
       
       // Load people ledger data
       try {
@@ -213,7 +274,7 @@ export default function Dashboard() {
     } finally {
       isSilentLoadInFlightRef.current = false;
     }
-  }, [arePeopleLedgerEqual, areTransactionsEqual]);
+  }, [arePeopleLedgerEqual, areTransactionsEqual, loadIncomeReviewDecisionsSilently, loadReviewPromptDataSilently]);
 
   const loadData = useCallback(async () => {
     try {
@@ -234,6 +295,8 @@ export default function Dashboard() {
           lastPeopleRef.current = cachedLedger.data;
         }
         setLoading(false); // Skip skeleton entirely!
+        void loadIncomeReviewDecisionsSilently();
+        void loadReviewPromptDataSilently();
 
         // Step 2: Silently refresh in background if stale
         if (cachedTxns?.isStale || cachedLedger?.isStale) {
@@ -250,7 +313,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [loadDataSilently]);
+  }, [loadDataSilently, loadIncomeReviewDecisionsSilently, loadReviewPromptDataSilently]);
 
   // Keep ref always pointing to the latest loadDataSilently — prevents stale closure in debounce
   const loadDataSilentlyRef = useRef(loadDataSilently);
@@ -289,7 +352,7 @@ export default function Dashboard() {
   useFocusEffect(
     React.useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
-        if (financeDataChangedAffects(payload, ['transactions', 'ledger'])) {
+        if (financeDataChangedAffects(payload, ['transactions', 'ledger', 'review'])) {
           debouncedLoadSilently();
         }
       });
@@ -311,6 +374,20 @@ export default function Dashboard() {
     await loadDataSilently();
     setRefreshing(false);
   };
+
+  const handleReviewIncome = () => {
+    triggerHaptic();
+    (navigation as any).navigate('Settings', { screen: 'IncomeReview' });
+  };
+
+  const handleReviewMovements = () => {
+    triggerHaptic();
+    (navigation as any).navigate('ReviewQueue');
+  };
+
+  const handleReviewNow = reviewBreakdown.transactionReviewCount > 0
+    ? handleReviewMovements
+    : handleReviewIncome;
 
   // SECURITY: Blank privacy screen when app is in background
   if (isPrivacyMode) {
@@ -452,6 +529,69 @@ export default function Dashboard() {
             </View>
           </View>
         </View>
+
+        {reviewPromptCount > 0 && (
+          <View style={{ paddingHorizontal: spacing.lg, marginBottom: spacing.lg }}>
+            <Card style={[
+              styles.reviewPromptCard,
+              {
+                borderColor: colors.warning || '#f59e0b',
+                backgroundColor: colors.card,
+              },
+            ]}>
+              <View style={styles.reviewPromptHeader}>
+                <View style={[
+                  styles.reviewPromptIcon,
+                  { backgroundColor: `${colors.warning || '#f59e0b'}20` },
+                ]}>
+                  <MaterialCommunityIcons name="inbox-multiple-outline" size={22} color={colors.warning || '#f59e0b'} />
+                </View>
+                <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                  <Text style={[typography.bodyBold, { color: colors.text }]}>
+                    Money movements need review
+                  </Text>
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                    {reviewPromptLabel}
+                  </Text>
+                </View>
+              </View>
+              <Text style={[typography.body, { color: colors.text, marginTop: spacing.sm }]}>
+                Some credits or debits were not counted in income or expenses.
+              </Text>
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>
+                Review them to keep your dashboard accurate.
+              </Text>
+              <View style={[styles.reviewPromptActions, { marginTop: spacing.md }]}>
+                {hasMixedReviewSources ? (
+                  <>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={handleReviewIncome}
+                      style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
+                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review income</Text>
+                      <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={handleReviewMovements}
+                      style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
+                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review movements</Text>
+                      <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={handleReviewNow}
+                    style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
+                    <Text style={[typography.bodyBold, { color: '#fff' }]}>Review now</Text>
+                    <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </Card>
+          </View>
+        )}
 
         {/* Accordion Sections */}
         <View style={{ paddingHorizontal: spacing.lg }}>
@@ -728,6 +868,35 @@ const styles = StyleSheet.create({
   },
   summaryCard: {
     padding: 16,
+  },
+  reviewPromptCard: {
+    padding: 16,
+    borderWidth: 1,
+  },
+  reviewPromptHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  reviewPromptIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reviewPromptButton: {
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  reviewPromptActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   progressBar: {
     height: 8,

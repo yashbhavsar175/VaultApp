@@ -12,6 +12,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import HapticFeedback from 'react-native-haptic-feedback';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import {
   getReviewQueue,
   markIgnored,
@@ -74,6 +75,13 @@ export default function ReviewQueueScreen() {
   const emiPaymentPostingRef = useRef(false);
   const transferPostingRef = useRef(false);
   const refundPostingRef = useRef(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const loadQueueAndBanks = useCallback(async () => {
     try {
@@ -84,6 +92,7 @@ export default function ReviewQueueScreen() {
         getLoans(),
         getTransactions(),
       ]);
+      if (!isMountedRef.current) return;
       // Only show pending items in the active queue
       const pendingItems = allItems.filter(item => item.status === 'pending');
       setItems(pendingItems);
@@ -96,6 +105,7 @@ export default function ReviewQueueScreen() {
       setLoans(loanData);
       setTransactions(txData);
     } catch (e) {
+      if (!isMountedRef.current) return;
       console.error('Failed to load review data:', e);
       Toast.show({
         type: 'error',
@@ -103,13 +113,23 @@ export default function ReviewQueueScreen() {
         text2: 'Failed to load review data',
       });
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     loadQueueAndBanks();
+  }, [loadQueueAndBanks]);
+
+  useEffect(() => {
+    return subscribeFinanceDataChanged(payload => {
+      if (financeDataChangedAffects(payload, ['review', 'accounts'])) {
+        loadQueueAndBanks();
+      }
+    });
   }, [loadQueueAndBanks]);
 
   const onRefresh = useCallback(() => {
@@ -925,7 +945,7 @@ export default function ReviewQueueScreen() {
 
           <View style={[styles.reasonsContainer, { backgroundColor: colors.border + '30', borderRadius: borderRadius.sm }]}>
             <Text style={[typography.caption, { color: colors.text, fontWeight: '600', marginBottom: 4 }]}>
-              ⚠️ Review Reasons:
+              Review reasons
             </Text>
             {reasons.map((reason, index) => (
               <View key={index} style={styles.reasonBullet}>
@@ -945,7 +965,9 @@ export default function ReviewQueueScreen() {
             disabled={postingId === item.id}
           >
             <MaterialCommunityIcons name="close-circle-outline" size={18} color={colors.subtext} />
-            <Text style={[typography.body, { color: colors.subtext, marginLeft: 6 }]}>Ignore</Text>
+            <Text style={[typography.body, { color: colors.subtext, marginLeft: 6 }]}>
+              {isCredit ? 'Not income' : 'Not expense'}
+            </Text>
           </TouchableOpacity>
 
           {isCardBillPayment ? (
@@ -1116,7 +1138,7 @@ export default function ReviewQueueScreen() {
                     color="#fff"
                   />
                   <Text style={[typography.bodyBold, { color: '#fff', marginLeft: 6 }]}>
-                    {isCredit ? 'Create Income' : 'Create Expense'}
+                    {isCredit ? 'Count as income' : 'Count as expense'}
                   </Text>
                 </>
               )}

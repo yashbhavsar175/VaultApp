@@ -35,6 +35,13 @@ const INCOME_KEYWORDS = [
 // They need directional context (who gave to whom), handled by phrases above.
 const LENT_KEYWORDS = ['udhar diya', 'lent'];
 const BORROWED_KEYWORDS = ['udhar liya', 'borrowed'];
+const REFUND_KEYWORDS = ['refund', 'refunded'];
+const PERSONAL_TRANSFER_KEYWORDS = [
+  'family', 'friend', 'brother', 'sister', 'bhai', 'dost', 'mom', 'dad', 'papa', 'mummy',
+  'cash deposit', 'bank deposit', 'cash withdrawal', 'atm withdrawal', 'withdrawal', 'withdrawn',
+  'self transfer', 'own account', 'reimbursement', 'reimburse',
+  'loan repayment', 'debt repayment',
+];
 
 // Category mapping — keyword -> category label
 const CATEGORY_MAP: Record<string, string> = {
@@ -130,6 +137,10 @@ export function parseNaturalLanguageTxn(input: string): ParsedTransaction {
     type = 'lent';
   } else if (BORROWED_KEYWORDS.some(k => text.includes(k))) {
     type = 'borrowed';
+  } else if (REFUND_KEYWORDS.some(k => text.includes(k))) {
+    type = 'refund';
+  } else if (PERSONAL_TRANSFER_KEYWORDS.some(k => text.includes(k))) {
+    type = 'transfer';
   } else if (INCOME_PHRASES.some(k => text.includes(k))) {
     type = 'income';
   } else if (EXPENSE_PHRASES.some(k => text.includes(k))) {

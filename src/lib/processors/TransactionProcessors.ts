@@ -21,11 +21,20 @@ import { CACHE_KEYS, updateCache } from '../services/cache';
 import { emitFinanceDataChanged } from '../services/dataEvents';
 import { BankAccount, Transaction } from '../../types';
 import { createRedactedRawTextRecord } from '../privacy/rawText';
-import { recordBalanceSignalForUser } from '../services/balanceSignalRecorder';
+import {
+  recordBalanceSignalForUser,
+  recordEstimatedBankBalanceMovementForUser,
+} from '../services/balanceSignalRecorder';
 import {
   recordNotificationTransactionEvidence,
   recordSmsTransactionEvidence,
 } from '../services/runtimeTransactionEvidence';
+import {
+  AutomaticTransactionReviewReason,
+  getAutomaticTransactionPolicy,
+} from '../services/automaticTransactionPolicy';
+import { enqueueReviewCandidate } from '../services/autoTransactionReviewQueue';
+import { processSignal } from '../services/transactionIntelligence';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -298,6 +307,62 @@ function summarizeParsedTransactionForLog(parsed: ParsedTransaction) {
   };
 }
 
+function hashFromRedactedRawText(value: string): string | null {
+  return value.match(/\bhash=([a-f0-9]{8,64})\b/i)?.[1]?.toLowerCase() || null;
+}
+
+async function enqueueAutomaticReviewCandidate(input: {
+  text: string;
+  senderOrPackage: string;
+  sourceType: 'sms' | 'notification';
+  timestamp: number;
+  reasonCode: AutomaticTransactionReviewReason;
+}): Promise<boolean> {
+  const candidate = processSignal({
+    rawText: input.text,
+    senderOrPackage: input.senderOrPackage,
+    sourceType: input.sourceType,
+    timestamp: input.timestamp,
+  });
+
+  const reviewReasonLabels: Record<AutomaticTransactionReviewReason, string> = {
+    borrowed_money: 'Borrowed money needs confirmation',
+    cash_deposit: 'Cash deposit needs confirmation',
+    cash_withdrawal: 'Cash withdrawal is not a normal expense',
+    credit_card_bill_payment: 'Credit card bill payment needs separate review',
+    debt_repayment: 'Debt repayment needs separate review',
+    personal_transfer: 'Personal transfer needs confirmation',
+    refund_or_reimbursement: 'Refund or reimbursement needs confirmation',
+    self_transfer: 'Self transfer needs confirmation',
+    unverified_credit: 'Credit needs confirmation before counting as income',
+    unverified_debit: 'Debit needs confirmation before counting as an expense',
+  };
+
+  const stripCounterpartyFromQueue = new Set<AutomaticTransactionReviewReason>([
+    'borrowed_money',
+    'personal_transfer',
+    'unverified_credit',
+    'unverified_debit',
+  ]).has(input.reasonCode);
+
+  const enqueued = await enqueueReviewCandidate({
+    ...candidate,
+    merchantOrPerson: stripCounterpartyFromQueue ? null : candidate.merchantOrPerson,
+    duplicateFingerprints: stripCounterpartyFromQueue
+      ? candidate.duplicateFingerprints.filter(fingerprint => fingerprint.strategy !== 'minute_bucket')
+      : candidate.duplicateFingerprints,
+    decision: 'review_required',
+  }, [reviewReasonLabels[input.reasonCode]]);
+
+  console.info('[AutoTransaction] Routed to review queue', {
+    sourceType: input.sourceType,
+    direction: candidate.direction,
+    reasonCode: input.reasonCode,
+  });
+
+  return enqueued;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRANSACTION PARSING
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -558,9 +623,17 @@ async function findAndSyncBankAccount(
       .select('id')
       .eq('user_id', userId)
       .eq('account_last4', accountLast4)
-      .limit(1);
+      .limit(2);
 
-    const accountId = data?.[0]?.id || null;
+    const matches = data || [];
+    if (matches.length > 1) {
+      console.warn('[TransactionProcessors] Ambiguous bank account match; leaving transaction unlinked', {
+        matches: matches.length,
+      });
+      return null;
+    }
+
+    const accountId = matches[0]?.id || null;
     if (!accountId) return null;
 
     if (balance !== undefined && balance !== null) {
@@ -602,7 +675,7 @@ async function recordBalanceSignalSafely(input: {
   senderOrPackage?: string | null;
   sourceType: 'sms' | 'notification';
   timestamp?: number;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const result = await recordBalanceSignalForUser(input);
     if (result.parsed.isBalanceSignal) {
@@ -614,6 +687,17 @@ async function recordBalanceSignalSafely(input: {
         debitCards: result.debitCards.length,
         creditCardStatements: result.creditCardStatements.length,
       });
+      const changed = result.snapshots.length > 0 ||
+        result.detectedCandidates.length > 0 ||
+        result.debitCards.length > 0 ||
+        result.creditCardStatements.length > 0;
+      if (changed) {
+        emitFinanceDataChanged({
+          areas: ['accounts', 'balances'],
+          source: `${input.sourceType}:balance_signal`,
+        });
+      }
+      return changed;
     }
   } catch (error) {
     console.warn('[BalanceSignal] Failed to record parsed balance signal', {
@@ -621,6 +705,60 @@ async function recordBalanceSignalSafely(input: {
       message: error instanceof Error ? error.message : 'unknown_error',
     });
   }
+  return false;
+}
+
+async function recordEstimatedBalanceMovementSafely(input: {
+  userId: string;
+  bankAccountId: string | null;
+  parsed: ParsedTransaction;
+  text: string;
+  senderOrPackage: string;
+  sourceType: 'sms' | 'notification';
+  timestamp: number;
+}): Promise<boolean> {
+  if (!input.bankAccountId || input.parsed.balance !== undefined) return false;
+
+  try {
+    const redacted = createRedactedRawTextRecord({
+      kind: input.sourceType,
+      text: input.text,
+      sender: input.senderOrPackage,
+      source: input.parsed.source,
+      app: input.sourceType === 'notification' ? input.senderOrPackage : undefined,
+    });
+    const snapshot = await recordEstimatedBankBalanceMovementForUser({
+      userId: input.userId,
+      bankAccountId: input.bankAccountId,
+      amount: input.parsed.amount,
+      direction: input.parsed.type,
+      sourceType: input.sourceType,
+      timestamp: input.timestamp,
+      sourceHash: hashFromRedactedRawText(redacted),
+      sourceLength: input.text.length,
+      senderOrPackage: input.senderOrPackage,
+    });
+
+    if (snapshot) {
+      console.log('[BalanceSignal] Recorded estimated balance movement', {
+        sourceType: input.sourceType,
+        direction: input.parsed.type,
+        balanceKind: snapshot.balance_kind,
+      });
+      emitFinanceDataChanged({
+        areas: ['balances'],
+        source: `${input.sourceType}:balance_estimate`,
+      });
+      return true;
+    }
+  } catch (error) {
+    console.warn('[BalanceSignal] Failed to record estimated balance movement', {
+      sourceType: input.sourceType,
+      message: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -672,8 +810,46 @@ export const processSms = async (taskData: SmsData) => {
 
     console.log('Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
+    const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, taskData.body);
+    if (automaticPolicy.action === 'review') {
+      const enqueued = await enqueueAutomaticReviewCandidate({
+        text: taskData.body,
+        senderOrPackage: taskData.sender,
+        sourceType: 'sms',
+        timestamp: taskData.timestamp,
+        reasonCode: automaticPolicy.reasonCode,
+      });
+      let balanceChanged = false;
+      if (enqueued) {
+        const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+        balanceChanged = await recordEstimatedBalanceMovementSafely({
+          userId,
+          bankAccountId: matchedAccountId,
+          parsed,
+          text: taskData.body,
+          senderOrPackage: taskData.sender,
+          sourceType: 'sms',
+          timestamp: taskData.timestamp,
+        });
+      }
+      if (enqueued || balanceChanged) {
+        emitFinanceDataChanged({
+          areas: ['review'],
+          source: 'sms:review',
+        });
+      }
+      void recordSmsTransactionEvidence({
+        text: taskData.body,
+        sender: taskData.sender,
+        parsed,
+        transactionId: null,
+        timestamp: taskData.timestamp,
+      }).catch(() => undefined);
+      return;
+    }
+
     // Check for duplicates
-    const dbType = parsed.type === 'debit' ? 'expense' : 'income';
+    const dbType = automaticPolicy.type;
     const redactedRawSms = createRedactedRawTextRecord({
       kind: 'sms',
       text: taskData.body,
@@ -704,6 +880,15 @@ export const processSms = async (taskData: SmsData) => {
     }
 
     const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+    void recordEstimatedBalanceMovementSafely({
+      userId,
+      bankAccountId: matchedAccountId,
+      parsed,
+      text: taskData.body,
+      senderOrPackage: taskData.sender,
+      sourceType: 'sms',
+      timestamp: taskData.timestamp,
+    });
     const presentation = {
       type: dbType,
       merchant: parsed.merchant,
@@ -978,8 +1163,47 @@ export const processNotification = async (taskData: any) => {
 
     console.log('✅ Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
+    const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, combinedText);
+    if (automaticPolicy.action === 'review') {
+      const enqueued = await enqueueAutomaticReviewCandidate({
+        text: combinedText,
+        senderOrPackage: notif.app,
+        sourceType: 'notification',
+        timestamp: notif.time || Date.now(),
+        reasonCode: automaticPolicy.reasonCode,
+      });
+      let balanceChanged = false;
+      if (enqueued) {
+        const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+        balanceChanged = await recordEstimatedBalanceMovementSafely({
+          userId,
+          bankAccountId: matchedAccountId,
+          parsed,
+          text: combinedText,
+          senderOrPackage: notif.app,
+          sourceType: 'notification',
+          timestamp: notif.time || Date.now(),
+        });
+      }
+      if (enqueued || balanceChanged) {
+        emitFinanceDataChanged({
+          areas: ['review'],
+          source: 'notification:review',
+        });
+      }
+      void recordNotificationTransactionEvidence({
+        text: combinedText,
+        sourcePackage: notif.app,
+        sender,
+        parsed,
+        transactionId: null,
+        timestamp: notif.time || Date.now(),
+      }).catch(() => undefined);
+      return;
+    }
+
     // Check for duplicates
-    const dbType = parsed.type === 'debit' ? 'expense' : 'income';
+    const dbType = automaticPolicy.type;
     const senderLabel = notif.app || parsed.rawSender;
     const redactedRawNotification = createRedactedRawTextRecord({
       kind: 'notification',
@@ -1013,6 +1237,15 @@ export const processNotification = async (taskData: any) => {
     }
 
     const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+    void recordEstimatedBalanceMovementSafely({
+      userId,
+      bankAccountId: matchedAccountId,
+      parsed,
+      text: combinedText,
+      senderOrPackage: notif.app,
+      sourceType: 'notification',
+      timestamp: notif.time || Date.now(),
+    });
     const presentation = {
       type: dbType,
       merchant: parsed.merchant,

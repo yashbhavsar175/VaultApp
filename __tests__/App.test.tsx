@@ -3,12 +3,56 @@
  */
 
 import React from 'react';
+import { Text } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
-import App, { getCachedProfileRouteHint, summarizeStartupError } from '../App';
+import AppIntroScreen from '../src/screens/intro/AppIntroScreen';
+import App, {
+  deferAuthStateChange,
+  getCachedProfileRouteHint,
+  StartupRepairScreen,
+  summarizeStartupError,
+  withStartupTimeout,
+} from '../App';
+
+const mockGetSession = jest.fn();
+const mockOnAuthStateChange = jest.fn();
+const mockUnsubscribe = jest.fn();
+
+jest.mock('../src/lib/core', () => ({
+  supabase: {
+    auth: {
+      getSession: (...args: unknown[]) => mockGetSession(...args),
+      onAuthStateChange: (...args: unknown[]) => mockOnAuthStateChange(...args),
+    },
+  },
+  configureGoogleSignIn: jest.fn(),
+  syncOfflineTransactions: jest.fn(() => Promise.resolve()),
+}));
+
+beforeEach(() => {
+  mockGetSession.mockResolvedValue({ data: { session: null } });
+  mockOnAuthStateChange.mockReturnValue({
+    data: {
+      subscription: {
+        unsubscribe: mockUnsubscribe,
+      },
+    },
+  });
+  mockUnsubscribe.mockClear();
+});
+
+afterEach(() => {
+  mockGetSession.mockReset();
+  mockOnAuthStateChange.mockReset();
+});
 
 test('renders correctly', async () => {
+  let tree!: ReactTestRenderer.ReactTestRenderer;
   await ReactTestRenderer.act(() => {
-    ReactTestRenderer.create(<App />);
+    tree = ReactTestRenderer.create(<App />);
+  });
+  await ReactTestRenderer.act(() => {
+    tree.unmount();
   });
 });
 
@@ -49,5 +93,92 @@ describe('auth startup log privacy', () => {
       name: 'PostgrestError',
       status: 400,
     });
+  });
+});
+
+describe('auth startup recovery', () => {
+  it('keeps Supabase auth callbacks synchronous to avoid auth-lock startup hangs', () => {
+    jest.useFakeTimers();
+    try {
+      const callback = jest.fn();
+      deferAuthStateChange(callback);
+
+      expect(callback).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(0);
+      expect(callback).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('settles a hung startup promise with a bounded timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const timeoutResult = expect(
+        withStartupTimeout(new Promise(() => undefined), 25, 'Profile check')
+      ).rejects.toThrow('Profile check timed out after 25ms');
+
+      jest.advanceTimersByTime(25);
+      await timeoutResult;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('renders retry and local startup-cache repair actions', async () => {
+    const onRetry = jest.fn();
+    const onClearLocalCache = jest.fn();
+    let tree!: ReactTestRenderer.ReactTestRenderer;
+
+    await ReactTestRenderer.act(() => {
+      tree = ReactTestRenderer.create(
+        <StartupRepairScreen onRetry={onRetry} onClearLocalCache={onClearLocalCache} />
+      );
+    });
+
+    const text = tree.root.findAllByType(Text).map(node => node.props.children).join(' ');
+    expect(text).toContain('Startup needs a retry');
+    expect(text).toContain('Retry');
+    expect(text).toContain('Clear local startup cache');
+
+    await ReactTestRenderer.act(() => {
+      tree.unmount();
+    });
+  });
+
+  it('keeps startup pending after session-load timeout until the repair watchdog takes over', async () => {
+    jest.useFakeTimers();
+    mockGetSession.mockReturnValue(new Promise(() => undefined));
+    let tree!: ReactTestRenderer.ReactTestRenderer;
+
+    try {
+      await ReactTestRenderer.act(() => {
+        tree = ReactTestRenderer.create(<App />);
+      });
+
+      await ReactTestRenderer.act(async () => {
+        jest.advanceTimersByTime(4500);
+        await Promise.resolve();
+      });
+
+      let text = tree.root.findAllByType(Text).map(node => node.props.children).join(' ');
+      expect(text).toContain('Preparing your session');
+      expect(text).not.toContain('Startup needs a retry');
+
+      await ReactTestRenderer.act(async () => {
+        jest.advanceTimersByTime(3500);
+        await Promise.resolve();
+      });
+
+      expect(tree.root.findByType(AppIntroScreen).props.readyToExit).toBe(true);
+      text = tree.root.findAllByType(Text).map(node => node.props.children).join(' ');
+      expect(text).toContain('Preparing your session');
+      expect(text).not.toContain('Login');
+    } finally {
+      await ReactTestRenderer.act(() => {
+        tree?.unmount();
+      });
+      jest.useRealTimers();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -11,6 +11,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { AppHeader, Card, ScreenWrapper } from '../../components';
 import { useTheme } from '../../context/ThemeContext';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import {
   deleteIncomeReviewDecision,
   getIncomeReviewScreenState,
@@ -81,6 +82,13 @@ function decisionLabel(candidate: IncomeReviewCandidate): string {
   return 'Keep reviewing';
 }
 
+function dashboardStatusLabel(candidate: IncomeReviewCandidate): string {
+  const decision = candidate.currentDecision?.decision || candidate.suggestedDecision;
+  if (decision === 'count_as_income') return 'Dashboard: Counted as reviewed income';
+  if (decision === 'not_income') return 'Dashboard: Not counted';
+  return 'Dashboard: Not counted until reviewed';
+}
+
 function sourceTypeLabel(value?: IncomeReviewIncomeSourceType | null): string {
   return SOURCE_OPTIONS.find(option => option.value === value)?.label || 'Source type';
 }
@@ -121,24 +129,43 @@ export default function IncomeReviewScreen() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sourceByCandidate, setSourceByCandidate] = useState<Record<string, IncomeReviewIncomeSourceType>>({});
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const state = await getIncomeReviewScreenState();
+      const state = await getIncomeReviewScreenState({ showExcluded: true });
+      if (!isMountedRef.current) return;
       setCandidates(state.candidates);
       setStorageStatus(state.storageStatus);
       setError(null);
     } catch {
+      if (!isMountedRef.current) return;
       setError('Could not load income review.');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  useEffect(() => {
+    return subscribeFinanceDataChanged(payload => {
+      if (financeDataChangedAffects(payload, ['transactions', 'review'])) {
+        load(true);
+      }
+    });
   }, [load]);
 
   const saveDecision = async (
@@ -241,6 +268,9 @@ export default function IncomeReviewScreen() {
         </View>
 
         <View style={styles.metaRow}>
+          <Text style={[typography.caption, styles.metaText, { color: colors.subtext }]}>
+            {dashboardStatusLabel(candidate)}
+          </Text>
           <Text style={[typography.caption, styles.metaText, { color: colors.subtext }]}>
             Source hint: {sourceHintLabel(candidate.sourceHint)}
           </Text>

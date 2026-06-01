@@ -1,6 +1,6 @@
 export const FINANCE_DATA_CHANGED_EVENT = 'finance:dataChanged';
 
-export type FinanceDataArea = 'transactions' | 'accounts' | 'ledger';
+export type FinanceDataArea = 'transactions' | 'accounts' | 'ledger' | 'balances' | 'review';
 
 export type FinanceDataChangedPayload = {
   areas?: FinanceDataArea[];
@@ -13,10 +13,27 @@ type FinanceDataChangedInput = Omit<FinanceDataChangedPayload, 'at'>;
 type FinanceDataChangedListener = (payload: FinanceDataChangedPayload) => void;
 
 const financeDataListeners = new Set<FinanceDataChangedListener>();
+const FINANCE_DATA_AREAS = new Set<FinanceDataArea>([
+  'transactions',
+  'accounts',
+  'ledger',
+  'balances',
+  'review',
+]);
 
 export function emitFinanceDataChanged(payload: FinanceDataChangedInput = {}): void {
+  const areas = payload.areas?.filter(area => FINANCE_DATA_AREAS.has(area));
+  const source = typeof payload.source === 'string' && /^[a-z0-9:_-]+$/i.test(payload.source)
+    ? payload.source
+    : undefined;
+  const transactionId = typeof payload.transactionId === 'string' &&
+    /^[a-z0-9_-]{1,128}$/i.test(payload.transactionId)
+    ? payload.transactionId
+    : undefined;
   const event: FinanceDataChangedPayload = {
-    ...payload,
+    ...(areas ? { areas } : {}),
+    ...(source ? { source } : {}),
+    ...(transactionId ? { transactionId } : {}),
     at: Date.now(),
   };
 

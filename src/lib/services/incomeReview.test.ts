@@ -142,20 +142,30 @@ function transaction(overrides: Partial<Transaction>): Transaction {
 }
 
 function evidence(overrides: Partial<TransactionEvidence>): TransactionEvidence {
+  const sourcePackage = Object.prototype.hasOwnProperty.call(overrides, 'source_package')
+    ? overrides.source_package
+    : 'com.porter.partner';
+  const sourceApp = Object.prototype.hasOwnProperty.call(overrides, 'source_app')
+    ? overrides.source_app
+    : 'Porter';
+  const merchantOrPerson = Object.prototype.hasOwnProperty.call(overrides, 'merchant_or_person')
+    ? overrides.merchant_or_person
+    : 'Porter payout';
+
   return {
     id: overrides.id || 'ev_1',
     user_id: 'user_1',
     signal_id: overrides.signal_id || 'abcdef123456',
     transaction_id: overrides.transaction_id || null,
     source_type: overrides.source_type || 'notification',
-    source_package: overrides.source_package || 'com.porter.partner',
-    source_app: overrides.source_app || 'Porter',
+    source_package: sourcePackage ?? null,
+    source_app: sourceApp ?? null,
     sender: null,
     amount: overrides.amount ?? 900,
     direction: overrides.direction || 'credit',
     captured_at: overrides.captured_at || '2026-06-06T10:00:00.000Z',
     reference_number: null,
-    merchant_or_person: overrides.merchant_or_person || 'Porter payout',
+    merchant_or_person: merchantOrPerson ?? null,
     bank_name: null,
     account_last4: null,
     card_last4: null,
@@ -269,6 +279,145 @@ describe('incomeReview service', () => {
     expect(JSON.stringify(candidates)).not.toContain('9876543210');
   });
 
+  it('deduplicates transaction and linked evidence into one transaction-backed card', () => {
+    const candidates = buildIncomeReviewCandidatesFromRows({
+      transactions: [
+        transaction({
+          id: 'tx_22700',
+          amount: 22700,
+          note: 'Bank credit received',
+          created_at: '2026-06-01T08:00:00.000Z',
+        }),
+      ],
+      evidence: [
+        evidence({
+          id: 'ev_22700',
+          transaction_id: 'tx_22700',
+          signal_id: 'abcabc123456',
+          amount: 22700,
+          source_app: null,
+          source_package: null,
+          merchant_or_person: null,
+          captured_at: '2026-06-01T08:01:00.000Z',
+        }),
+      ],
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toEqual(expect.objectContaining({
+      id: 'transaction:tx_22700',
+      candidateType: 'transaction',
+      transactionId: 'tx_22700',
+      evidenceId: 'ev_22700',
+      signalHash: 'abcabc123456',
+      amount: 22700,
+    }));
+  });
+
+  it('deduplicates duplicate evidence rows for the same transaction', () => {
+    const candidates = buildIncomeReviewCandidatesFromRows({
+      evidence: [
+        evidence({
+          id: 'ev_old',
+          transaction_id: 'tx_1',
+          signal_id: 'aaaabbbb1111',
+          amount: 22700,
+          source_app: null,
+          source_package: null,
+          merchant_or_person: null,
+          captured_at: '2026-06-01T08:00:00.000Z',
+        }),
+        evidence({
+          id: 'ev_new',
+          transaction_id: 'tx_1',
+          signal_id: 'ccccdddd2222',
+          amount: 22700,
+          source_app: null,
+          source_package: null,
+          merchant_or_person: null,
+          captured_at: '2026-06-01T08:02:00.000Z',
+        }),
+      ],
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].id).toBe('transaction:tx_1');
+    expect(candidates[0].transactionId).toBe('tx_1');
+  });
+
+  it('keeps one unlinked evidence-only card and collapses repeated signal hashes', () => {
+    const unlinked = buildIncomeReviewCandidatesFromRows({
+      evidence: [
+        evidence({
+          id: 'ev_unlinked',
+          transaction_id: null,
+          signal_id: 'aaaabbbb3333',
+          amount: 700,
+          source_app: null,
+          source_package: null,
+          merchant_or_person: null,
+        }),
+      ],
+    });
+    const repeatedSignal = buildIncomeReviewCandidatesFromRows({
+      evidence: [
+        evidence({
+          id: 'ev_sig_1',
+          transaction_id: null,
+          signal_id: 'ffffeeee4444',
+          amount: 700,
+          source_app: null,
+          source_package: null,
+          merchant_or_person: null,
+          captured_at: '2026-06-01T08:00:00.000Z',
+        }),
+        evidence({
+          id: 'ev_sig_2',
+          transaction_id: null,
+          signal_id: 'FFFFEEEE4444',
+          amount: 700,
+          source_app: null,
+          source_package: null,
+          merchant_or_person: null,
+          captured_at: '2026-06-01T08:02:00.000Z',
+        }),
+      ],
+    });
+
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0]).toEqual(expect.objectContaining({
+      candidateType: 'evidence',
+      evidenceId: 'ev_unlinked',
+      signalHash: 'aaaabbbb3333',
+    }));
+    expect(repeatedSignal).toHaveLength(1);
+    expect(repeatedSignal[0].id).toBe('signal:ffffeeee4444');
+    expect(new Set(repeatedSignal.map(candidate => candidate.id)).size).toBe(repeatedSignal.length);
+  });
+
+  it('shows unknown person credits for review without exposing the raw person field', () => {
+    const candidates = buildIncomeReviewCandidatesFromRows({
+      evidence: [
+        evidence({
+          id: 'ev_person',
+          source_app: '',
+          source_package: '',
+          merchant_or_person: 'Private Person 9876543210',
+          amount: 1500,
+        }),
+      ],
+    });
+
+    expect(candidates[0]).toEqual(expect.objectContaining({
+      sourceHint: 'personal_transfer',
+      suggestedDecision: 'needs_review',
+      safeLabel: 'Person transfer',
+      safeReason: 'Credit needs review before it can count as income.',
+    }));
+    expect(JSON.stringify(candidates[0])).not.toContain('Private Person');
+    expect(JSON.stringify(candidates[0])).not.toContain('9876543210');
+  });
+
   it.each(['Porter', 'Swiggy', 'Zomato', 'Rapido', 'Zepto'])(
     'suggests gig income for %s payout candidates',
     token => {
@@ -320,6 +469,26 @@ describe('incomeReview service', () => {
     expect(excluded.map(candidate => candidate.suggestedDecision)).toEqual(['not_income', 'not_income', 'not_income', 'not_income']);
   });
 
+  it('keeps cash deposits excluded unless the user reviews them', () => {
+    const active = buildIncomeReviewCandidatesFromRows({
+      transactions: [
+        transaction({ id: 'cash_deposit', note: 'Cash deposit credited', sms_source: 'bank' }),
+      ],
+    });
+    const excluded = buildIncomeReviewCandidatesFromRows({
+      transactions: [
+        transaction({ id: 'cash_deposit', note: 'Cash deposit credited', sms_source: 'bank' }),
+      ],
+    }, { showExcluded: true });
+
+    expect(active).toHaveLength(0);
+    expect(excluded[0]).toEqual(expect.objectContaining({
+      sourceHint: 'bank_credit',
+      suggestedDecision: 'not_income',
+      safeReason: 'Cash deposits are not counted as income unless you review them.',
+    }));
+  });
+
   it('maps credit evidence into safe income candidates', () => {
     const candidates = buildIncomeReviewCandidatesFromRows({
       evidence: [evidence({ source_app: 'Porter', source_package: 'com.porter.partner' })],
@@ -367,6 +536,37 @@ describe('incomeReview service', () => {
     ])[0]).toEqual(expect.objectContaining({
       confidence: 'needs_review',
       includeInIncome: false,
+    }));
+  });
+
+  it('updates an existing evidence decision when a deduped transaction card is saved', async () => {
+    rows.income_review_decisions = [
+      decision({
+        id: 'decision_evidence',
+        transaction_id: null,
+        evidence_id: 'ev_1',
+        signal_hash: null,
+        decision: 'needs_review',
+        income_source_type: null,
+      }),
+    ];
+
+    await upsertIncomeReviewDecision({
+      transaction_id: 'tx_1',
+      evidence_id: 'ev_1',
+      signal_hash: 'abcdef123456',
+      decision: 'count_as_income',
+      income_source_type: 'other',
+    });
+
+    const updateCall = calls.find(call => call.table === 'income_review_decisions' && call.op === 'update')!;
+    expect(updateCall).toBeTruthy();
+    expect(updateCall.eqs).toContainEqual(['id', 'decision_evidence']);
+    expect(updateCall.payload).toEqual(expect.objectContaining({
+      transaction_id: 'tx_1',
+      evidence_id: 'ev_1',
+      signal_hash: 'abcdef123456',
+      decision: 'count_as_income',
     }));
   });
 

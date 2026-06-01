@@ -3,6 +3,7 @@ import {
   createLinkedRefundTransaction,
   createTransferTransaction,
   findDuplicateLinkedRefundTransaction,
+  parseTransaction,
   supabase,
 } from './core';
 import { emitFinanceDataChanged } from './services/dataEvents';
@@ -41,6 +42,20 @@ jest.mock('@supabase/supabase-js', () => {
       },
     })),
   };
+});
+
+describe('manual parser personal movement safety', () => {
+  it('keeps personal transfers and deposits neutral', () => {
+    expect(parseTransaction('brother gave me 11000').type).toBe('transfer');
+    expect(parseTransaction('cash deposit 11000').type).toBe('transfer');
+    expect(parseTransaction('cash withdrawal 500').type).toBe('transfer');
+    expect(parseTransaction('loan repayment 11000').type).toBe('transfer');
+  });
+
+  it('keeps earned income and merchant expenses unchanged', () => {
+    expect(parseTransaction('salary received 30000').type).toBe('income');
+    expect(parseTransaction('grocery paid 500').type).toBe('expense');
+  });
 });
 
 const mockSupabase = supabase as any;

@@ -56,16 +56,20 @@ export const parseTransaction = (text: string): ParsedTransaction => {
   
   // Detect type
   let type: TransactionType = 'expense';
-  if (/salary|received|credited|income|got|earned|refund|give me|gave|given/.test(lowerText)) {
+  if (/lent|udhar diya|gave to|lend/.test(lowerText)) {
+    type = 'lent';
+  } else if (/borrowed|liya|udhar liya|took from|borrow/.test(lowerText)) {
+    type = 'borrowed';
+  } else if (/refund|refunded/.test(lowerText)) {
+    type = 'refund';
+  } else if (/family|friend|brother|sister|bhai|dost|mom|dad|papa|mummy|cash deposit|bank deposit|cash withdrawal|atm withdrawal|withdrawal|withdrawn|self transfer|own account|reimburse|loan repayment|debt repayment/.test(lowerText)) {
+    type = 'transfer';
+  } else if (/salary|received|credited|income|got|earned|give me|gave|given/.test(lowerText)) {
     type = 'income';
   } else if (/sip|mutual fund|stocks|zerodha|invest|shares|fd|nps/.test(lowerText)) {
     type = 'investment';
   } else if (/emi|loan|equated|hdfc loan|iciciloan/.test(lowerText)) {
     type = 'emi';
-  } else if (/lent|diya|udhar diya|gave to|lend/.test(lowerText)) {
-    type = 'lent';
-  } else if (/borrowed|liya|udhar liya|took from|borrow/.test(lowerText)) {
-    type = 'borrowed';
   }
   
   // Extract note — remove amount, keep rest

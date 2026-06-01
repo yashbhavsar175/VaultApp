@@ -30,6 +30,18 @@ interface RecordBalanceSignalInput {
   timestamp?: number;
 }
 
+interface RecordEstimatedBankBalanceMovementInput {
+  userId: string;
+  bankAccountId: string;
+  amount: number;
+  direction: 'credit' | 'debit';
+  sourceType: Extract<BalanceSignalSourceType, 'sms' | 'notification'>;
+  timestamp?: number;
+  sourceHash?: string | null;
+  sourceLength?: number | null;
+  senderOrPackage?: string | null;
+}
+
 export interface BalanceSignalRecordResult {
   parsed: BalanceParseResult;
   snapshots: BalanceSnapshot[];
@@ -48,6 +60,13 @@ interface BankAccountMatch {
   id: string;
   bank_name?: string | null;
   account_type?: string | null;
+}
+
+interface BankAccountBalanceBasis {
+  amount: number;
+  balanceKind: Extract<BalanceKind, 'available_balance' | 'current_balance'>;
+  accountLast4?: string | null;
+  detectedBankName?: string | null;
 }
 
 interface CreditCardMatch {
@@ -567,4 +586,145 @@ export async function recordBalanceSignalForUser(
   }
 
   return result;
+}
+
+function isBankBalanceKind(kind: BalanceKind): kind is Extract<BalanceKind, 'available_balance' | 'current_balance'> {
+  return kind === 'available_balance' || kind === 'current_balance';
+}
+
+async function fetchLatestKnownBankBalance(
+  userId: string,
+  bankAccountId: string
+): Promise<BankAccountBalanceBasis | null> {
+  const { data: snapshots, error: snapshotError } = await supabase
+    .from('balance_snapshots')
+    .select('balance_kind, amount, account_last4, detected_bank_name')
+    .eq('user_id', userId)
+    .eq('owner_type', 'bank_account')
+    .eq('owner_id', bankAccountId)
+    .order('detected_at', { ascending: false })
+    .limit(10);
+
+  if (snapshotError) throw snapshotError;
+
+  const snapshotRows = (snapshots || []) as Array<{
+    balance_kind: BalanceKind;
+    amount: number;
+    account_last4?: string | null;
+    detected_bank_name?: string | null;
+  }>;
+  const snapshot = snapshotRows.find(row =>
+    isBankBalanceKind(row.balance_kind) && Number.isFinite(Number(row.amount))
+  );
+
+  if (snapshot) {
+    const balanceKind = isBankBalanceKind(snapshot.balance_kind)
+      ? snapshot.balance_kind
+      : 'current_balance';
+    return {
+      amount: Number(snapshot.amount),
+      balanceKind,
+      accountLast4: snapshot.account_last4,
+      detectedBankName: snapshot.detected_bank_name,
+    };
+  }
+
+  const { data: accounts, error: accountError } = await supabase
+    .from('bank_accounts')
+    .select('bank_name, account_last4, balance')
+    .eq('user_id', userId)
+    .eq('id', bankAccountId)
+    .limit(1);
+
+  if (accountError) throw accountError;
+  const account = (accounts || [])[0] as {
+    bank_name?: string | null;
+    account_last4?: string | null;
+    balance?: number | null;
+  } | undefined;
+
+  const balance = Number(account?.balance);
+  if (!account || account.balance === null || account.balance === undefined || !Number.isFinite(balance)) {
+    return null;
+  }
+
+  return {
+    amount: balance,
+    balanceKind: 'current_balance',
+    accountLast4: account.account_last4,
+    detectedBankName: account.bank_name,
+  };
+}
+
+async function findExistingEstimatedMovementSnapshot(
+  userId: string,
+  bankAccountId: string,
+  sourceHash?: string | null
+): Promise<BalanceSnapshot | null> {
+  const hash = sourceHash?.trim().toLowerCase();
+  if (!hash || !/^[a-f0-9]{8,64}$/.test(hash)) return null;
+
+  const { data, error } = await supabase
+    .from('balance_snapshots')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('owner_type', 'bank_account')
+    .eq('owner_id', bankAccountId)
+    .eq('source', 'calculated')
+    .eq('raw_source_metadata->>hash', hash)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as BalanceSnapshot | null) || null;
+}
+
+export async function recordEstimatedBankBalanceMovementForUser(
+  input: RecordEstimatedBankBalanceMovementInput
+): Promise<BalanceSnapshot | null> {
+  if (!input.bankAccountId?.trim()) return null;
+  if (!Number.isFinite(input.amount) || input.amount <= 0) return null;
+
+  const existing = await findExistingEstimatedMovementSnapshot(input.userId, input.bankAccountId, input.sourceHash);
+  if (existing) return existing;
+
+  const previous = await fetchLatestKnownBankBalance(input.userId, input.bankAccountId);
+  if (!previous) return null;
+
+  const delta = input.direction === 'credit' ? input.amount : -input.amount;
+  const nextAmount = previous.amount + delta;
+  if (!Number.isFinite(nextAmount) || nextAmount < 0) return null;
+
+  const detectedAt = toDetectedAt(input.timestamp);
+  const senderOrPackage = input.senderOrPackage?.trim() || null;
+  const payload = buildBalanceSnapshotInsert(input.userId, {
+    owner_type: 'bank_account',
+    owner_id: input.bankAccountId,
+    detected_bank_name: previous.detectedBankName,
+    account_last4: previous.accountLast4,
+    balance_kind: previous.balanceKind,
+    amount: nextAmount,
+    source: 'calculated',
+    confidence: 'estimated',
+    detected_at: detectedAt,
+    source_sender_or_package: senderOrPackage,
+    raw_source_metadata: sanitizeBalanceSourceMetadata({
+      len: input.sourceLength ?? undefined,
+      hash: input.sourceHash ?? undefined,
+      source: input.sourceType,
+      kind: 'transaction_balance_estimate',
+      sender: input.sourceType === 'sms' ? senderOrPackage || undefined : undefined,
+      package: input.sourceType === 'notification' ? senderOrPackage || undefined : undefined,
+    }),
+    note: 'Estimated from transaction alert',
+  });
+
+  const { data, error } = await supabase
+    .from('balance_snapshots')
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as BalanceSnapshot;
 }

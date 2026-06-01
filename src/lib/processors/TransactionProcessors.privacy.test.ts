@@ -3,7 +3,11 @@ import NetInfo from '@react-native-community/netinfo';
 import { processNotification, processSms } from './TransactionProcessors';
 import { supabase } from '../core';
 import { showTransactionConfirmation } from '../services/notifications';
-import { recordBalanceSignalForUser } from '../services/balanceSignalRecorder';
+import {
+  recordBalanceSignalForUser,
+  recordEstimatedBankBalanceMovementForUser,
+} from '../services/balanceSignalRecorder';
+import { emitFinanceDataChanged } from '../services/dataEvents';
 import {
   recordNotificationTransactionEvidence,
   recordSmsTransactionEvidence,
@@ -44,6 +48,7 @@ jest.mock('../services/balanceSignalRecorder', () => ({
     debitCards: [],
     creditCardStatements: [],
   })),
+  recordEstimatedBankBalanceMovementForUser: jest.fn(async () => null),
 }));
 
 jest.mock('../services/runtimeTransactionEvidence', () => ({
@@ -56,9 +61,12 @@ type InsertedTransaction = Record<string, any>;
 const mockSupabase = supabase as any;
 const mockShowTransactionConfirmation = showTransactionConfirmation as jest.Mock;
 const mockRecordBalanceSignalForUser = recordBalanceSignalForUser as jest.Mock;
+const mockRecordEstimatedBankBalanceMovementForUser = recordEstimatedBankBalanceMovementForUser as jest.Mock;
+const mockEmitFinanceDataChanged = emitFinanceDataChanged as jest.Mock;
 const mockRecordSmsEvidence = recordSmsTransactionEvidence as jest.Mock;
 const mockRecordNotificationEvidence = recordNotificationTransactionEvidence as jest.Mock;
 const insertedTransactions: InsertedTransaction[] = [];
+let matchedBankAccounts = [{ id: 'bank_1' }];
 
 function setupSupabaseMock() {
   let nextId = 1;
@@ -82,9 +90,10 @@ function setupSupabaseMock() {
       }),
       gte: jest.fn(() => builder),
       order: jest.fn(() => builder),
+      update: jest.fn(() => builder),
       limit: jest.fn(async () => {
         if (table === 'bank_accounts') {
-          return { data: [{ id: 'bank_1' }], error: null };
+          return { data: matchedBankAccounts, error: null };
         }
 
         const matches = insertedTransactions.filter(tx => {
@@ -121,6 +130,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     insertedTransactions.length = 0;
+    matchedBankAccounts = [{ id: 'bank_1' }];
     await AsyncStorage.clear();
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true });
     mockRecordBalanceSignalForUser.mockResolvedValue({
@@ -130,6 +140,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
       debitCards: [],
       creditCardStatements: [],
     });
+    mockRecordEstimatedBankBalanceMovementForUser.mockResolvedValue(null);
     setupSupabaseMock();
   });
 
@@ -172,7 +183,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
   });
 
   it('stores redacted raw_sms for new notification transactions', async () => {
-    const text = 'Rs.42 debited from your HDFC Bank account XX1234 to TASK24D NOTIFY via UPI. UPI Ref 424242424242. OTP 654321. Phone 9876543210.';
+    const text = 'Rs.42 debited from your HDFC Bank account XX1234 to TASK24D SHOP via UPI. UPI Ref 424242424242. OTP 654321. Phone 9876543210.';
 
     await processNotification({
       notification: JSON.stringify({
@@ -286,6 +297,27 @@ describe('TransactionProcessors raw_sms privacy', () => {
     }));
   });
 
+  it('emits a balance refresh after an exact balance snapshot is recorded', async () => {
+    mockRecordBalanceSignalForUser.mockResolvedValueOnce({
+      parsed: {
+        isBalanceSignal: true,
+        redactedSource: { hash: 'abcdef12' },
+      },
+      snapshots: [{ id: 'balance_exact_1' }],
+      detectedCandidates: [],
+      debitCards: [],
+      creditCardStatements: [],
+    });
+    const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK36D SHOP via UPI. Avl Bal Rs.12000. Ref 353535353535.';
+
+    await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith({
+      areas: ['accounts', 'balances'],
+      source: 'sms:balance_signal',
+    });
+  });
+
   it('does not fail transaction processing if evidence recording fails', async () => {
     mockRecordSmsEvidence.mockRejectedValueOnce(new Error('evidence write failed'));
     const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK28J SHOP via UPI. UPI Ref 313131313131.';
@@ -302,7 +334,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
 
   it('does not wait for evidence recording before completing transaction processing', async () => {
     mockRecordSmsEvidence.mockReturnValueOnce(new Promise(() => undefined));
-    const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK28J NONBLOCKING via UPI. UPI Ref 323232323232.';
+    const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK28J SHOP via UPI. UPI Ref 323232323232.';
 
     await expect(Promise.race([
       processSms({ sender: 'HDFCBK', body, timestamp: Date.now() }),
@@ -330,6 +362,121 @@ describe('TransactionProcessors raw_sms privacy', () => {
       sourcePackage: 'com.google.android.apps.nbu.paisa.user',
       sender: 'GPAYID',
       transactionId: null,
+    }));
+  });
+
+  it.each([
+    ['cash deposit credit', 'Rs.11000 cash deposited into your HDFC Bank account XX1234. Ref 111111111111.'],
+    ['family debit', 'Rs.11000 debited from your HDFC Bank account XX1234 to brother via UPI. Ref 222222222222.'],
+    ['generic credit', 'Rs.11000 credited to your HDFC Bank account XX1234 via UPI. Ref 333333333333.'],
+    ['cash withdrawal', 'Rs.11000 withdrawn from your HDFC Bank account XX1234 at ATM. Ref 444444444444.'],
+    ['credit card bill payment', 'Rs.11000 debited from your HDFC Bank account XX1234 for credit card bill payment. Ref 555555555555.'],
+    ['self transfer', 'Rs.11000 debited and transferred from your HDFC account XX1234 to your own account. Ref 666666666666.'],
+  ])('routes %s to Review Queue without creating a transaction', async (_label, body) => {
+    await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+    expect(insertedTransactions).toHaveLength(0);
+    expect(mockRecordSmsEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      text: body,
+      sender: 'HDFCBK',
+      transactionId: null,
+    }));
+
+    const queue = JSON.parse(await AsyncStorage.getItem('auto_transaction_review_queue_v1') || '[]');
+    expect(queue).toHaveLength(1);
+    expect(queue[0].status).toBe('pending');
+    expect(JSON.stringify(queue[0])).not.toContain(body);
+    if (_label === 'family debit') {
+      expect(JSON.stringify(queue[0])).not.toContain('brother');
+    }
+  });
+
+  it('emits review and balance refresh after a review-routed matched credit without creating income', async () => {
+    mockRecordEstimatedBankBalanceMovementForUser.mockResolvedValueOnce({
+      id: 'balance_estimate_1',
+      balance_kind: 'current_balance',
+    });
+    const body = 'Rs.11000 credited to your HDFC Bank account XX1234 via UPI. Ref 333333333333.';
+
+    await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+    expect(insertedTransactions).toHaveLength(0);
+    expect(mockRecordEstimatedBankBalanceMovementForUser).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user_1',
+      bankAccountId: 'bank_1',
+      amount: 11000,
+      direction: 'credit',
+      sourceType: 'sms',
+    }));
+    const queue = JSON.parse(await AsyncStorage.getItem('auto_transaction_review_queue_v1') || '[]');
+    expect(queue[0].reasons).toEqual([
+      'Credit needs confirmation before counting as income',
+    ]);
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['balances'],
+      source: 'sms:balance_estimate',
+    }));
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['review'],
+      source: 'sms:review',
+    }));
+  });
+
+  it('does not estimate a balance against an ambiguous same-last4 bank account', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    matchedBankAccounts = [{ id: 'bank_1' }, { id: 'bank_2' }];
+    const body = 'Rs.11000 credited to your HDFC Bank account XX1234 via UPI. Ref 343434343434.';
+
+    try {
+      await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+      expect(insertedTransactions).toHaveLength(0);
+      expect(mockRecordEstimatedBankBalanceMovementForUser).not.toHaveBeenCalled();
+      expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+        areas: ['review'],
+        source: 'sms:review',
+      }));
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[TransactionProcessors] Ambiguous bank account match; leaving transaction unlinked',
+        { matches: 2 }
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('emits a balance refresh after a review-routed matched debit estimate', async () => {
+    mockRecordEstimatedBankBalanceMovementForUser.mockResolvedValueOnce({
+      id: 'balance_estimate_1',
+      balance_kind: 'current_balance',
+    });
+    const body = 'Rs.11000 withdrawn from your HDFC Bank account XX1234 at ATM. Ref 363636363636.';
+
+    await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+    expect(insertedTransactions).toHaveLength(0);
+    expect(mockRecordEstimatedBankBalanceMovementForUser).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user_1',
+      bankAccountId: 'bank_1',
+      amount: 11000,
+      direction: 'debit',
+      sourceType: 'sms',
+    }));
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith({
+      areas: ['balances'],
+      source: 'sms:balance_estimate',
+    });
+  });
+
+  it('still auto-posts salary income with structured proof', async () => {
+    const body = 'Salary of Rs.30000 credited to your HDFC Bank account XX1234. Ref 777777777777.';
+
+    await processSms({ sender: 'HDFCBK', body, timestamp: Date.now() });
+
+    expect(insertedTransactions).toHaveLength(1);
+    expect(insertedTransactions[0]).toEqual(expect.objectContaining({
+      amount: 30000,
+      type: 'income',
     }));
   });
 });
