@@ -28,6 +28,7 @@ interface RecordBalanceSignalInput {
   senderOrPackage?: string | null;
   sourceType: BalanceSignalSourceType;
   timestamp?: number;
+  bankAccountIdHint?: string | null;
 }
 
 interface RecordEstimatedBankBalanceMovementInput {
@@ -40,6 +41,7 @@ interface RecordEstimatedBankBalanceMovementInput {
   sourceHash?: string | null;
   sourceLength?: number | null;
   senderOrPackage?: string | null;
+  reason?: 'app_mapping';
 }
 
 export interface BalanceSignalRecordResult {
@@ -495,7 +497,8 @@ async function resolveOwner(
   userId: string,
   parsed: BalanceParseResult,
   detectedAt: string,
-  detectedCandidates: DetectedAccount[]
+  detectedCandidates: DetectedAccount[],
+  bankAccountIdHint?: string | null
 ): Promise<MatchedOwner | null> {
   if (parsed.instrumentHint === 'credit_card') {
     const match = await matchCreditCard(userId, parsed);
@@ -510,6 +513,21 @@ async function resolveOwner(
     const candidate = await createOrReuseDetectedCandidate(userId, parsed, 'loan', detectedAt, 'low');
     detectedCandidates.push(candidate);
     return { ownerType: 'detected_account', ownerId: candidate.id, confidence: 'low' };
+  }
+
+  if (bankAccountIdHint) {
+    const { data, error } = await supabase
+      .from('bank_accounts')
+      .select('id, account_type')
+      .eq('user_id', userId)
+      .eq('id', bankAccountIdHint)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data && (data.account_type === 'savings' || data.account_type === 'current')) {
+      return { ownerType: 'bank_account', ownerId: data.id, confidence: 'estimated' };
+    }
   }
 
   const bankMatch = await matchBankAccount(userId, parsed);
@@ -545,7 +563,7 @@ export async function recordBalanceSignalForUser(
     parsed.instrumentHint === 'credit_card' ||
     parsed.instrumentHint === 'loan';
   const owner = shouldResolveOwner
-    ? await resolveOwner(input.userId, parsed, detectedAt, result.detectedCandidates)
+    ? await resolveOwner(input.userId, parsed, detectedAt, result.detectedCandidates, input.bankAccountIdHint)
     : null;
 
   if (parsed.debitCardLast4) {
@@ -715,8 +733,11 @@ export async function recordEstimatedBankBalanceMovementForUser(
       kind: 'transaction_balance_estimate',
       sender: input.sourceType === 'sms' ? senderOrPackage || undefined : undefined,
       package: input.sourceType === 'notification' ? senderOrPackage || undefined : undefined,
+      reasons: input.reason ? [input.reason] : undefined,
     }),
-    note: 'Estimated from transaction alert',
+    note: input.reason === 'app_mapping'
+      ? 'Estimated from user-confirmed app mapping'
+      : 'Estimated from transaction alert',
   });
 
   const { data, error } = await supabase

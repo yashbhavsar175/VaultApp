@@ -36,6 +36,10 @@ import {
 import { enqueueReviewCandidate } from '../services/autoTransactionReviewQueue';
 import { processSignal } from '../services/transactionIntelligence';
 import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../services/userScopedQueues';
+import {
+  PaymentAppBankAccountMatch,
+  resolvePaymentAppBankAccountForUser,
+} from '../services/paymentAppAccountMappings';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -338,13 +342,17 @@ async function enqueueAutomaticReviewCandidate(input: {
   sourceType: 'sms' | 'notification';
   timestamp: number;
   reasonCode: AutomaticTransactionReviewReason;
-}): Promise<boolean> {
+  paymentAppAccountMatch?: PaymentAppBankAccountMatch | null;
+}): Promise<{ enqueued: boolean; mappedBankAccountId: string | null }> {
   const candidate = processSignal({
     rawText: input.text,
     senderOrPackage: input.senderOrPackage,
     sourceType: input.sourceType,
     timestamp: input.timestamp,
   });
+  const safeCandidate = input.paymentAppAccountMatch
+    ? { ...candidate, paymentAppAccountMatch: input.paymentAppAccountMatch }
+    : candidate;
 
   const reviewReasonLabels: Record<AutomaticTransactionReviewReason, string> = {
     borrowed_money: 'Borrowed money needs confirmation',
@@ -366,14 +374,21 @@ async function enqueueAutomaticReviewCandidate(input: {
     'unverified_debit',
   ]).has(input.reasonCode);
 
+  const reasons = [reviewReasonLabels[input.reasonCode]];
+  if (input.paymentAppAccountMatch?.mappingStatus === 'needs_review') {
+    reasons.push('Destination account needs confirmation');
+  } else if (input.paymentAppAccountMatch?.mappingStatus === 'user_confirmed') {
+    reasons.push('Destination account linked by user-confirmed app mapping');
+  }
+
   const enqueued = await enqueueReviewCandidate({
-    ...candidate,
+    ...safeCandidate,
     merchantOrPerson: stripCounterpartyFromQueue ? null : candidate.merchantOrPerson,
     duplicateFingerprints: stripCounterpartyFromQueue
       ? candidate.duplicateFingerprints.filter(fingerprint => fingerprint.strategy !== 'minute_bucket')
       : candidate.duplicateFingerprints,
     decision: 'review_required',
-  }, [reviewReasonLabels[input.reasonCode]], input.userId);
+  }, reasons, input.userId);
 
   console.info('[AutoTransaction] Routed to review queue', {
     sourceType: input.sourceType,
@@ -381,7 +396,12 @@ async function enqueueAutomaticReviewCandidate(input: {
     reasonCode: input.reasonCode,
   });
 
-  return enqueued;
+  return {
+    enqueued,
+    mappedBankAccountId: input.paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
+      ? input.paymentAppAccountMatch.mappedBankAccountId || null
+      : null,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -696,6 +716,7 @@ async function recordBalanceSignalSafely(input: {
   senderOrPackage?: string | null;
   sourceType: 'sms' | 'notification';
   timestamp?: number;
+  bankAccountIdHint?: string | null;
 }): Promise<boolean> {
   try {
     const result = await recordBalanceSignalForUser(input);
@@ -737,6 +758,7 @@ async function recordEstimatedBalanceMovementSafely(input: {
   senderOrPackage: string;
   sourceType: 'sms' | 'notification';
   timestamp: number;
+  reason?: 'app_mapping';
 }): Promise<boolean> {
   if (!input.bankAccountId || input.parsed.balance !== undefined) return false;
 
@@ -758,6 +780,7 @@ async function recordEstimatedBalanceMovementSafely(input: {
       sourceHash: hashFromRedactedRawText(redacted),
       sourceLength: input.text.length,
       senderOrPackage: input.senderOrPackage,
+      reason: input.reason,
     });
 
     if (snapshot) {
@@ -780,6 +803,21 @@ async function recordEstimatedBalanceMovementSafely(input: {
   }
 
   return false;
+}
+
+async function resolvePaymentAppBankAccountSafely(input: {
+  userId: string;
+  text: string;
+  sourcePackage: string;
+}): Promise<PaymentAppBankAccountMatch | null> {
+  try {
+    return await resolvePaymentAppBankAccountForUser(input);
+  } catch {
+    console.warn('[PaymentAppMapping] Failed to resolve account hint', {
+      sourcePackagePresent: Boolean(input.sourcePackage),
+    });
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -833,7 +871,7 @@ export const processSms = async (taskData: SmsData) => {
 
     const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, taskData.body);
     if (automaticPolicy.action === 'review') {
-      const enqueued = await enqueueAutomaticReviewCandidate({
+      const { enqueued } = await enqueueAutomaticReviewCandidate({
         userId,
         text: taskData.body,
         senderOrPackage: taskData.sender,
@@ -1104,12 +1142,21 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
+    const paymentAppAccountMatch = await resolvePaymentAppBankAccountSafely({
+      userId,
+      text: combinedText,
+      sourcePackage: notif.app,
+    });
+
     await recordBalanceSignalSafely({
       userId,
       text: combinedText,
       senderOrPackage: notif.app,
       sourceType: 'notification',
       timestamp: notif.time || Date.now(),
+      bankAccountIdHint: paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
+        ? paymentAppAccountMatch.mappedBankAccountId
+        : null,
     });
 
     // Non-transaction filter
@@ -1181,17 +1228,19 @@ export const processNotification = async (taskData: any) => {
 
     const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, combinedText);
     if (automaticPolicy.action === 'review') {
-      const enqueued = await enqueueAutomaticReviewCandidate({
+      const { enqueued, mappedBankAccountId } = await enqueueAutomaticReviewCandidate({
         userId,
         text: combinedText,
         senderOrPackage: notif.app,
         sourceType: 'notification',
         timestamp: notif.time || Date.now(),
         reasonCode: automaticPolicy.reasonCode,
+        paymentAppAccountMatch,
       });
       let balanceChanged = false;
       if (enqueued) {
-        const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+        const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance)
+          || mappedBankAccountId;
         balanceChanged = await recordEstimatedBalanceMovementSafely({
           userId,
           bankAccountId: matchedAccountId,
@@ -1200,6 +1249,9 @@ export const processNotification = async (taskData: any) => {
           senderOrPackage: notif.app,
           sourceType: 'notification',
           timestamp: notif.time || Date.now(),
+          reason: mappedBankAccountId && matchedAccountId === mappedBankAccountId
+            ? 'app_mapping'
+            : undefined,
         });
       }
       if (enqueued || balanceChanged) {
@@ -1253,7 +1305,12 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
-    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
+    const mappedBankAccountId = paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
+      ? paymentAppAccountMatch.mappedBankAccountId || null
+      : null;
+    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance)
+      || mappedBankAccountId;
+    const matchedAccountLast4 = parsed.accountLast4 || paymentAppAccountMatch?.mappedBankAccountLast4;
     void recordEstimatedBalanceMovementSafely({
       userId,
       bankAccountId: matchedAccountId,
@@ -1262,6 +1319,9 @@ export const processNotification = async (taskData: any) => {
       senderOrPackage: notif.app,
       sourceType: 'notification',
       timestamp: notif.time || Date.now(),
+      reason: mappedBankAccountId && matchedAccountId === mappedBankAccountId
+        ? 'app_mapping'
+        : undefined,
     });
     const presentation = {
       type: dbType,
@@ -1291,7 +1351,7 @@ export const processNotification = async (taskData: any) => {
           category: transactionCategory,
           account_id: matchedAccountId,
           reference_number: parsed.reference,
-          account_last4: parsed.accountLast4,
+          account_last4: matchedAccountLast4,
           balance: parsed.balance,
           sms_source: parsed.source,
           sms_sender: senderLabel,
@@ -1314,7 +1374,7 @@ export const processNotification = async (taskData: any) => {
             category: transactionCategory,
             account_id: matchedAccountId,
             reference_number: parsed.reference,
-            account_last4: parsed.accountLast4,
+            account_last4: matchedAccountLast4,
             balance: parsed.balance,
             sms_source: parsed.source,
             sms_sender: senderLabel,
@@ -1354,7 +1414,7 @@ export const processNotification = async (taskData: any) => {
         category: transactionCategory,
         account_id: matchedAccountId,
         reference_number: parsed.reference,
-        account_last4: parsed.accountLast4,
+        account_last4: matchedAccountLast4,
         balance: parsed.balance,
         sms_source: parsed.source,
         sms_sender: senderLabel,

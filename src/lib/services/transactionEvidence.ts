@@ -61,6 +61,7 @@ const SAFE_METADATA_KEYS = new Set([
   'kind',
   'reasons',
   'parserVersion',
+  'bankHint',
 ]);
 
 const RAW_METADATA_KEYS = [
@@ -95,6 +96,7 @@ function normalizeMetadataKey(key: string): string {
 function outputMetadataKey(normalizedKey: string): string {
   if (normalizedKey === 'app') return 'package';
   if (normalizedKey === 'parserversion') return 'parserVersion';
+  if (normalizedKey === 'bankhint') return 'bankHint';
   return normalizedKey;
 }
 

@@ -415,6 +415,66 @@ describe('balance signal runtime recorder', () => {
     }));
   });
 
+  it('records an exact notification balance against a user-confirmed app-mapped account', async () => {
+    tables.bank_accounts.push({
+      id: 'bank_slice_1',
+      user_id: 'user_1',
+      bank_name: 'Slice',
+      account_last4: '5235',
+      account_type: 'savings',
+    });
+
+    await recordBalanceSignalForUser({
+      userId: 'user_1',
+      sourceType: 'notification',
+      senderOrPackage: 'money.super.payments',
+      bankAccountIdHint: 'bank_slice_1',
+      text: 'Rs.103 received. Deposited in your slice bank. Available Balance Rs.1,103.',
+    });
+
+    expect(tables.balance_snapshots[0]).toEqual(expect.objectContaining({
+      owner_type: 'bank_account',
+      owner_id: 'bank_slice_1',
+      amount: 1103,
+      source: 'notification',
+      confidence: 'exact',
+    }));
+    expect(tables.detected_accounts).toHaveLength(0);
+  });
+
+  it('tags an estimated mapped movement without storing notification text', async () => {
+    tables.bank_accounts.push({
+      id: 'bank_slice_1',
+      user_id: 'user_1',
+      bank_name: 'Slice',
+      account_last4: '5235',
+      account_type: 'savings',
+      balance: 1000,
+    });
+
+    await recordEstimatedBankBalanceMovementForUser({
+      userId: 'user_1',
+      bankAccountId: 'bank_slice_1',
+      amount: 103,
+      direction: 'credit',
+      sourceType: 'notification',
+      sourceHash: 'abcdef12',
+      senderOrPackage: 'money.super.payments',
+      reason: 'app_mapping',
+    });
+
+    expect(tables.balance_snapshots[0]).toEqual(expect.objectContaining({
+      amount: 1103,
+      source: 'calculated',
+      confidence: 'estimated',
+      note: 'Estimated from user-confirmed app mapping',
+      raw_source_metadata: expect.objectContaining({
+        reasons: ['app_mapping'],
+      }),
+    }));
+    expect(JSON.stringify(tables.balance_snapshots[0])).not.toContain('received from');
+  });
+
   it('does not invent an estimated balance without a previous known balance', async () => {
     tables.bank_accounts.push({
       id: 'bank_1',

@@ -7,7 +7,8 @@ import {
   markIgnored,
   clearReviewQueue,
   markPosted,
-  checkForDuplicateTransaction
+  checkForDuplicateTransaction,
+  updateReviewCandidatePaymentAppMatch,
 } from './autoTransactionReviewQueue';
 import { subscribeFinanceDataChanged } from './dataEvents';
 import { SmartCandidate, AutoTransactionClass } from './transactionIntelligence';
@@ -416,5 +417,28 @@ describe('Auto Transaction Review Queue Service', () => {
     expect(failedItem).toBeDefined();
     expect(failedItem?.status).toBe('pending');
     expect(failedItem?.createdTransactionId).toBeUndefined();
+  });
+
+  it('persists a safe user-confirmed payment app destination on a pending queue item', async () => {
+    await enqueueReviewCandidate(mockCandidate('sig_mapping_context'));
+
+    await expect(updateReviewCandidatePaymentAppMatch('sig_mapping_context', {
+      sourcePackage: 'money.super.payments',
+      sourceLabel: 'Super.money',
+      bankHint: 'slice',
+      bankHintLabel: 'Slice',
+      mappingStatus: 'user_confirmed',
+      mappedBankAccountId: 'bank_slice_1',
+      mappedBankAccountLast4: '5235',
+      mappedBankName: 'Slice',
+    })).resolves.toBe(true);
+
+    const queue = await getReviewQueue();
+    expect(queue[0].candidate.paymentAppAccountMatch).toEqual(expect.objectContaining({
+      sourcePackage: 'money.super.payments',
+      bankHint: 'slice',
+      mappingStatus: 'user_confirmed',
+      mappedBankAccountLast4: '5235',
+    }));
   });
 });

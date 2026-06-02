@@ -48,6 +48,16 @@ export type SmartCandidate = {
   signalId: string;
   sourceType?: RawTransactionSignal['sourceType'];
   evidenceId?: string | null;
+  paymentAppAccountMatch?: {
+    sourcePackage: string;
+    sourceLabel: string;
+    bankHint: string;
+    bankHintLabel: string;
+    mappingStatus: 'needs_review' | 'user_confirmed';
+    mappedBankAccountId?: string;
+    mappedBankAccountLast4?: string;
+    mappedBankName?: string;
+  } | null;
   autoClass: AutoTransactionClass;
   direction: Direction;
   amount: number | null;

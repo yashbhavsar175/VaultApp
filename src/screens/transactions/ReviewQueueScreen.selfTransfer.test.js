@@ -41,7 +41,7 @@ describe('ReviewQueueScreen self-transfer routing gate', () => {
       'utf8'
     );
     const supportedClasses = source.match(/const supportedClasses = \[([\s\S]*?)\];/);
-    const refundActionBranch = source.match(/\) : isRefund \? \(([\s\S]*?)\) : isSupported \? \(/);
+    const refundActionBranch = source.match(/\) : isRefund \? \(([\s\S]*?)\) : isSupported && !destinationNeedsConfirmation \? \(/);
 
     expect(source).toContain("case 'refund': return 'Refund'");
     expect(source).toContain('Link Refund');
@@ -56,5 +56,20 @@ describe('ReviewQueueScreen self-transfer routing gate', () => {
     expect(refundActionBranch && refundActionBranch[1]).not.toContain('Create Expense');
     expect(refundService).toContain('createLinkedRefundTransaction');
     expect(refundService).toContain('refundOfTransactionId: originalExpense.id');
+  });
+
+  it('requires destination account confirmation before payment-app credit income review', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'ReviewQueueScreen.tsx'), 'utf8');
+
+    expect(source).toContain('Destination account needs confirmation');
+    expect(source).toContain('Source app:');
+    expect(source).toContain('Bank hint:');
+    expect(source).toContain('Link destination account:');
+    expect(source).toContain('Link to account');
+    expect(source).toContain('Not my account / Keep reviewing');
+    expect(source).toContain('Link account before income review');
+    expect(source).toContain('confirmPaymentAppBankAccountMapping');
+    expect(source).toContain('updateReviewCandidatePaymentAppMatch');
+    expect(source).not.toContain('raw notification');
   });
 });

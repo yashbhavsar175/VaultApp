@@ -13,6 +13,7 @@ import {
   recordSmsTransactionEvidence,
 } from '../services/runtimeTransactionEvidence';
 import { REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from '../services/userScopedQueues';
+import { resolvePaymentAppBankAccountForUser } from '../services/paymentAppAccountMappings';
 
 jest.mock('../core', () => ({
   supabase: {
@@ -57,6 +58,10 @@ jest.mock('../services/runtimeTransactionEvidence', () => ({
   recordNotificationTransactionEvidence: jest.fn(() => Promise.resolve('created')),
 }));
 
+jest.mock('../services/paymentAppAccountMappings', () => ({
+  resolvePaymentAppBankAccountForUser: jest.fn(async () => null),
+}));
+
 type InsertedTransaction = Record<string, any>;
 
 const mockSupabase = supabase as any;
@@ -66,6 +71,7 @@ const mockRecordEstimatedBankBalanceMovementForUser = recordEstimatedBankBalance
 const mockEmitFinanceDataChanged = emitFinanceDataChanged as jest.Mock;
 const mockRecordSmsEvidence = recordSmsTransactionEvidence as jest.Mock;
 const mockRecordNotificationEvidence = recordNotificationTransactionEvidence as jest.Mock;
+const mockResolvePaymentAppBankAccount = resolvePaymentAppBankAccountForUser as jest.Mock;
 const insertedTransactions: InsertedTransaction[] = [];
 let matchedBankAccounts = [{ id: 'bank_1' }];
 
@@ -142,6 +148,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
       creditCardStatements: [],
     });
     mockRecordEstimatedBankBalanceMovementForUser.mockResolvedValue(null);
+    mockResolvePaymentAppBankAccount.mockResolvedValue(null);
     setupSupabaseMock();
   });
 
@@ -467,6 +474,80 @@ describe('TransactionProcessors raw_sms privacy', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('queues mapped super.money credit with destination account context without auto-counting income', async () => {
+    matchedBankAccounts = [];
+    mockResolvePaymentAppBankAccount.mockResolvedValueOnce({
+      sourcePackage: 'money.super.payments',
+      sourceLabel: 'Super.money',
+      bankHint: 'slice',
+      bankHintLabel: 'Slice',
+      bankHintHash: 'abcdef12',
+      mappingStatus: 'user_confirmed',
+      mappedBankAccountId: 'bank_slice_1',
+      mappedBankAccountLast4: '5235',
+      mappedBankName: 'Slice',
+    });
+    mockRecordEstimatedBankBalanceMovementForUser.mockResolvedValueOnce({
+      id: 'balance_estimate_1',
+      balance_kind: 'current_balance',
+    });
+
+    await processNotification({
+      notification: JSON.stringify({
+        app: 'money.super.payments',
+        text: '₹103.00 received from PRIVATE PERSON. Deposited in your slice bank.',
+        time: Date.now(),
+      }),
+    });
+
+    expect(insertedTransactions).toHaveLength(0);
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
+    expect(queue).toHaveLength(1);
+    expect(queue[0].candidate.paymentAppAccountMatch).toEqual(expect.objectContaining({
+      mappingStatus: 'user_confirmed',
+      mappedBankAccountId: 'bank_slice_1',
+      mappedBankAccountLast4: '5235',
+    }));
+    expect(JSON.stringify(queue)).not.toContain('PRIVATE PERSON');
+    expect(mockRecordEstimatedBankBalanceMovementForUser).toHaveBeenCalledWith(expect.objectContaining({
+      bankAccountId: 'bank_slice_1',
+      amount: 103,
+      direction: 'credit',
+      sourceType: 'notification',
+      reason: 'app_mapping',
+    }));
+  });
+
+  it('queues unknown super.money destination for account confirmation without inventing a balance', async () => {
+    matchedBankAccounts = [];
+    mockResolvePaymentAppBankAccount.mockResolvedValueOnce({
+      sourcePackage: 'money.super.payments',
+      sourceLabel: 'Super.money',
+      bankHint: 'slice',
+      bankHintLabel: 'Slice',
+      bankHintHash: 'abcdef12',
+      mappingStatus: 'needs_review',
+    });
+
+    await processNotification({
+      notification: JSON.stringify({
+        app: 'money.super.payments',
+        text: '₹103.00 received from PRIVATE PERSON. Deposited in your slice bank.',
+        time: Date.now(),
+      }),
+    });
+
+    expect(insertedTransactions).toHaveLength(0);
+    expect(mockRecordEstimatedBankBalanceMovementForUser).not.toHaveBeenCalled();
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
+    expect(queue[0].candidate.paymentAppAccountMatch).toEqual(expect.objectContaining({
+      bankHint: 'slice',
+      mappingStatus: 'needs_review',
+    }));
+    expect(queue[0].reasons).toContain('Destination account needs confirmation');
+    expect(JSON.stringify(queue)).not.toContain('PRIVATE PERSON');
   });
 
   it('emits a balance refresh after a review-routed matched debit estimate', async () => {

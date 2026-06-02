@@ -10,6 +10,7 @@ import {
   createTransactionEvidence,
   maskUpiId,
 } from './transactionEvidence';
+import { extractPaymentAppBankHint } from './paymentAppAccountMappings';
 
 type RuntimeParsedTransaction = {
   amount?: number | null;
@@ -67,8 +68,8 @@ const PAYMENT_APP_PACKAGES = new Set([
 const PACKAGE_LABELS: Record<string, string> = {
   'com.google.android.apps.nbu.paisa.user': 'GPay',
   'com.phonepe.app': 'PhonePe',
-  'money.super.app': 'super.money',
-  'money.super.payments': 'super.money',
+  'money.super.app': 'Super.money',
+  'money.super.payments': 'Super.money',
   'net.one97.paytm': 'Paytm',
   'in.amazon.mShop.android.shopping': 'Amazon Pay',
   'com.whatsapp': 'WhatsApp',
@@ -303,6 +304,9 @@ export function mapNotificationToEvidence(
   const reference_number = normalizeReference(parsed.reference || parsed.reference_number);
   const upiId = parsed.upiId || extractUpiIdFromText(input.text);
   const paymentAppEvidenceOnly = PAYMENT_APP_PACKAGES.has(sourcePackage);
+  const paymentAppBankHint = paymentAppEvidenceOnly
+    ? extractPaymentAppBankHint(input.text, sourcePackage)
+    : null;
 
   return {
     signal_id: buildEvidenceSignalId({
@@ -322,8 +326,10 @@ export function mapNotificationToEvidence(
     direction: directionFromParsed(parsed),
     captured_at,
     reference_number,
-    merchant_or_person: safeMerchantOrPerson(parsed.merchant),
-    bank_name: paymentAppEvidenceOnly ? null : safeMerchantOrPerson(parsed.bankName),
+    merchant_or_person: paymentAppEvidenceOnly ? null : safeMerchantOrPerson(parsed.merchant),
+    bank_name: paymentAppEvidenceOnly
+      ? paymentAppBankHint?.bankHintLabel || null
+      : safeMerchantOrPerson(parsed.bankName),
     account_last4: paymentAppEvidenceOnly ? null : safeLast4(parsed.accountLast4 || parsed.last4Digits),
     card_last4: null,
     instrument_hint: paymentAppEvidenceOnly ? 'unknown' : 'bank_account',
@@ -343,6 +349,7 @@ export function mapNotificationToEvidence(
       source: 'runtime',
       package: sourcePackage,
       kind: 'transaction_evidence',
+      bankHint: paymentAppBankHint?.bankHint,
       reasons: [paymentAppEvidenceOnly ? 'payment_app_evidence_only' : 'runtime_notification'],
     },
   };

@@ -226,7 +226,8 @@ describe('TransactionDetail Source Trace', () => {
     const text = renderedText(renderer);
 
     expect(text).toContain('Source Trace');
-    expect(text).toContain('Notification from Super.money');
+    expect(text).toContain('Captured from: Super.money notification');
+    expect(text).toContain('Credited to: Bank Of Baroda ••5191');
     expect(text).toContain('Source app Super.money');
     expect(text).toContain('Package money.super.payments');
     expect(text).toContain('Matched Account Bank Of Baroda ••5191');
@@ -270,7 +271,7 @@ describe('TransactionDetail Source Trace', () => {
       })]
     );
 
-    expect(renderedText(renderer)).toContain('Notification from Notification source');
+    expect(renderedText(renderer)).toContain('Captured from: Notification source notification');
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();

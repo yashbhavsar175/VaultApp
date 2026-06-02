@@ -231,6 +231,28 @@ export async function markPosted(id: string, transactionId?: string): Promise<bo
   }
 }
 
+export async function updateReviewCandidatePaymentAppMatch(
+  id: string,
+  paymentAppAccountMatch: NonNullable<SmartCandidate['paymentAppAccountMatch']>
+): Promise<boolean> {
+  try {
+    const userId = await getCurrentUserId();
+    if (!userId) return false;
+
+    const queue = await getReviewQueueForUser(userId);
+    const index = queue.findIndex(item => item.id === id);
+    if (index === -1 || queue[index].status !== 'pending') return false;
+
+    queue[index].candidate.paymentAppAccountMatch = paymentAppAccountMatch;
+    await saveUserScopedQueue(STORAGE_KEY, userId, queue);
+    emitReviewQueueChanged();
+    return true;
+  } catch (e) {
+    console.error('Failed to update payment app account match:', e);
+    return false;
+  }
+}
+
 export async function checkForDuplicateTransaction(candidate: Omit<SmartCandidate, 'rawText'>): Promise<boolean> {
   try {
     const transactions = await getTransactions();

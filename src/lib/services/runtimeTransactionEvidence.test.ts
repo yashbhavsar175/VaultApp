@@ -211,7 +211,7 @@ describe('runtime transaction evidence recording', () => {
       amount: 77,
       direction: 'debit',
       reference_number: '777777777777',
-      merchant_or_person: 'CODEX28J',
+      merchant_or_person: null,
       bank_name: null,
       account_last4: null,
       card_last4: null,
@@ -226,6 +226,31 @@ describe('runtime transaction evidence recording', () => {
     expect(JSON.stringify(evidence)).not.toContain('yash.codex28j@oksbi');
     expect(JSON.stringify(evidence)).not.toContain('123456789012');
     expect(JSON.stringify(evidence)).not.toContain('OTP 123456');
+  });
+
+  it('stores only a safe Slice hint for super.money notification evidence', () => {
+    const text = '₹103.00 received from PRIVATE PERSON. Deposited in your slice bank. Call 9876543210.';
+    const evidence = mapNotificationToEvidence({
+      text,
+      sourcePackage: 'money.super.payments',
+      parsed: { amount: 103, type: 'credit', merchant: 'PRIVATE PERSON' },
+    });
+
+    expect(evidence).toEqual(expect.objectContaining({
+      source_package: 'money.super.payments',
+      source_app: 'Super.money',
+      bank_name: 'Slice',
+      merchant_or_person: null,
+      account_last4: null,
+      match_status: 'unlinked',
+    }));
+    expect(evidence.raw_source_metadata).toEqual(expect.objectContaining({
+      bankHint: 'slice',
+      reasons: ['payment_app_evidence_only'],
+    }));
+    expect(JSON.stringify(evidence)).not.toContain(text);
+    expect(JSON.stringify(evidence)).not.toContain('PRIVATE PERSON');
+    expect(JSON.stringify(evidence)).not.toContain('9876543210');
   });
 
   it('does not fail callers when evidence insertion fails', async () => {

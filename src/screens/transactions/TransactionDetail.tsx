@@ -276,8 +276,12 @@ function getEntrySourceTrace(
     const packageName = safePackageName(evidence?.source_package);
     return {
       icon: 'cellphone-message',
-      title: `Notification from ${sourceName}`,
-      subtitle: packageName ? `Package: ${packageName}` : 'Captured from a payment app notification',
+      title: `Captured from: ${sourceName} notification`,
+      subtitle: accountLabel
+        ? `${transaction.type === 'income' ? 'Credited to' : 'Matched account'}: ${accountLabel}`
+        : packageName
+          ? `Package: ${packageName}`
+          : 'Captured from a payment app notification',
       color: colors.success,
     };
   }

@@ -17,7 +17,8 @@ import {
   getReviewQueue,
   markIgnored,
   markPosted,
-  ReviewItem
+  ReviewItem,
+  updateReviewCandidatePaymentAppMatch,
 } from '../../lib/services/autoTransactionReviewQueue';
 import {
   CreditCard,
@@ -56,6 +57,10 @@ import {
   getReviewClassificationPreferenceSuggestions,
   ReviewClassificationPreference,
 } from '../../lib/services/reviewClassificationPreferences';
+import {
+  confirmPaymentAppBankAccountMapping,
+  recordMappedPaymentAppBalanceEstimateForCurrentUser,
+} from '../../lib/services/paymentAppAccountMappings';
 import { addTransaction, getTransactions } from '../../lib/core';
 import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -149,12 +154,73 @@ export default function ReviewQueueScreen() {
 
   const getPreselectedAccount = useCallback((item: ReviewItem) => {
     const candidate = item.candidate;
+    const mappedBankAccountId = candidate.paymentAppAccountMatch?.mappedBankAccountId;
+    if (mappedBankAccountId && bankAccounts.some(bank => bank.id === mappedBankAccountId)) {
+      return mappedBankAccountId;
+    }
     if (candidate.last4) {
       const matches = bankAccounts.filter(bank => bank.account_last4 === candidate.last4);
       if (matches.length === 1) return matches[0].id;
     }
     return 'cash';
   }, [bankAccounts]);
+
+  const handleLinkPaymentAppAccount = async (item: ReviewItem) => {
+    if (postingId) return;
+    const accountSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
+    const selectedBank = bankAccounts.find(bank => bank.id === accountSelection);
+    const paymentAppMatch = item.candidate.paymentAppAccountMatch;
+    if (!selectedBank || !paymentAppMatch) {
+      Toast.show({
+        type: 'info',
+        text1: 'Choose destination account',
+        text2: 'Select one of your savings or current accounts.',
+      });
+      return;
+    }
+
+    setPostingId(item.id);
+    try {
+      const confirmedMatch = await confirmPaymentAppBankAccountMapping({
+        sourcePackage: paymentAppMatch.sourcePackage,
+        sourceLabel: paymentAppMatch.sourceLabel,
+        bankHint: paymentAppMatch.bankHint,
+        bankAccountId: selectedBank.id,
+      });
+      await updateReviewCandidatePaymentAppMatch(item.id, confirmedMatch);
+      const sourceHash = item.candidate.redactedPreview.hashSummary.match(/\bhash=([a-f0-9]{8,64})\b/i)?.[1] || null;
+      await recordMappedPaymentAppBalanceEstimateForCurrentUser({
+        bankAccountId: selectedBank.id,
+        amount: item.candidate.amount,
+        direction: item.candidate.direction,
+        sourcePackage: confirmedMatch.sourcePackage,
+        sourceHash,
+        timestamp: item.createdAt,
+      }).catch(() => false);
+      setItems(current => current.map(currentItem => currentItem.id === item.id
+        ? {
+          ...currentItem,
+          candidate: {
+            ...currentItem.candidate,
+            paymentAppAccountMatch: confirmedMatch,
+          },
+        }
+        : currentItem));
+      Toast.show({
+        type: 'success',
+        text1: 'Destination account linked',
+        text2: 'Future matching notifications will suggest this account.',
+      });
+    } catch {
+      Toast.show({
+        type: 'error',
+        text1: 'Could not link destination account',
+        text2: 'The item stays in your queue so you can retry.',
+      });
+    } finally {
+      setPostingId(null);
+    }
+  };
 
   const getPreselectedCreditCard = useCallback((item: ReviewItem) => {
     const result = resolveCreditCardMatch(item, creditCards);
@@ -197,9 +263,22 @@ export default function ReviewQueueScreen() {
             note: 'Reviewed income',
             category: 'Reviewed Income',
             account_id: selectedBank?.id,
-            account_last4: selectedBank?.account_last4 || candidate.last4 || undefined,
+            account_last4: selectedBank?.account_last4 ||
+              candidate.paymentAppAccountMatch?.mappedBankAccountLast4 ||
+              candidate.last4 ||
+              undefined,
             reference_number: candidate.reference || undefined,
             sms_source: candidate.sourceType === 'notification' ? 'notification' : 'sms',
+            sms_sender: candidate.paymentAppAccountMatch?.sourcePackage,
+            account_match_status: candidate.paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
+              ? 'manual_confirmed'
+              : undefined,
+            account_match_confidence: candidate.paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
+              ? 'medium'
+              : undefined,
+            account_match_reason: candidate.paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
+              ? 'user_confirmed_app_mapping'
+              : undefined,
           });
           await markPosted(item.id, transaction.id);
           return { status: 'posted' as const, transactionId: transaction.id };
@@ -515,6 +594,10 @@ export default function ReviewQueueScreen() {
     const amountColor = isRefund ? '#14b8a6' : isNeutralClass ? colors.accent : isCredit ? '#10b981' : '#ef4444';
     const isSupported = isClassSupported(item);
     const preferenceSuggestion = getPreferenceSuggestionLabel(preferenceSuggestions[item.id]);
+    const paymentAppMatch = candidate.paymentAppAccountMatch;
+    const destinationNeedsConfirmation = Boolean(
+      isCredit && paymentAppMatch && paymentAppMatch.mappingStatus !== 'user_confirmed'
+    );
 
     const activeSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
     const activeCardSelection = selectedCreditCards[item.id] || getPreselectedCreditCard(item);
@@ -594,6 +677,69 @@ export default function ReviewQueueScreen() {
               <Text style={[typography.body, { color: colors.text, fontWeight: '500' }]}>
                 {candidate.reference}
               </Text>
+            </View>
+          )}
+
+          {paymentAppMatch && (
+            <View style={styles.selectorContainer}>
+              <Text style={[typography.bodyBold, { color: colors.text }]}>
+                {destinationNeedsConfirmation ? 'Destination account needs confirmation' : 'Destination account linked'}
+              </Text>
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: 4 }]}>
+                Source app: {paymentAppMatch.sourceLabel}
+              </Text>
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                Bank hint: {paymentAppMatch.bankHintLabel}
+              </Text>
+              {paymentAppMatch.mappingStatus === 'user_confirmed' && paymentAppMatch.mappedBankAccountLast4 && (
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Credited to: {paymentAppMatch.mappedBankName || paymentAppMatch.bankHintLabel} ••{paymentAppMatch.mappedBankAccountLast4}
+                </Text>
+              )}
+            </View>
+          )}
+
+          {destinationNeedsConfirmation && (
+            <View style={styles.selectorContainer}>
+              <Text style={[typography.caption, { color: colors.subtext, marginBottom: 6 }]}>
+                Link destination account:
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
+                {bankAccounts.map(bank => (
+                  <TouchableOpacity
+                    key={bank.id}
+                    style={[
+                      styles.chip,
+                      {
+                        borderColor: activeSelection === bank.id ? colors.accent : colors.border,
+                        backgroundColor: activeSelection === bank.id ? colors.accent + '15' : colors.card,
+                      },
+                    ]}
+                    onPress={() => setSelectedAccounts(prev => ({ ...prev, [item.id]: bank.id }))}
+                  >
+                    <MaterialCommunityIcons name="bank-outline" size={14} color={activeSelection === bank.id ? colors.accent : colors.subtext} />
+                    <Text style={[typography.caption, { color: activeSelection === bank.id ? colors.accent : colors.text, fontWeight: '600', marginLeft: 4 }]}>
+                      {bank.bank_name} ••{bank.account_last4}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <View style={styles.actionsRow}>
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.approveButton, { backgroundColor: colors.accent }]}
+                  onPress={() => handleLinkPaymentAppAccount(item)}
+                  disabled={postingId === item.id || activeSelection === 'cash'}
+                >
+                  <MaterialCommunityIcons name="link-variant" size={18} color="#fff" />
+                  <Text style={[typography.bodyBold, { color: '#fff', marginLeft: 6 }]}>Link to account</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionButton, { borderColor: colors.border, borderWidth: 1 }]}
+                  onPress={() => Toast.show({ type: 'info', text1: 'Kept for review' })}
+                >
+                  <Text style={[typography.caption, { color: colors.subtext }]}>Not my account / Keep reviewing</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
 
@@ -1105,7 +1251,7 @@ export default function ReviewQueueScreen() {
                 </>
               )}
             </TouchableOpacity>
-          ) : isSupported ? (
+          ) : isSupported && !destinationNeedsConfirmation ? (
             <TouchableOpacity
               style={[
                 styles.actionButton,
@@ -1130,6 +1276,13 @@ export default function ReviewQueueScreen() {
                 </>
               )}
             </TouchableOpacity>
+          ) : destinationNeedsConfirmation ? (
+            <View style={[styles.actionButton, styles.disabledButton, { backgroundColor: colors.border + '40' }]}>
+              <MaterialCommunityIcons name="lock-outline" size={18} color={colors.subtext} />
+              <Text style={[typography.body, { color: colors.subtext, marginLeft: 6, fontSize: 12 }]}>
+                Link account before income review
+              </Text>
+            </View>
           ) : (
             <View
               style={[
@@ -1310,6 +1463,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
     marginTop: 16,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
   },
   actionButton: {
     flex: 1,
