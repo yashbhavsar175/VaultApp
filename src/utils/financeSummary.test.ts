@@ -130,6 +130,25 @@ describe('computeMonthlyTransactionTotals', () => {
 
     expect(totals.totalIncome).toBe(0);
   });
+
+  it('counts an explicitly reviewed debit as expense and excludes it after correction', () => {
+    const reviewed = tx({
+      id: 'reviewed_expense',
+      amount: 2,
+      type: 'expense',
+      category: 'Reviewed Expense',
+      note: 'Reviewed expense',
+      sms_source: 'sms',
+      account_match_status: 'manual_confirmed',
+    });
+
+    expect(computeMonthlyTransactionTotals([reviewed], new Date('2026-05-20T00:00:00.000Z')).grossExpense)
+      .toBe(2);
+    expect(computeMonthlyTransactionTotals([{
+      ...reviewed,
+      account_match_status: 'ignored',
+    }], new Date('2026-05-20T00:00:00.000Z')).grossExpense).toBe(0);
+  });
 });
 
 describe('computeDashboardReviewPromptSummary', () => {

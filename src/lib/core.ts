@@ -12,6 +12,16 @@ import { Transaction, TransactionType } from '../types';
 import { showTransactionConfirmation } from './services/notifications';
 import { emitFinanceDataChanged } from './services/dataEvents';
 import { sanitizeTransactionRawSmsForPrivacy } from './privacy/rawText';
+import {
+  OFFLINE_DELETE_QUEUE_BASE_KEY,
+  OFFLINE_TX_QUEUE_BASE_KEY,
+  getQueueOwnerId,
+  loadUserScopedQueue,
+  logUserQueueAction,
+  quarantineLegacyQueue,
+  saveUserScopedQueue,
+  USER_QUEUE_ACTIONS,
+} from './services/userScopedQueues';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SUPABASE CLIENT
@@ -169,8 +179,6 @@ export const signOutFromGoogle = async () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSACTIONS_CACHE_KEY = 'cache_transactions';
-const OFFLINE_TX_QUEUE_KEY = 'offline_tx_queue';
-const OFFLINE_DELETE_QUEUE_KEY = 'offline_delete_queue';
 
 async function updateTransactionsCache(
   updater: (current: Transaction[]) => Transaction[]
@@ -232,6 +240,12 @@ export async function addTransaction(
     'to_account_id',
     'is_transfer_pending',
     'refund_of_transaction_id',
+    'account_match_status',
+    'account_match_confidence',
+    'account_match_reason',
+    'account_match_owner_type',
+    'account_match_owner_id',
+    'primary_evidence_id',
   ];
   const metadata = optionalFields.reduce<Record<string, unknown>>((fields, key) => {
     const value = tx[key];
@@ -537,6 +551,7 @@ export async function getUniqueCategories(): Promise<string[]> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type OfflineQueueEntry = Record<string, any>;
+type OfflineDeleteQueueEntry = OfflineQueueEntry | string;
 
 function isDuplicateTransactionError(error: any): boolean {
   const message = String(error?.message || '');
@@ -547,21 +562,37 @@ function isDuplicateTransactionError(error: any): boolean {
   );
 }
 
-async function syncOfflineDeleteQueue(raw: string | null, userId: string): Promise<void> {
-  if (!raw) return;
+function getQueuedDeleteTransactionId(item: OfflineDeleteQueueEntry): string | null {
+  if (typeof item === 'string') {
+    return item.trim() || null;
+  }
 
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed) || parsed.length === 0) return;
+  const transactionId = item.transactionId ?? item.id;
+  return typeof transactionId === 'string' && transactionId.trim()
+    ? transactionId.trim()
+    : null;
+}
 
-  const remainingQueue: unknown[] = [];
+async function syncOfflineDeleteQueue(userId: string): Promise<void> {
+  const queue = await loadUserScopedQueue<OfflineQueueEntry>(OFFLINE_DELETE_QUEUE_BASE_KEY, userId);
+  if (queue.length === 0) return;
+
+  const remainingQueue: OfflineQueueEntry[] = [];
   const syncedIds = new Set<string>();
+  let skippedOwnerMismatch = 0;
 
-  for (const item of parsed) {
-    const transactionId = typeof item === 'string' ? item.trim() : '';
+  for (const item of queue) {
+    const ownerId = getQueueOwnerId(item);
+    if (ownerId !== userId) {
+      skippedOwnerMismatch++;
+      continue;
+    }
+
+    const transactionId = getQueuedDeleteTransactionId(item);
 
     if (!transactionId) {
       console.warn('[OfflineSync] Invalid queued delete item, keeping item queued');
-      remainingQueue.push(item);
+      remainingQueue.push(item as OfflineQueueEntry);
       continue;
     }
 
@@ -573,7 +604,7 @@ async function syncOfflineDeleteQueue(raw: string | null, userId: string): Promi
 
     if (error) {
       console.warn('[OfflineSync] Delete failed, keeping item queued:', error.message);
-      remainingQueue.push(item);
+      remainingQueue.push(item as OfflineQueueEntry);
       continue;
     }
 
@@ -588,28 +619,22 @@ async function syncOfflineDeleteQueue(raw: string | null, userId: string): Promi
     });
   }
 
-  if (remainingQueue.length > 0) {
-    await AsyncStorage.setItem(OFFLINE_DELETE_QUEUE_KEY, JSON.stringify(remainingQueue));
-  } else {
-    await AsyncStorage.removeItem(OFFLINE_DELETE_QUEUE_KEY);
+  if (skippedOwnerMismatch > 0) {
+    logUserQueueAction(OFFLINE_DELETE_QUEUE_BASE_KEY, USER_QUEUE_ACTIONS.skipped, skippedOwnerMismatch);
   }
+  await saveUserScopedQueue(OFFLINE_DELETE_QUEUE_BASE_KEY, userId, remainingQueue);
 
   console.log(
-    `[OfflineSync] Synced ${syncedIds.size} queued delete(s), kept ${remainingQueue.length} queued`
+    `[OfflineSync] Synced ${syncedIds.size} queued delete(s), skipped ${skippedOwnerMismatch} owner mismatch item(s), kept ${remainingQueue.length} queued`
   );
 }
 
 export async function syncOfflineTransactions(): Promise<void> {
   try {
-    const raw = await AsyncStorage.getItem(OFFLINE_TX_QUEUE_KEY);
-    const deleteRaw = await AsyncStorage.getItem(OFFLINE_DELETE_QUEUE_KEY);
-    if (!raw && !deleteRaw) return; // Nothing to sync
-
-    const parsedQueue = raw ? JSON.parse(raw) : [];
-    const queue: OfflineQueueEntry[] = Array.isArray(parsedQueue) ? parsedQueue : [];
-    if (raw && !Array.isArray(parsedQueue)) {
-      console.warn('[OfflineSync] Transaction queue is invalid, skipping transaction inserts');
-    }
+    await Promise.all([
+      quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
+      quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),
+    ]);
 
     // Get authenticated user
     const { data: { user } } = await supabase.auth.getUser();
@@ -618,12 +643,24 @@ export async function syncOfflineTransactions(): Promise<void> {
       return;
     }
 
+    const queue = await loadUserScopedQueue<OfflineQueueEntry>(OFFLINE_TX_QUEUE_BASE_KEY, user.id);
+
     if (queue.length > 0) {
-      // Append user_id to every queued transaction and keep local metadata out of DB rows.
-      const queueItems = queue.map(({ _localId, _queued_at, queued_at, id, created_at, ...tx }) => {
+      // Keep local metadata out of DB rows and reject entries not owned by this user.
+      const queueItems = queue.map(({ _localId, _queued_at, queued_at, id, created_at, queueOwnerId, ...tx }) => {
+        const ownerId = getQueueOwnerId({ ...tx, queueOwnerId });
+        if (ownerId !== user.id) {
+          return {
+            record: null,
+            queuedAt: _queued_at || queued_at || null,
+            original: { _localId, _queued_at, queued_at, id, created_at, queueOwnerId, ...tx },
+            ownerMismatch: true,
+          };
+        }
+
         const record: OfflineQueueEntry = {
           ...tx,
-          user_id: user.id,
+          user_id: ownerId,
         };
 
         if (record.sms_source === 'manual') {
@@ -634,14 +671,21 @@ export async function syncOfflineTransactions(): Promise<void> {
           record,
           queuedAt: _queued_at || queued_at || null,
           original: { _localId, _queued_at, queued_at, id, created_at, ...tx },
+          ownerMismatch: false,
         };
       });
 
       const remainingQueue: OfflineQueueEntry[] = [];
       const syncedRecords: { tx: any; queuedAt: string | null }[] = [];
       let duplicateCount = 0;
+      let skippedOwnerMismatch = 0;
 
       for (const item of queueItems) {
+        if (item.ownerMismatch || !item.record) {
+          skippedOwnerMismatch++;
+          continue;
+        }
+
         const { data: insertedRecord, error } = await supabase
           .from('transactions')
           .insert(item.record)
@@ -695,17 +739,21 @@ export async function syncOfflineTransactions(): Promise<void> {
       }
 
       if (remainingQueue.length > 0) {
-        await AsyncStorage.setItem(OFFLINE_TX_QUEUE_KEY, JSON.stringify(remainingQueue));
+        await saveUserScopedQueue(OFFLINE_TX_QUEUE_BASE_KEY, user.id, remainingQueue);
       } else {
-        await AsyncStorage.removeItem(OFFLINE_TX_QUEUE_KEY);
+        await saveUserScopedQueue(OFFLINE_TX_QUEUE_BASE_KEY, user.id, []);
+      }
+
+      if (skippedOwnerMismatch > 0) {
+        logUserQueueAction(OFFLINE_TX_QUEUE_BASE_KEY, USER_QUEUE_ACTIONS.skipped, skippedOwnerMismatch);
       }
 
       console.log(
-        `[OfflineSync] Synced ${syncedRecords.length} transaction(s), skipped ${duplicateCount} duplicate(s), kept ${remainingQueue.length} queued`
+        `[OfflineSync] Synced ${syncedRecords.length} transaction(s), skipped ${duplicateCount} duplicate(s), skipped ${skippedOwnerMismatch} owner mismatch item(s), kept ${remainingQueue.length} queued`
       );
     }
 
-    await syncOfflineDeleteQueue(deleteRaw, user.id);
+    await syncOfflineDeleteQueue(user.id);
   } catch (e) {
     // Never crash the app — this runs silently in the background
     console.error('[OfflineSync] Unexpected error:', e);

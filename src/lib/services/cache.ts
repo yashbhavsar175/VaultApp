@@ -15,16 +15,14 @@ import { getBankAccounts } from '../database/financial';
 import { getPlaces, getPeopleLedger } from '../database/userdata';
 import { getTransactions } from '../core';
 import { supabase } from '../core';
-import { GEMINI_API_KEY as GEMINI_KEY, OPENAI_API_KEY as OPENAI_KEY } from '../../config';
 import { sanitizeTransactionRawSmsListForPrivacy } from '../privacy/rawText';
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// AI CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export const AI_PROVIDER: 'openai' | 'gemini' = 'gemini';
-export const OPENAI_API_KEY = OPENAI_KEY;
-export const GEMINI_API_KEY = GEMINI_KEY;
+import {
+  OFFLINE_DELETE_QUEUE_BASE_KEY,
+  OFFLINE_TX_QUEUE_BASE_KEY,
+  REVIEW_QUEUE_BASE_KEY,
+  clearFinancialQueuesForUser,
+  quarantineLegacyQueue,
+} from './userScopedQueues';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA CACHE
@@ -174,6 +172,23 @@ export async function removeCache(key: string): Promise<void> {
 
 export async function clearCache(): Promise<void> {
   try {
+    let currentUserId: string | null = null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      currentUserId = user?.id || null;
+    } catch {
+      currentUserId = null;
+    }
+
+    if (currentUserId) {
+      await clearFinancialQueuesForUser(currentUserId);
+    }
+    await Promise.all([
+      quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
+      quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),
+      quarantineLegacyQueue(REVIEW_QUEUE_BASE_KEY),
+    ]);
+
     const keys = await AsyncStorage.getAllKeys();
     await Promise.all(keys.filter(key => key.startsWith(CACHE_PREFIX)).map(key => AsyncStorage.removeItem(key)));
   } catch {

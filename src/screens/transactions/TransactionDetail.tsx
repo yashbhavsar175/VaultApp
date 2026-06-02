@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -22,6 +22,14 @@ import { getBankAccounts } from '../../lib/database/financial';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
 import { isRedactedRawTextRecord, sanitizeTransactionRawSmsForPrivacy } from '../../lib/privacy/rawText';
 import { getEvidenceForTransaction } from '../../lib/services/transactionEvidence';
+import {
+  ReviewClassificationPreferenceAction,
+  saveReviewClassificationPreferenceForTransaction,
+} from '../../lib/services/reviewClassificationPreferences';
+import {
+  REVIEWED_EXPENSE_CATEGORY,
+  REVIEWED_EXPENSE_NOTE,
+} from '../../lib/services/reviewQueueExpenses';
 
 type TransactionDetailRouteProp = RouteProp<
   { TransactionDetail: { transactionId: string } },
@@ -170,6 +178,7 @@ function formatMatchConfidence(transaction: Transaction, evidence?: TransactionE
 
 function dashboardStatus(transaction: Transaction): string {
   if (transaction.account_match_status === 'review_required') return 'Not counted: needs review';
+  if (transaction.account_match_status === 'ignored') return 'Not counted';
   if (transaction.is_transfer_pending) return 'Not counted: waiting for matching transfer';
   if (transaction.type === 'income') return 'Counted as income';
   if (transaction.type === 'expense') return 'Counted as expense';
@@ -289,6 +298,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const [transactionEvidence, setTransactionEvidence] = useState<TransactionEvidence[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [savedPreferenceAction, setSavedPreferenceAction] = useState<ReviewClassificationPreferenceAction | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     visible: boolean;
     title: string;
@@ -454,6 +464,54 @@ export default function TransactionDetail({ route, navigation }: Props) {
     }
   };
 
+  const handleExpenseCountedState = async (countAsExpense: boolean) => {
+    if (!transaction) return;
+
+    try {
+      const updatedTransaction = await updateTransaction(transaction.id, countAsExpense
+        ? {
+          account_match_status: 'manual_confirmed',
+          account_match_reason: 'review_detail_expense_confirmed',
+          category: REVIEWED_EXPENSE_CATEGORY,
+          note: REVIEWED_EXPENSE_NOTE,
+        }
+        : {
+          account_match_status: 'ignored',
+          account_match_reason: 'review_detail_not_expense',
+        }
+      );
+      setTransaction(updatedTransaction);
+      Toast.show({
+        type: 'success',
+        text1: countAsExpense ? 'Counted as expense' : 'Marked as not expense',
+      });
+    } catch {
+      Toast.show({
+        type: 'error',
+        text1: 'Failed to update review decision',
+      });
+    }
+  };
+
+  const handleSaveFuturePreference = async (action: ReviewClassificationPreferenceAction) => {
+    if (!transaction) return;
+
+    try {
+      await saveReviewClassificationPreferenceForTransaction(transaction, action);
+      setSavedPreferenceAction(action);
+      Toast.show({
+        type: 'success',
+        text1: 'Preference saved',
+        text2: 'Future matches will show this suggestion for review.',
+      });
+    } catch {
+      Toast.show({
+        type: 'error',
+        text1: 'Failed to save preference',
+      });
+    }
+  };
+
   if (loading) {
     return (
       <ScreenWrapper>
@@ -530,6 +588,24 @@ export default function TransactionDetail({ route, navigation }: Props) {
     { icon: 'identifier', label: 'Record ID', value: transaction.id },
     isRedactedRawMessage ? { icon: 'message-lock-outline', label: 'Message metadata', value: 'Redacted metadata only' } : null,
   ].filter(Boolean) as TraceRow[];
+  const isAutomaticTransaction = ['bank', 'notification', 'sms', 'upi'].includes(
+    (transaction.sms_source || '').toLowerCase()
+  );
+  const shouldShowReviewDecision = Boolean(
+    primaryEvidence ||
+    transaction.primary_evidence_id ||
+    transaction.account_match_reason ||
+    isAutomaticTransaction
+  );
+  const preferenceStatus = savedPreferenceAction === 'count_as_expense'
+    ? 'Suggest expense next time'
+    : savedPreferenceAction === 'not_expense'
+      ? 'Suggest not expense next time'
+      : savedPreferenceAction === 'suggest_category'
+        ? 'Suggest this category next time'
+        : savedPreferenceAction === 'always_ask'
+          ? 'Always ask before saving'
+          : null;
 
   return (
     <ScreenWrapper scrollable>
@@ -644,6 +720,103 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
         </Card>
 
+        {shouldShowReviewDecision && (
+          <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
+            <View style={[styles.sectionHeader, { marginBottom: spacing.sm }]}>
+              <MaterialCommunityIcons name="clipboard-check-outline" size={22} color={colors.text} />
+              <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.sm }]}>
+                Review decision
+              </Text>
+            </View>
+            <DetailRow
+              icon="view-dashboard-outline"
+              label="Status"
+              value={dashboardStatus(transaction)}
+              colors={colors}
+              typography={typography}
+              spacing={spacing}
+            />
+            <DetailRow
+              icon="radar"
+              label="Source"
+              value={formatSourceType(sourceType)}
+              colors={colors}
+              typography={typography}
+              spacing={spacing}
+            />
+            <DetailRow
+              icon="speedometer"
+              label="Confidence"
+              value={matchConfidence || (transaction.account_match_status === 'manual_confirmed' ? 'User confirmed' : 'Needs review')}
+              colors={colors}
+              typography={typography}
+              spacing={spacing}
+              isLast
+            />
+            <View style={styles.decisionActions}>
+              {transaction.type === 'expense' && (
+                <TouchableOpacity
+                  style={[styles.controlButton, { borderColor: colors.border }]}
+                  onPress={() => handleExpenseCountedState(transaction.account_match_status === 'ignored')}
+                >
+                  <MaterialCommunityIcons
+                    name={transaction.account_match_status === 'ignored' ? 'cash-check' : 'cash-remove'}
+                    size={18}
+                    color={colors.accent}
+                  />
+                  <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                    {transaction.account_match_status === 'ignored' ? 'Mark as expense' : 'Mark not expense'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.controlButton, { borderColor: colors.border }]}
+                onPress={() => setIsEditModalVisible(true)}
+              >
+                <MaterialCommunityIcons name="tag-edit-outline" size={18} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                  Change category
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </Card>
+        )}
+
+        {shouldShowReviewDecision && transaction.type === 'expense' && (
+          <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
+            <View style={[styles.sectionHeader, { marginBottom: spacing.sm }]}>
+              <MaterialCommunityIcons name="lightbulb-on-outline" size={22} color={colors.text} />
+              <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.sm }]}>
+                If this happens again
+              </Text>
+            </View>
+            {preferenceStatus && (
+              <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.sm }]}>
+                {preferenceStatus}
+              </Text>
+            )}
+            <View style={styles.preferenceActions}>
+              {([
+                ['always_ask', 'comment-question-outline', 'Always ask me'],
+                ['count_as_expense', 'cash-check', 'Count as expense next time'],
+                ['not_expense', 'cash-remove', 'Do not count as expense'],
+                ['suggest_category', 'tag-heart-outline', 'Suggest this category next time'],
+              ] as const).map(([action, icon, label]) => (
+                <TouchableOpacity
+                  key={action}
+                  style={[styles.preferenceButton, { borderColor: colors.border }]}
+                  onPress={() => handleSaveFuturePreference(action)}
+                >
+                  <MaterialCommunityIcons name={icon} size={18} color={colors.accent} />
+                  <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, flex: 1 }]}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </Card>
+        )}
+
         {/* Delete Button */}
         <AppButton
           title="Delete Transaction"
@@ -740,5 +913,32 @@ const styles = StyleSheet.create({
   },
   sourceText: {
     flex: 1,
+  },
+  decisionActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  controlButton: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  preferenceActions: {
+    gap: 8,
+  },
+  preferenceButton: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
 });

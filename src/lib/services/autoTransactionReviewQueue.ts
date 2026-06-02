@@ -1,9 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SmartCandidate } from './transactionIntelligence';
-import { getTransactions } from '../core';
+import { getTransactions, supabase } from '../core';
 import { emitFinanceDataChanged } from './dataEvents';
+import {
+  REVIEW_QUEUE_BASE_KEY,
+  USER_QUEUE_ACTIONS,
+  getQueueOwnerId,
+  loadUserScopedQueue,
+  logUserQueueAction,
+  saveUserScopedQueue,
+} from './userScopedQueues';
 
-const STORAGE_KEY = 'auto_transaction_review_queue_v1';
+const STORAGE_KEY = REVIEW_QUEUE_BASE_KEY;
 
 function emitReviewQueueChanged(): void {
   emitFinanceDataChanged({
@@ -19,6 +27,40 @@ export interface ReviewItem {
   status: 'pending' | 'posted' | 'ignored' | 'reviewed';
   createdAt: number;
   createdTransactionId?: string;
+  user_id?: string;
+  queueOwnerId?: string;
+}
+
+async function getCurrentUserId(): Promise<string | null> {
+  const { data: { user } } = await supabase.auth.getUser();
+  return user?.id || null;
+}
+
+function isValidReviewItem(item: unknown): item is ReviewItem {
+  return Boolean(item && typeof item === 'object' && (item as ReviewItem).id);
+}
+
+async function getReviewQueueForUser(userId: string): Promise<ReviewItem[]> {
+  const parsed = await loadUserScopedQueue<ReviewItem>(STORAGE_KEY, userId);
+  const validItems = parsed.filter(isValidReviewItem);
+  let skippedOwnerMismatch = 0;
+
+  const ownedItems = validItems.filter(item => {
+    const ownerId = getQueueOwnerId(item);
+    const isOwner = ownerId === userId;
+    if (!isOwner) skippedOwnerMismatch++;
+    return isOwner;
+  });
+
+  if (skippedOwnerMismatch > 0 || ownedItems.length !== parsed.length) {
+    await saveUserScopedQueue(STORAGE_KEY, userId, ownedItems);
+  }
+
+  if (skippedOwnerMismatch > 0) {
+    logUserQueueAction(STORAGE_KEY, USER_QUEUE_ACTIONS.skipped, skippedOwnerMismatch);
+  }
+
+  return ownedItems;
 }
 
 export function getReasonsForCandidate(candidate: SmartCandidate): string[] {
@@ -45,22 +87,29 @@ export function getReasonsForCandidate(candidate: SmartCandidate): string[] {
 
 export async function getReviewQueue(): Promise<ReviewItem[]> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    
-    // Ensure all items are parsed safely
-    return parsed.filter(item => item && typeof item === 'object' && item.id);
+    const userId = await getCurrentUserId();
+    if (!userId) return [];
+
+    return getReviewQueueForUser(userId);
   } catch (e) {
     console.error('Failed to parse auto transaction review queue, fallback to empty:', e);
     return [];
   }
 }
 
-export async function enqueueReviewCandidate(candidate: SmartCandidate, customReasons?: string[]): Promise<boolean> {
+export async function enqueueReviewCandidate(
+  candidate: SmartCandidate,
+  customReasons?: string[],
+  queueOwnerId?: string,
+): Promise<boolean> {
   try {
-    const queue = await getReviewQueue();
+    const userId = queueOwnerId || await getCurrentUserId();
+    if (!userId) {
+      logUserQueueAction(STORAGE_KEY, USER_QUEUE_ACTIONS.skipped, 1);
+      return false;
+    }
+
+    const queue = await getReviewQueueForUser(userId);
     
     // 1. Dedupe by duplicateFingerprints
     const isDuplicate = queue.some(item => 
@@ -93,7 +142,9 @@ export async function enqueueReviewCandidate(candidate: SmartCandidate, customRe
       candidate: safeCandidate,
       reasons,
       status: 'pending',
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      user_id: userId,
+      queueOwnerId: userId,
     };
 
     // 4. Max 200 bound check (Newest first, truncate to 200)
@@ -102,7 +153,7 @@ export async function enqueueReviewCandidate(candidate: SmartCandidate, customRe
       newQueue = newQueue.slice(0, 200);
     }
 
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newQueue));
+    await saveUserScopedQueue(STORAGE_KEY, userId, newQueue);
     return true;
   } catch (e) {
     console.error('Failed to enqueue review candidate:', e);
@@ -112,12 +163,15 @@ export async function enqueueReviewCandidate(candidate: SmartCandidate, customRe
 
 export async function markReviewed(id: string): Promise<boolean> {
   try {
-    const queue = await getReviewQueue();
+    const userId = await getCurrentUserId();
+    if (!userId) return false;
+
+    const queue = await getReviewQueueForUser(userId);
     const index = queue.findIndex(item => item.id === id);
     if (index === -1) return false;
 
     queue[index].status = 'reviewed';
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    await saveUserScopedQueue(STORAGE_KEY, userId, queue);
     emitReviewQueueChanged();
     return true;
   } catch (e) {
@@ -128,12 +182,15 @@ export async function markReviewed(id: string): Promise<boolean> {
 
 export async function markIgnored(id: string): Promise<boolean> {
   try {
-    const queue = await getReviewQueue();
+    const userId = await getCurrentUserId();
+    if (!userId) return false;
+
+    const queue = await getReviewQueueForUser(userId);
     const index = queue.findIndex(item => item.id === id);
     if (index === -1) return false;
 
     queue[index].status = 'ignored';
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    await saveUserScopedQueue(STORAGE_KEY, userId, queue);
     emitReviewQueueChanged();
     return true;
   } catch (e) {
@@ -154,7 +211,10 @@ export async function getPendingCount(): Promise<number> {
 
 export async function markPosted(id: string, transactionId?: string): Promise<boolean> {
   try {
-    const queue = await getReviewQueue();
+    const userId = await getCurrentUserId();
+    if (!userId) return false;
+
+    const queue = await getReviewQueueForUser(userId);
     const index = queue.findIndex(item => item.id === id);
     if (index === -1) return false;
 
@@ -162,7 +222,7 @@ export async function markPosted(id: string, transactionId?: string): Promise<bo
     if (transactionId) {
       queue[index].createdTransactionId = transactionId;
     }
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    await saveUserScopedQueue(STORAGE_KEY, userId, queue);
     emitReviewQueueChanged();
     return true;
   } catch (e) {
@@ -208,7 +268,10 @@ export async function checkForDuplicateTransaction(candidate: Omit<SmartCandidat
 
 export async function clearReviewQueue(): Promise<void> {
   try {
-    await AsyncStorage.removeItem(STORAGE_KEY);
+    const userId = await getCurrentUserId();
+    if (!userId) return;
+
+    await AsyncStorage.removeItem(`${STORAGE_KEY}:user:${userId}`);
   } catch (e) {
     console.error('Failed to clear review queue:', e);
   }

@@ -1,5 +1,5 @@
 import { Transaction } from '../types';
-import { extractUpiIdFromText, getUpiProviderName } from './upi';
+import { extractUpiIdFromText, getUpiProviderName, maskUpiId } from './upi';
 
 type TransactionLike = {
   type?: Transaction['type'] | string | null;
@@ -333,8 +333,9 @@ export function getTransactionSourceLabel(transaction: TransactionLike): string 
 
   if (upiId) {
     const provider = getUpiProviderName(upiId);
-    if (detectedApp) return `${detectedApp} • ${upiId}`;
-    return provider ? `${provider} UPI • ${upiId}` : `UPI • ${upiId}`;
+    const maskedUpiId = maskUpiId(upiId) || 'UPI ID hidden';
+    if (detectedApp) return `${detectedApp} • ${maskedUpiId}`;
+    return provider ? `${provider} UPI • ${maskedUpiId}` : `UPI • ${maskedUpiId}`;
   }
 
   if (detectedApp) return detectedApp;

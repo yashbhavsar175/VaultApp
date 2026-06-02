@@ -12,7 +12,6 @@ import {
   Keyboard,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import Toast from 'react-native-toast-message';
 import HapticFeedback from 'react-native-haptic-feedback';
@@ -26,6 +25,7 @@ import { getBankColor } from '../../config';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
 import { emitFinanceDataChanged } from '../../lib/services/dataEvents';
+import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../../lib/services/userScopedQueues';
 
 const TYPE_OPTIONS = [
   { value: 'income', label: 'Income', icon: 'arrow-down-circle', color: '#10b981' },
@@ -316,10 +316,13 @@ export default function Add() {
       // OFFLINE-FIRST: Check connectivity before attempting to save
       const netState = await NetInfo.fetch();
       if (!netState.isConnected) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          throw new Error('User not authenticated');
+        }
+
         // Queue transaction for later sync
-        const existing = await AsyncStorage.getItem('offline_tx_queue');
-        const queue = existing ? JSON.parse(existing) : [];
-        queue.push({
+        await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, user.id, {
           amount: transactionAmount,
           note,
           type: selectedType,
@@ -330,7 +333,6 @@ export default function Add() {
           _localId: Date.now().toString(), // For consistency with processor-generated entries
           _queued_at: new Date().toISOString(),
         });
-        await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
         HapticFeedback.trigger('notificationWarning', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
         Toast.show({
           type: 'info',

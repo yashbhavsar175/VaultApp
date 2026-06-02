@@ -12,10 +12,6 @@ declare module 'react-native-config' {
     SUPABASE_URL?: string;
     SUPABASE_ANON_KEY?: string;
 
-    // AI
-    GEMINI_API_KEY?: string;
-    OPENAI_API_KEY?: string;
-
     // Google
     GOOGLE_WEB_CLIENT_ID?: string;
     GOOGLE_MAPS_API_KEY?: string;

@@ -4,7 +4,11 @@ import {
   getTransactionIcon,
   getTransactionTypeLabel,
 } from './transactionHelpers';
-import { inferTransactionCategory, getCategoryIcon } from './transactionPresentation';
+import {
+  getCategoryIcon,
+  getTransactionSourceLabel,
+  inferTransactionCategory,
+} from './transactionPresentation';
 
 describe('refund transaction presentation', () => {
   it('uses a distinct refund icon, color, label, and positive offset prefix', () => {
@@ -27,5 +31,29 @@ describe('refund transaction presentation', () => {
       category: 'Refund',
     })).toBe('Refunds');
     expect(getCategoryIcon('Refunds')).toBe('cash-refund');
+  });
+});
+
+describe('analytics source label privacy', () => {
+  it('renders a masked UPI ID for Largest Entries labels', () => {
+    const rawUpiId = 'customer.name@okhdfcbank';
+    const label = getTransactionSourceLabel({
+      upi_id: rawUpiId,
+      sms_source: 'upi',
+    });
+
+    expect(label).toContain('cust***@okhdfcbank');
+    expect(label).not.toContain(rawUpiId);
+  });
+
+  it('does not render a full phone-like UPI ID for Largest Entries labels', () => {
+    const rawUpiId = '9876543210@ybl';
+    const label = getTransactionSourceLabel({
+      upi_id: rawUpiId,
+      sms_sender: 'PhonePe',
+    });
+
+    expect(label).toContain('****@ybl');
+    expect(label).not.toContain(rawUpiId);
   });
 });

@@ -7,7 +7,6 @@ import { supabase } from '../../lib/core';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { useNavigation } from '@react-navigation/native';
-import { runAllNotificationTests } from '../../utils/testUtils';
 import {
   isAccessibilityServiceEnabled,
   isVolumeGuardEnabled,
@@ -33,6 +32,10 @@ import {
 } from '../../lib/services/deliveryDebugBlackBox';
 import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
 import { sanitizeDebugBugReportsForPrivacy } from '../../lib/privacy/rawText';
+import {
+  ACCOUNT_DELETION_COPY,
+  deleteCurrentUserAppData,
+} from '../../lib/services/accountDeletion';
 
 interface CachedProfile {
   email?: string;
@@ -601,70 +604,29 @@ export default function Settings() {
 
   const handleDeleteAccount = () => {
     Alert.alert(
-      'Delete Account?',
-      'This will permanently delete your account and all your data. This cannot be undone.',
+      ACCOUNT_DELETION_COPY.confirmTitle,
+      ACCOUNT_DELETION_COPY.confirmMessage,
       [
         {
           text: 'Cancel',
           style: 'cancel',
         },
         {
-          text: 'Delete',
+          text: ACCOUNT_DELETION_COPY.confirmButton,
           style: 'destructive',
           onPress: async () => {
             try {
-              const { data: { user } } = await supabase.auth.getUser();
-              if (!user) throw new Error('No user found');
-
-              const { data: placePhotos, error: listPhotosError } = await supabase.storage
-                .from('place-photos')
-                .list(user.id);
-
-              if (!listPhotosError && placePhotos?.length) {
-                const { error: removePhotosError } = await supabase.storage
-                  .from('place-photos')
-                  .remove(placePhotos.map(photo => `${user.id}/${photo.name}`));
-
-                if (removePhotosError) throw removePhotosError;
-              }
-
-              const deleteSteps = [
-                { label: 'transactions', request: () => supabase.from('transactions').delete().eq('user_id', user.id) },
-                { label: 'credit card transactions', request: () => supabase.from('cc_transactions').delete().eq('user_id', user.id) },
-                { label: 'credit cards', request: () => supabase.from('credit_cards').delete().eq('user_id', user.id) },
-                { label: 'EMI payments', request: () => supabase.from('emi_payments').delete().eq('user_id', user.id) },
-                { label: 'loans', request: () => supabase.from('loans').delete().eq('user_id', user.id) },
-                { label: 'people ledger', request: () => supabase.from('people_ledger').delete().eq('user_id', user.id) },
-                { label: 'places', request: () => supabase.from('places').delete().eq('user_id', user.id) },
-                { label: 'vault items', request: () => supabase.from('vault_items').delete().eq('user_id', user.id) },
-                { label: 'bank accounts', request: () => supabase.from('bank_accounts').delete().eq('user_id', user.id) },
-                { label: 'profile', request: () => supabase.from('profiles').delete().eq('id', user.id) },
-              ];
-
-              for (const step of deleteSteps) {
-                const { error } = await step.request();
-                if (error) {
-                  throw new Error(`Failed to delete ${step.label}: ${error.message}`);
-                }
-              }
-
-              // Sign out
-              await clearCache();
-              await supabase.auth.signOut();
-
+              await deleteCurrentUserAppData();
               Toast.show({
                 type: 'info',
-                text1: 'Account Deletion Requested',
-                text2: 'Contact support to complete.',
+                text1: ACCOUNT_DELETION_COPY.successTitle,
+                text2: ACCOUNT_DELETION_COPY.successMessage,
               });
-
-              // Auth state change will redirect to login automatically
-            } catch (error) {
-              console.error('Error deleting account:', error);
+            } catch {
               Toast.show({
                 type: 'error',
-                text1: 'Error',
-                text2: 'Failed to delete account',
+                text1: ACCOUNT_DELETION_COPY.failureTitle,
+                text2: ACCOUNT_DELETION_COPY.failureMessage,
               });
             }
           },
@@ -1136,132 +1098,133 @@ export default function Settings() {
         </View>
 
         {/* Developer Section */}
-        <View style={{ marginTop: spacing.xl }}>
-          <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
-            Developer
-          </Text>
+        {__DEV__ && (
+          <View style={{ marginTop: spacing.xl }}>
+            <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+              Developer
+            </Text>
 
-          <Card>
-            <TouchableOpacity
-              style={styles.accountRow}
-              onPress={async () => {
-                try {
-                  await runAllNotificationTests();
-                  Toast.show({
-                    type: 'success',
-                    text1: 'Tests Running',
-                    text2: 'Check notifications and console logs',
-                  });
-                } catch (error) {
-                  Toast.show({
-                    type: 'error',
-                    text1: 'Test Failed',
-                    text2: String(error),
-                  });
-                }
-              }}>
-              <MaterialCommunityIcons name="test-tube" size={22} color={colors.accent} />
-              <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
-                Test Notifications
-              </Text>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
-            </TouchableOpacity>
-
-            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
-
-            <TouchableOpacity
-              style={styles.accountRow}
-              onPress={async () => {
-                try {
-                  const { data: { user } } = await supabase.auth.getUser();
-                  if (!user) throw new Error('Not logged in');
-
-                  Toast.show({ type: 'info', text1: 'Seeding...', text2: 'Adding 120 dummy transactions' });
-
-                  const categories = ['Food', 'Transport', 'Shopping', 'Salary', 'Freelance', 'Rent', 'Grocery', 'Fuel', 'Entertainment', 'Bills'];
-                  const types = ['income', 'expense'];
-                  const notes = [
-                    'Swiggy order', 'Uber ride', 'Amazon purchase', 'Monthly salary', 'Freelance project',
-                    'House rent', 'BigBasket', 'Petrol', 'Netflix', 'Electricity bill',
-                    'Zomato', 'Ola auto', 'Flipkart', 'Bonus', 'Client payment',
-                    'Water bill', 'Zepto', 'CNG fill', 'Hotstar', 'WiFi bill',
-                  ];
-
-                  const entries = [];
-                  for (let i = 0; i < 120; i++) {
-                    const type = types[Math.floor(Math.random() * types.length)];
-                    const daysAgo = Math.floor(Math.random() * 60);
-                    const date = new Date();
-                    date.setDate(date.getDate() - daysAgo);
-                    entries.push({
-                      user_id: user.id,
-                      amount: Math.floor(Math.random() * 5000) + 50,
-                      type,
-                      category: categories[Math.floor(Math.random() * categories.length)],
-                      note: notes[Math.floor(Math.random() * notes.length)],
-                      created_at: date.toISOString(),
+            <Card>
+              <TouchableOpacity
+                style={styles.accountRow}
+                onPress={async () => {
+                  try {
+                    const { runAllNotificationTests } = require('../../utils/testUtils');
+                    await runAllNotificationTests();
+                    Toast.show({
+                      type: 'success',
+                      text1: 'Tests Running',
+                      text2: 'Check notifications and console logs',
+                    });
+                  } catch (error) {
+                    Toast.show({
+                      type: 'error',
+                      text1: 'Test Failed',
+                      text2: String(error),
                     });
                   }
+                }}>
+                <MaterialCommunityIcons name="test-tube" size={22} color={colors.accent} />
+                <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
+                  Test Notifications
+                </Text>
+                <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+              </TouchableOpacity>
 
-                  // Single bulk insert — no intermediate partial loads!
-                  const { error } = await supabase.from('transactions').insert(entries);
-                  if (error) throw error;
+              <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
 
-                  Toast.show({ type: 'success', text1: 'Done!', text2: '120 dummy entries added' });
-                } catch (error) {
-                  Toast.show({ type: 'error', text1: 'Error', text2: String(error) });
-                }
-              }}>
-              <MaterialCommunityIcons name="database-plus" size={22} color="#f59e0b" />
-              <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
-                Seed 120 Dummy Entries
-              </Text>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.accountRow}
+                onPress={async () => {
+                  try {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (!user) throw new Error('Not logged in');
 
-            {__DEV__ && (
-              <>
-                <TouchableOpacity
-                  style={styles.accountRow}
-                  onPress={async () => {
-                    try {
-                      const { processSignal } = require('../../lib/services/transactionIntelligence');
-                      const { enqueueReviewCandidate } = require('../../lib/services/autoTransactionReviewQueue');
-                      const sample = processSignal({
-                        rawText: "Rs.750 spent on Swiggy using HDFC Bank credit card ending 9999.",
-                        senderOrPackage: "HDFCBK",
-                        sourceType: "sms",
-                        timestamp: Date.now()
+                    Toast.show({ type: 'info', text1: 'Seeding...', text2: 'Adding 120 dummy transactions' });
+
+                    const categories = ['Food', 'Transport', 'Shopping', 'Salary', 'Freelance', 'Rent', 'Grocery', 'Fuel', 'Entertainment', 'Bills'];
+                    const types = ['income', 'expense'];
+                    const notes = [
+                      'Swiggy order', 'Uber ride', 'Amazon purchase', 'Monthly salary', 'Freelance project',
+                      'House rent', 'BigBasket', 'Petrol', 'Netflix', 'Electricity bill',
+                      'Zomato', 'Ola auto', 'Flipkart', 'Bonus', 'Client payment',
+                      'Water bill', 'Zepto', 'CNG fill', 'Hotstar', 'WiFi bill',
+                    ];
+
+                    const entries = [];
+                    for (let i = 0; i < 120; i++) {
+                      const type = types[Math.floor(Math.random() * types.length)];
+                      const daysAgo = Math.floor(Math.random() * 60);
+                      const date = new Date();
+                      date.setDate(date.getDate() - daysAgo);
+                      entries.push({
+                        user_id: user.id,
+                        amount: Math.floor(Math.random() * 5000) + 50,
+                        type,
+                        category: categories[Math.floor(Math.random() * categories.length)],
+                        note: notes[Math.floor(Math.random() * notes.length)],
+                        created_at: date.toISOString(),
                       });
-                      sample.decision = 'review_required'; // force for testing
-                      await enqueueReviewCandidate(sample);
-                      Toast.show({ type: 'success', text1: 'Seeded 1 review candidate' });
-                    } catch (e) {
-                      Toast.show({ type: 'error', text1: 'Seed failed', text2: String(e) });
                     }
-                  }}>
-                  <MaterialCommunityIcons name="seed-outline" size={22} color="#f59e0b" />
-                  <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
-                    Seed Review Queue
-                  </Text>
-                  <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
-                </TouchableOpacity>
 
-                <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
-              </>
-            )}
+                    // Single bulk insert — no intermediate partial loads!
+                    const { error } = await supabase.from('transactions').insert(entries);
+                    if (error) throw error;
 
-            <TouchableOpacity
-              style={styles.accountRow}
-              onPress={openBugReportsModal}>
-              <MaterialCommunityIcons name="bug-check-outline" size={22} color="#f59e0b" />
-              <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
-                Manage Bug Reports
-              </Text>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
-            </TouchableOpacity>
-          </Card>
-        </View>
+                    Toast.show({ type: 'success', text1: 'Done!', text2: '120 dummy entries added' });
+                  } catch (error) {
+                    Toast.show({ type: 'error', text1: 'Error', text2: String(error) });
+                  }
+                }}>
+                <MaterialCommunityIcons name="database-plus" size={22} color="#f59e0b" />
+                <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
+                  Seed 120 Dummy Entries
+                </Text>
+                <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+              </TouchableOpacity>
+
+              <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+
+              <TouchableOpacity
+                style={styles.accountRow}
+                onPress={async () => {
+                  try {
+                    const { processSignal } = require('../../lib/services/transactionIntelligence');
+                    const { enqueueReviewCandidate } = require('../../lib/services/autoTransactionReviewQueue');
+                    const sample = processSignal({
+                      rawText: "Rs.750 spent on Swiggy using HDFC Bank credit card ending 9999.",
+                      senderOrPackage: "HDFCBK",
+                      sourceType: "sms",
+                      timestamp: Date.now()
+                    });
+                    sample.decision = 'review_required'; // force for testing
+                    await enqueueReviewCandidate(sample);
+                    Toast.show({ type: 'success', text1: 'Seeded 1 review candidate' });
+                  } catch (e) {
+                    Toast.show({ type: 'error', text1: 'Seed failed', text2: String(e) });
+                  }
+                }}>
+                <MaterialCommunityIcons name="seed-outline" size={22} color="#f59e0b" />
+                <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
+                  Seed Review Queue
+                </Text>
+                <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+              </TouchableOpacity>
+
+              <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
+
+              <TouchableOpacity
+                style={styles.accountRow}
+                onPress={openBugReportsModal}>
+                <MaterialCommunityIcons name="bug-check-outline" size={22} color="#f59e0b" />
+                <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
+                  Manage Bug Reports
+                </Text>
+                <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+              </TouchableOpacity>
+            </Card>
+          </View>
+        )}
 
         {/* Delivery Tools & Debug */}
         <View style={{ marginTop: spacing.xl }}>
@@ -1359,11 +1322,15 @@ export default function Settings() {
             <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.md }} />
 
             <View style={styles.deliveryActionGrid}>
-              {renderDeliveryActionButton('Start Debug Mode', 'play-circle-outline', startDeliveryDebugMode, 'primary')}
-              {renderDeliveryActionButton('End Debug Mode', 'stop-circle-outline', endDeliveryDebugMode)}
-              {renderDeliveryActionButton('Mark Issue', 'alert-plus-outline', handleMarkDeliveryIssue, 'primary')}
-              {renderDeliveryActionButton('Export Logs', 'export-variant', handleExportDeliveryDebugLogs)}
-              {renderDeliveryActionButton('Clear Logs', 'trash-can-outline', handleClearDeliveryDebugLogs, 'danger')}
+              {__DEV__ && (
+                <>
+                  {renderDeliveryActionButton('Start Debug Mode', 'play-circle-outline', startDeliveryDebugMode, 'primary')}
+                  {renderDeliveryActionButton('End Debug Mode', 'stop-circle-outline', endDeliveryDebugMode)}
+                  {renderDeliveryActionButton('Mark Issue', 'alert-plus-outline', handleMarkDeliveryIssue, 'primary')}
+                  {renderDeliveryActionButton('Export Logs', 'export-variant', handleExportDeliveryDebugLogs)}
+                  {renderDeliveryActionButton('Clear Logs', 'trash-can-outline', handleClearDeliveryDebugLogs, 'danger')}
+                </>
+              )}
               {renderDeliveryActionButton('Accessibility', 'human-handsup', () => {
                 openAccessibilitySettings();
                 Toast.show({
@@ -1375,7 +1342,7 @@ export default function Settings() {
               {renderDeliveryActionButton('Overlay Permission', 'picture-in-picture-bottom-right', () => {
                 openOverlaySettings();
               })}
-              {renderDeliveryActionButton('Porter Test', 'truck-fast-outline', () => (navigation as any).navigate('PorterTest'))}
+              {__DEV__ && renderDeliveryActionButton('Porter Test', 'truck-fast-outline', () => (navigation as any).navigate('PorterTest'))}
             </View>
 
             <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.sm }} />
@@ -1457,7 +1424,7 @@ export default function Settings() {
 
           <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteAccount}>
             <Text style={[typography.body, { color: '#ef4444', textAlign: 'center' }]}>
-              Delete Account
+              {ACCOUNT_DELETION_COPY.dangerButton}
             </Text>
           </TouchableOpacity>
         </View>

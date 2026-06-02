@@ -95,6 +95,13 @@ android {
         
         // react-native-config: Make .env variables available to BuildConfig
         resValue "string", "build_config_package", "com.spendsense"
+
+        // Provider secrets must never ship in mobile BuildConfig or resources.
+        // Quick Add warnings are local-only, so these values are intentionally ignored.
+        ["GEMINI_API_KEY", "OPENAI_API_KEY"].each { key ->
+            buildConfigFields.remove(key)
+            resValue "string", key, ""
+        }
         
         ndk {
             abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"

@@ -1,11 +1,16 @@
 import { supabase } from '../core';
-import { encryptVaultFields, decryptVaultFields } from '../../utils/encryption';
+import {
+  decryptVaultFields,
+  decryptVaultText,
+  encryptVaultFields,
+  encryptVaultText,
+} from '../../utils/encryption';
 
 /**
  * Vault Items — Cloud-First Persistence (Supabase) with Client-Side Encryption
  * 
- * SECURITY: Secret fields (isSecret: true) are encrypted client-side before
- * storing in Supabase using AES-256-CBC encryption.
+ * SECURITY: Secret fields (isSecret: true) and new notes are encrypted
+ * client-side before storing in Supabase using AES-256-CBC encryption.
  * 
  * SQL to run in Supabase SQL Editor:
  * 
@@ -44,13 +49,14 @@ async function mapRow(row: any): Promise<VaultItemDB> {
   
   // Decrypt secret fields
   const decryptedFields = await decryptVaultFields(fields);
+  const decryptedNotes = await decryptVaultText(row.notes || '');
   
   return {
     id: row.id,
     title: row.title,
     category: row.category,
     fields: decryptedFields,
-    notes: row.notes || '',
+    notes: decryptedNotes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -79,8 +85,9 @@ export async function addVaultItem(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
-  // Encrypt secret fields before storing
+  // Encrypt secret fields and notes before storing
   const encryptedFields = await encryptVaultFields(item.fields);
+  const encryptedNotes = await encryptVaultText(item.notes);
 
   const { data, error } = await supabase
     .from('vault_items')
@@ -89,7 +96,7 @@ export async function addVaultItem(
       title: item.title,
       category: item.category,
       fields: encryptedFields,
-      notes: item.notes,
+      notes: encryptedNotes,
     })
     .select()
     .single();
@@ -108,7 +115,7 @@ export async function updateVaultItem(
   const updatePayload: any = { updated_at: new Date().toISOString() };
   if (updates.title !== undefined) updatePayload.title = updates.title;
   if (updates.category !== undefined) updatePayload.category = updates.category;
-  if (updates.notes !== undefined) updatePayload.notes = updates.notes;
+  if (updates.notes !== undefined) updatePayload.notes = await encryptVaultText(updates.notes);
   
   // Encrypt secret fields before updating
   if (updates.fields !== undefined) {

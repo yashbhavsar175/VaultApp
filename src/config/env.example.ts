@@ -13,10 +13,6 @@
 export const SUPABASE_URL = 'https://your-project.supabase.co';
 export const SUPABASE_ANON_KEY = 'your-supabase-anon-key-here';
 
-// AI Configuration
-export const GEMINI_API_KEY = 'your-gemini-api-key-here';
-export const OPENAI_API_KEY = 'your-openai-api-key-here';
-
 // App Configuration
 export const APP_NAME = 'SpendSense';
 export const APP_VERSION = '1.0.0';

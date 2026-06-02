@@ -12,6 +12,7 @@ import {
   recordNotificationTransactionEvidence,
   recordSmsTransactionEvidence,
 } from '../services/runtimeTransactionEvidence';
+import { REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from '../services/userScopedQueues';
 
 jest.mock('../core', () => ({
   supabase: {
@@ -270,6 +271,29 @@ describe('TransactionProcessors raw_sms privacy', () => {
     }
   });
 
+  it.each([
+    ['phone-like', '9876543210'],
+    ['arbitrary', 'private.sender.value'],
+    ['bank token', 'HDFCBK'],
+  ])('redacts %s incoming SMS senders before filtering', async (_label, sender) => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await processSms({
+        sender,
+        body: 'Task40F sender privacy probe',
+        timestamp: Date.now(),
+      });
+
+      const serializedLogs = JSON.stringify(logSpy.mock.calls);
+      expect(serializedLogs).not.toContain(sender);
+      expect(serializedLogs).toContain('senderPresent');
+      expect(serializedLogs).toContain('senderKind');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('still skips duplicate replay of the same SMS', async () => {
     const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK24D SHOP via UPI. UPI Ref 313131313131.';
 
@@ -382,7 +406,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
       transactionId: null,
     }));
 
-    const queue = JSON.parse(await AsyncStorage.getItem('auto_transaction_review_queue_v1') || '[]');
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
     expect(queue).toHaveLength(1);
     expect(queue[0].status).toBe('pending');
     expect(JSON.stringify(queue[0])).not.toContain(body);
@@ -408,7 +432,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
       direction: 'credit',
       sourceType: 'sms',
     }));
-    const queue = JSON.parse(await AsyncStorage.getItem('auto_transaction_review_queue_v1') || '[]');
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
     expect(queue[0].reasons).toEqual([
       'Credit needs confirmation before counting as income',
     ]);

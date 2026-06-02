@@ -46,6 +46,8 @@ export type RedactedPreview = {
 
 export type SmartCandidate = {
   signalId: string;
+  sourceType?: RawTransactionSignal['sourceType'];
+  evidenceId?: string | null;
   autoClass: AutoTransactionClass;
   direction: Direction;
   amount: number | null;
@@ -376,6 +378,7 @@ export function processSignal(signal: RawTransactionSignal): SmartCandidate {
 
   return {
     signalId: `sig_${signal.timestamp}_${hashString(signal.rawText)}`,
+    sourceType: signal.sourceType,
     autoClass,
     direction,
     amount,

@@ -17,7 +17,6 @@ import {
   getReviewQueue,
   markIgnored,
   markPosted,
-  checkForDuplicateTransaction,
   ReviewItem
 } from '../../lib/services/autoTransactionReviewQueue';
 import {
@@ -48,6 +47,15 @@ import {
   isRefundSchemaMissingError,
   recordReviewQueueRefund,
 } from '../../lib/services/reviewQueueRefunds';
+import {
+  isReviewedDebitCandidate,
+  recordReviewQueueExpense,
+  sanitizeReviewedExpenseSourceToken,
+} from '../../lib/services/reviewQueueExpenses';
+import {
+  getReviewClassificationPreferenceSuggestions,
+  ReviewClassificationPreference,
+} from '../../lib/services/reviewClassificationPreferences';
 import { addTransaction, getTransactions } from '../../lib/core';
 import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -68,6 +76,7 @@ export default function ReviewQueueScreen() {
   const [selectedRefundExpenses, setSelectedRefundExpenses] = useState<Record<string, string>>({});
   const [refundSchemaErrors, setRefundSchemaErrors] = useState<Record<string, boolean>>({});
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [preferenceSuggestions, setPreferenceSuggestions] = useState<Record<string, ReviewClassificationPreference>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [postingId, setPostingId] = useState<string | null>(null);
@@ -104,6 +113,7 @@ export default function ReviewQueueScreen() {
       setCreditCards(cards);
       setLoans(loanData);
       setTransactions(txData);
+      setPreferenceSuggestions(await getReviewClassificationPreferenceSuggestions(pendingItems));
     } catch (e) {
       if (!isMountedRef.current) return;
       console.error('Failed to load review data:', e);
@@ -140,8 +150,8 @@ export default function ReviewQueueScreen() {
   const getPreselectedAccount = useCallback((item: ReviewItem) => {
     const candidate = item.candidate;
     if (candidate.last4) {
-      const matched = bankAccounts.find(bank => bank.account_last4 === candidate.last4);
-      if (matched) return matched.id;
+      const matches = bankAccounts.filter(bank => bank.account_last4 === candidate.last4);
+      if (matches.length === 1) return matches[0].id;
     }
     return 'cash';
   }, [bankAccounts]);
@@ -172,79 +182,35 @@ export default function ReviewQueueScreen() {
     HapticFeedback.trigger('impactMedium', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
 
     try {
-      const candidate = item.candidate;
-
-      // 0. Guard: amount must be a valid positive number
-      if (!candidate.amount || candidate.amount <= 0) {
-        Toast.show({
-          type: 'error',
-          text1: 'Invalid Amount',
-          text2: 'Cannot create a transaction with no amount.',
-        });
-        setPostingId(null);
-        return;
-      }
-
-      // 1. Duplicate check before creation
-      const isDuplicate = await checkForDuplicateTransaction(candidate);
-      if (isDuplicate) {
-        Toast.show({
-          type: 'info',
-          text1: 'Already Exists',
-          text2: 'This transaction was already recorded in SpendSense.',
-        });
-        await markIgnored(item.id); // Auto-resolve candidate
-        setItems(prev => prev.filter(x => x.id !== item.id));
-        setPostingId(null);
-        return;
-      }
-
-      // 2. Resolve account fields
       const accountSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
       const selectedBank = bankAccounts.find(b => b.id === accountSelection);
-      const accountId = selectedBank ? selectedBank.id : undefined;
-      const accountLast4 = selectedBank ? selectedBank.account_last4 : (candidate.last4 || undefined);
-
-      // 3. Map clean note (privacy first: no raw text, use clean merchant/person or source label fallback)
-      let cleanNote = '';
-      if (candidate.merchantOrPerson) {
-        cleanNote = candidate.merchantOrPerson;
-      } else {
-        cleanNote = candidate.redactedPreview.detectedSource 
-          ? `Auto transaction from ${candidate.redactedPreview.detectedSource}` 
-          : 'Auto review transaction';
-      }
-
-      // 4. Map category safely
-      let category = 'Auto Review';
-      if (candidate.autoClass === 'cashback_reward') {
-        category = 'Cashback';
-      } else if (candidate.autoClass === 'upi_payment' || candidate.autoClass === 'upi_received') {
-        category = 'UPI Payment';
-      } else {
-        category = candidate.autoClass;
-      }
-
-      // 5. Call existing addTransaction helper to write to Supabase & update cache
-      const newTx = await addTransaction({
-        amount: candidate.amount,
-        type,
-        note: cleanNote,
-        category,
-        account_id: accountId,
-        account_last4: accountLast4,
-        reference_number: candidate.reference || undefined,
-        sms_source: 'sms',
-        sms_sender: candidate.redactedPreview.detectedSource,
-      });
-
-      // 6. Update local review status to posted
-      await markPosted(item.id, newTx.id);
+      const result = type === 'expense'
+        ? await recordReviewQueueExpense(item, selectedBank)
+        : await (async () => {
+          const candidate = item.candidate;
+          if (!candidate.amount || candidate.amount <= 0) {
+            throw new Error('Valid amount required');
+          }
+          const transaction = await addTransaction({
+            amount: candidate.amount,
+            type: 'income',
+            note: 'Reviewed income',
+            category: 'Reviewed Income',
+            account_id: selectedBank?.id,
+            account_last4: selectedBank?.account_last4 || candidate.last4 || undefined,
+            reference_number: candidate.reference || undefined,
+            sms_source: candidate.sourceType === 'notification' ? 'notification' : 'sms',
+          });
+          await markPosted(item.id, transaction.id);
+          return { status: 'posted' as const, transactionId: transaction.id };
+        })();
 
       Toast.show({
-        type: 'success',
-        text1: 'Transaction Created',
-        text2: `Recorded ${type} of ₹${candidate.amount}`,
+        type: result.status === 'duplicate' ? 'info' : 'success',
+        text1: result.status === 'duplicate' ? 'Already Exists' : 'Transaction Created',
+        text2: result.status === 'duplicate'
+          ? 'This transaction was already recorded in SpendSense.'
+          : `Recorded ${type} of ₹${item.candidate.amount}`,
       });
 
       setItems(prev => prev.filter(x => x.id !== item.id));
@@ -515,7 +481,8 @@ export default function ReviewQueueScreen() {
     }
   };
 
-  const isClassSupported = (autoClass: string) => {
+  const isClassSupported = (item: ReviewItem) => {
+    if (isReviewedDebitCandidate(item)) return true;
     const supportedClasses = [
       'bank_debit',
       'upi_payment',
@@ -524,7 +491,17 @@ export default function ReviewQueueScreen() {
       'upi_received',
       'cashback_reward',
     ];
-    return supportedClasses.includes(autoClass);
+    return supportedClasses.includes(item.candidate.autoClass);
+  };
+
+  const getPreferenceSuggestionLabel = (preference?: ReviewClassificationPreference) => {
+    if (!preference) return null;
+    if (preference.action === 'count_as_expense') return 'Saved preference: suggest expense next time';
+    if (preference.action === 'not_expense') return 'Saved preference: suggest not expense next time';
+    if (preference.action === 'suggest_category' && preference.suggestedCategory) {
+      return `Saved preference: suggest ${preference.suggestedCategory} next time`;
+    }
+    return 'Saved preference: always ask before saving';
   };
 
   const renderItem = ({ item }: { item: ReviewItem }) => {
@@ -536,7 +513,8 @@ export default function ReviewQueueScreen() {
     const isRefund = candidate.autoClass === 'refund';
     const isNeutralClass = isCardBillPayment || isLoanEMIPayment || isSelfTransfer;
     const amountColor = isRefund ? '#14b8a6' : isNeutralClass ? colors.accent : isCredit ? '#10b981' : '#ef4444';
-    const isSupported = isClassSupported(candidate.autoClass);
+    const isSupported = isClassSupported(item);
+    const preferenceSuggestion = getPreferenceSuggestionLabel(preferenceSuggestions[item.id]);
 
     const activeSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
     const activeCardSelection = selectedCreditCards[item.id] || getPreselectedCreditCard(item);
@@ -579,7 +557,7 @@ export default function ReviewQueueScreen() {
               {getAutoClassLabel(candidate.autoClass)}
             </Text>
             <Text style={[typography.caption, { color: colors.subtext }]}>
-              Source: {candidate.redactedPreview.detectedSource}
+              Source: {sanitizeReviewedExpenseSourceToken(candidate.redactedPreview.detectedSource) || 'Redacted source'}
             </Text>
           </View>
           {candidate.amount !== null && (
@@ -956,6 +934,15 @@ export default function ReviewQueueScreen() {
               </View>
             ))}
           </View>
+
+          {preferenceSuggestion && (
+            <View style={[styles.preferenceNotice, { borderColor: colors.border, backgroundColor: colors.border + '30' }]}>
+              <MaterialCommunityIcons name="lightbulb-on-outline" size={14} color={colors.accent} />
+              <Text style={[typography.caption, { color: colors.subtext, marginLeft: 6, flex: 1 }]}>
+                {preferenceSuggestion}
+              </Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.actions}>
@@ -1300,6 +1287,15 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
+  },
+  preferenceNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 8,
   },
   reasonsContainer: {
     padding: 10,

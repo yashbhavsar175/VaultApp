@@ -37,7 +37,6 @@ jest.mock('../../lib/core', () => ({
 
 jest.mock('../../lib/services/cache', () => ({
   CACHE_KEYS: { TRANSACTIONS: 'transactions' },
-  GEMINI_API_KEY: 'test-key',
   updateCache: jest.fn(),
 }));
 
@@ -210,6 +209,30 @@ describe('QuickAddModal', () => {
     await act(async () => {
       renderer!.unmount();
     });
+  });
+
+  it('keeps malformed-input warnings local without calling a remote provider', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn();
+
+    let renderer: ReactTestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = ReactTestRenderer.create(
+        <QuickAddModal visible onClose={jest.fn()} onSuccess={jest.fn()} />,
+      );
+    });
+
+    await act(async () => {
+      renderer!.root.findByType(TextInput).props.onChangeText('hello');
+    });
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(visibleText(renderer!)).toContain('Hi there. Try a transaction such as "500 tea paid".');
+
+    await act(async () => {
+      renderer!.unmount();
+    });
+    globalThis.fetch = originalFetch;
   });
 
   it('keeps QuickAddModal source free of known app-facing blocked tokens', () => {

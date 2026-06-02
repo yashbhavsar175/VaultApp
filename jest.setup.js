@@ -12,6 +12,10 @@ NativeModules.PorterModule = {
   isServiceRunning: jest.fn(),
 };
 
+NativeModules.VaultSecurityModule = {
+  setSecureWindow: jest.fn(() => Promise.resolve(true)),
+};
+
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
@@ -27,8 +31,6 @@ jest.mock('react-native-haptic-feedback', () => ({
 jest.mock('react-native-config', () => ({
   SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_ANON_KEY: 'test-anon-key',
-  GEMINI_API_KEY: 'test-gemini-key',
-  OPENAI_API_KEY: 'test-openai-key',
   GOOGLE_WEB_CLIENT_ID: 'test-google-client-id',
   APP_NAME: 'SpendSense',
   APP_VERSION: '1.0.0',

@@ -23,6 +23,7 @@ import {
   getPorterNativeDebugLogs,
   showToastOverlay,
 } from '../../lib/services/porter';
+import { redactedTextSummary } from '../../lib/services/deliveryDebugBlackBox';
 import Config from 'react-native-config';
 
 const { PorterModule } = NativeModules;
@@ -50,6 +51,12 @@ type DistanceResult = {
   toPickup: string | null;
   tripDistance: string | null;
 };
+
+function safeTextSummary(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (/^redacted len=\d+ hash=[a-f0-9]+$/i.test(text)) return text;
+  return redactedTextSummary(text);
+}
 
 // Haversine formula — real straight-line distance between two GPS coordinates
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -131,7 +138,7 @@ async function getDistancesKm(
 }
 
 
-export default function PorterTestScreen() {
+function PorterTestScreenContent() {
   const { colors, typography, spacing } = useTheme();
   const [currentTrip, setCurrentTrip] = useState(MOCK_TRIPS[0]);
   const [distances, setDistances] = useState<DistanceResult>({ toPickup: null, tripDistance: null });
@@ -160,7 +167,7 @@ export default function PorterTestScreen() {
   useEffect(() => {
     // Listen for real accessibility events (when testing on actual Porter app)
     const subscription = eventEmitter.addListener('onPorterScreenChange', (event) => {
-      setCapturedText(`[${event.eventType || '?'}] ${event.textContent || ''}`);
+      setCapturedText(`[${event.eventType || 'unknown'}] ${safeTextSummary(event.textContent)}`);
       // Auto-refresh debug logs and history when new event arrives
       setTimeout(() => loadDebugLogs(), 500); // Small delay to ensure AsyncStorage is updated
     });
@@ -172,12 +179,13 @@ export default function PorterTestScreen() {
   const loadDebugLogs = async () => {
     try {
       const time = await AsyncStorage.getItem('debug_porter_last_time') || 'Never';
-      const rawText = await AsyncStorage.getItem('debug_porter_last_raw_text') || 'None';
-      const status = await AsyncStorage.getItem('debug_porter_status') || 'Idle';
+      const rawText = safeTextSummary(await AsyncStorage.getItem('debug_porter_last_raw_text'));
+      const status = safeTextSummary(await AsyncStorage.getItem('debug_porter_status'));
       const result = await AsyncStorage.getItem('debug_porter_result') || '';
       const eventType = await AsyncStorage.getItem('debug_porter_last_event_type') || '';
       const apiError = await AsyncStorage.getItem('debug_porter_api_error') || '';
-      const nominatim = await AsyncStorage.getItem('debug_porter_nominatim') || '';
+      const nominatimValue = await AsyncStorage.getItem('debug_porter_nominatim');
+      const nominatim = nominatimValue ? safeTextSummary(nominatimValue) : '';
       
       setDebugLogs({ time, rawText, status, result, eventType, apiError, nominatim });
       
@@ -253,9 +261,9 @@ export default function PorterTestScreen() {
     const mockText = `Mock Porter Popup || Pickup || ${trip.pickup} || Drop || ${trip.drop}`;
     await AsyncStorage.multiSet([
       ['debug_porter_last_time', startedAt],
-      ['debug_porter_last_raw_text', mockText],
+      ['debug_porter_last_raw_text', safeTextSummary(mockText)],
       ['debug_porter_last_event_type', 'MANUAL_SIMULATION'],
-      ['debug_porter_status', `Manual simulation: calculating\nPickup: ${trip.pickup}\nDrop: ${trip.drop}`],
+      ['debug_porter_status', 'Manual simulation: calculating distance'],
     ]);
     loadDebugLogs();
 
@@ -293,14 +301,13 @@ export default function PorterTestScreen() {
       const fakeEvent = {
         timestamp: new Date().toISOString(),
         eventType: 'TYPE_WINDOW_STATE_CHANGED',
-        textContent: `₹${Math.floor(Math.random() * 300 + 100)} || Pickup ${(Math.random() * 5 + 0.5).toFixed(1)} km away || PICKUP || ${trip.pickup} || DROP || ${trip.drop}`,
-        pickup: trip.pickup,
-        drop: trip.drop,
+        textSummary: safeTextSummary(`₹${Math.floor(Math.random() * 300 + 100)} || Pickup ${(Math.random() * 5 + 0.5).toFixed(1)} km away || PICKUP || ${trip.pickup} || DROP || ${trip.drop}`),
+        pickup: safeTextSummary(trip.pickup),
+        drop: safeTextSummary(trip.drop),
         status: shouldFail ? 'Failed: Distance calc returned N/A' : 'Success: Overlay shown',
         apiError: shouldFail ? 'Element status: toPickup=ZERO_RESULTS' : apiError,
         nominatim: nominatim,
         result: JSON.stringify(shouldFail ? { toPickup: 'N/A', tripDistance: 'N/A' } : distances),
-        location: { lat, lng },
       };
 
       // Load existing history
@@ -344,15 +351,10 @@ export default function PorterTestScreen() {
         exportText += `📦 Event #${index + 1}\n`;
         exportText += `⏱️ Time: ${new Date(event.timestamp).toLocaleString()}\n`;
         exportText += `⚙️ Type: ${event.eventType}\n`;
-        exportText += `📍 Pickup: ${event.pickup || 'N/A'}\n`;
-        exportText += `🚩 Drop: ${event.drop || 'N/A'}\n`;
-        if (event.location) exportText += `🧭 Location: ${event.location.lat.toFixed(4)}, ${event.location.lng.toFixed(4)}\n`;
         exportText += `📏 Result: ${event.result || 'N/A'}\n`;
-        exportText += `🔌 API Status: ${event.apiError || 'N/A'}\n`;
-        if (event.nominatim) exportText += `🌍 Nominatim: ${event.nominatim}\n`;
-        exportText += `📝 Status: ${event.status}\n`;
-        const raw = event.textContent || 'N/A';
-        exportText += `📄 Raw Text: ${raw}\n`;
+        exportText += `🔌 API Status Summary: ${safeTextSummary(event.apiError)}\n`;
+        exportText += `📝 Status Summary: ${safeTextSummary(event.status)}\n`;
+        exportText += `📄 Text Summary: ${safeTextSummary(event.textSummary || event.textContent)}\n`;
         exportText += `\n${'—'.repeat(50)}\n\n`;
       });
 
@@ -367,8 +369,6 @@ export default function PorterTestScreen() {
     const nativeLogs = await getPorterNativeDebugLogs();
     const historyJson = await AsyncStorage.getItem('debug_porter_history');
     const latestHistory = historyJson ? JSON.parse(historyJson) : [];
-    const apiResponse = await AsyncStorage.getItem('debug_porter_api_response') || '';
-
     let report = `SpendSense Porter Diagnostics\n`;
     report += `Generated: ${new Date().toLocaleString()}\n`;
     report += `Platform: ${Platform.OS} ${Platform.Version}\n`;
@@ -378,12 +378,11 @@ export default function PorterTestScreen() {
     report += `\n${'='.repeat(60)}\nCURRENT DEBUG STATE\n${'='.repeat(60)}\n`;
     report += `Last Event Time: ${debugLogs.time || 'Never'}\n`;
     report += `Event Type: ${debugLogs.eventType || 'N/A'}\n`;
-    report += `Status: ${debugLogs.status || 'N/A'}\n`;
-    report += `API Error/Status: ${debugLogs.apiError || 'N/A'}\n`;
-    report += `Nominatim: ${debugLogs.nominatim || 'N/A'}\n`;
+    report += `Status Summary: ${safeTextSummary(debugLogs.status)}\n`;
+    report += `API Error/Status Summary: ${safeTextSummary(debugLogs.apiError)}\n`;
+    report += `Nominatim Summary: ${safeTextSummary(debugLogs.nominatim)}\n`;
     report += `Result: ${debugLogs.result || 'N/A'}\n`;
-    report += `Raw Text: ${debugLogs.rawText || 'N/A'}\n`;
-    report += `API Response: ${apiResponse || 'N/A'}\n`;
+    report += `Text Summary: ${safeTextSummary(debugLogs.rawText)}\n`;
 
     report += `\n${'='.repeat(60)}\nNATIVE INBOX\n${'='.repeat(60)}\n`;
     if (nativeLogs.length === 0) {
@@ -396,7 +395,7 @@ export default function PorterTestScreen() {
         report += `Package: ${log.packageName || 'N/A'}\n`;
         report += `Event Type: ${log.eventType || 'N/A'}\n`;
         report += `Text Length: ${log.textLength || 0}\n`;
-        report += `Full Text: ${log.sample || 'N/A'}\n`;
+        report += `Text Summary: ${safeTextSummary(log.sample)}\n`;
       });
     }
 
@@ -408,14 +407,10 @@ export default function PorterTestScreen() {
         report += `\n#${index + 1}\n`;
         report += `Time: ${event.timestamp ? new Date(event.timestamp).toLocaleString() : 'N/A'}\n`;
         report += `Event Type: ${event.eventType || 'N/A'}\n`;
-        report += `Pickup: ${event.pickup || 'N/A'}\n`;
-        report += `Drop: ${event.drop || 'N/A'}\n`;
-        if (event.location) report += `Location: ${event.location.lat}, ${event.location.lng}\n`;
-        report += `Status: ${event.status || 'N/A'}\n`;
+        report += `Status Summary: ${safeTextSummary(event.status)}\n`;
         report += `Result: ${event.result || 'N/A'}\n`;
-        report += `API: ${event.apiError || 'N/A'}\n`;
-        report += `Nominatim: ${event.nominatim || 'N/A'}\n`;
-        report += `Raw Text: ${event.textContent || 'N/A'}\n`;
+        report += `API Summary: ${safeTextSummary(event.apiError)}\n`;
+        report += `Text Summary: ${safeTextSummary(event.textSummary || event.textContent)}\n`;
       });
     }
 
@@ -470,11 +465,11 @@ export default function PorterTestScreen() {
     let text = `Porter Offline Debugger\n`;
     text += `⏱️ Time: ${debugLogs.time ? new Date(debugLogs.time).toLocaleString() : 'Never'}\n`;
     if (debugLogs.eventType) text += `⚙️ Event Type: ${debugLogs.eventType}\n`;
-    text += `📝 Status: ${debugLogs.status}\n`;
-    if (debugLogs.apiError) text += `🔌 API Status: ${debugLogs.apiError}\n`;
-    if (debugLogs.nominatim) text += `🌍 Nominatim: ${debugLogs.nominatim}\n`;
+    text += `📝 Status Summary: ${safeTextSummary(debugLogs.status)}\n`;
+    if (debugLogs.apiError) text += `🔌 API Status Summary: ${safeTextSummary(debugLogs.apiError)}\n`;
+    if (debugLogs.nominatim) text += `🌍 Nominatim Summary: ${safeTextSummary(debugLogs.nominatim)}\n`;
     if (debugLogs.result) text += `📏 Result: ${debugLogs.result}\n`;
-    text += `\n📄 Raw Text (Full):\n${debugLogs.rawText}\n`;
+    text += `\n📄 Text Summary:\n${safeTextSummary(debugLogs.rawText)}\n`;
     
     Clipboard.setString(text);
     showToastOverlay('✅ Debugger info copied');
@@ -728,12 +723,12 @@ export default function PorterTestScreen() {
           </View>
         ))}
 
-        {/* Captured text from real accessibility */}
+        {/* Redacted summary from real accessibility */}
         {capturedText && (
           <View style={{ marginTop: spacing.lg }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
               <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
-                Live Capture (Foreground)
+                Live Capture Summary (Foreground)
               </Text>
               <TouchableOpacity onPress={() => { 
                 Clipboard.setString(capturedText); 
@@ -840,7 +835,7 @@ export default function PorterTestScreen() {
               </>
             ) : null}
 
-            <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>RAW ACCESSIBILITY TEXT (WHAT AI SAW)</Text>
+            <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>ACCESSIBILITY TEXT SUMMARY</Text>
             <View style={{ backgroundColor: colors.background, padding: 8, borderRadius: 8 }}>
               <Text style={[typography.caption, { color: colors.text, fontFamily: 'monospace' }]}>
                 {debugLogs.rawText}
@@ -1091,6 +1086,11 @@ export default function PorterTestScreen() {
       </ScrollView>
     </ScreenWrapper>
   );
+}
+
+export default function PorterTestScreen() {
+  if (!__DEV__) return null;
+  return <PorterTestScreenContent />;
 }
 
 const styles = StyleSheet.create({

@@ -35,6 +35,7 @@ import {
 } from '../services/automaticTransactionPolicy';
 import { enqueueReviewCandidate } from '../services/autoTransactionReviewQueue';
 import { processSignal } from '../services/transactionIntelligence';
+import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../services/userScopedQueues';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -137,6 +138,25 @@ const TRANSACTION_CONTEXT_PATTERNS = [
 function isBlockedSender(sender: string): boolean {
   const upperSender = sender.toUpperCase();
   return BLOCKED_SENDERS.some(blocked => upperSender.includes(blocked));
+}
+
+function summarizeSenderForLog(sender?: string | null) {
+  const value = sender?.trim() || '';
+  const compactValue = value.replace(/[\s()-]/g, '');
+  const senderKind = !value
+    ? 'missing'
+    : /^\+?\d{6,}$/.test(compactValue)
+      ? 'phone_like'
+      : /^[A-Za-z]{2}-/.test(value)
+        ? 'dlt_prefixed'
+        : /^[A-Za-z0-9_-]+$/.test(value)
+          ? 'token'
+          : 'other';
+
+  return {
+    senderPresent: Boolean(value),
+    senderKind,
+  };
 }
 
 function isLegitimateFinancialSender(sender: string): boolean {
@@ -312,6 +332,7 @@ function hashFromRedactedRawText(value: string): string | null {
 }
 
 async function enqueueAutomaticReviewCandidate(input: {
+  userId: string;
   text: string;
   senderOrPackage: string;
   sourceType: 'sms' | 'notification';
@@ -352,7 +373,7 @@ async function enqueueAutomaticReviewCandidate(input: {
       ? candidate.duplicateFingerprints.filter(fingerprint => fingerprint.strategy !== 'minute_bucket')
       : candidate.duplicateFingerprints,
     decision: 'review_required',
-  }, [reviewReasonLabels[input.reasonCode]]);
+  }, [reviewReasonLabels[input.reasonCode]], input.userId);
 
   console.info('[AutoTransaction] Routed to review queue', {
     sourceType: input.sourceType,
@@ -767,19 +788,19 @@ async function recordEstimatedBalanceMovementSafely(input: {
 
 export const processSms = async (taskData: SmsData) => {
   console.log('SMS Processor Started', {
-    sender: taskData.sender,
+    sender: summarizeSenderForLog(taskData.sender),
     bodyLength: taskData.body?.length ?? 0,
     timestamp: taskData.timestamp,
   });
 
   try {
     if (isBlockedSender(taskData.sender)) {
-      console.log('⛔ Blocked sender - skipping:', taskData.sender);
+      console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(taskData.sender));
       return;
     }
 
     if (!isLegitimateFinancialSender(taskData.sender)) {
-      console.log('⛔ Non-financial sender - skipping:', taskData.sender);
+      console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(taskData.sender));
       return;
     }
 
@@ -813,6 +834,7 @@ export const processSms = async (taskData: SmsData) => {
     const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, taskData.body);
     if (automaticPolicy.action === 'review') {
       const enqueued = await enqueueAutomaticReviewCandidate({
+        userId,
         text: taskData.body,
         senderOrPackage: taskData.sender,
         sourceType: 'sms',
@@ -927,10 +949,7 @@ export const processSms = async (taskData: SmsData) => {
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
-        const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
-        const queue = queueRaw ? JSON.parse(queueRaw) : [];
-        queue.push(offlineTx);
-        await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+        await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, userId, offlineTx);
         transactionId = tempId;
       } else {
         // Online — insert to Supabase
@@ -993,10 +1012,7 @@ export const processSms = async (taskData: SmsData) => {
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
-      const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
-      const queue = queueRaw ? JSON.parse(queueRaw) : [];
-      queue.push(offlineTx);
-      await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+      await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, userId, offlineTx);
       transactionId = tempId;
     }
 
@@ -1073,12 +1089,12 @@ export const processNotification = async (taskData: any) => {
     const sender = PACKAGE_TO_SENDER[notif.app] || 'UNKNOWN';
 
     if (isBlockedSender(sender)) {
-      console.log('⛔ Blocked sender - skipping:', sender);
+      console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(sender));
       return;
     }
 
     if (!isLegitimateFinancialSender(sender)) {
-      console.log('⛔ Non-financial sender - skipping:', sender);
+      console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(sender));
       return;
     }
 
@@ -1166,6 +1182,7 @@ export const processNotification = async (taskData: any) => {
     const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, combinedText);
     if (automaticPolicy.action === 'review') {
       const enqueued = await enqueueAutomaticReviewCandidate({
+        userId,
         text: combinedText,
         senderOrPackage: notif.app,
         sourceType: 'notification',
@@ -1283,10 +1300,7 @@ export const processNotification = async (taskData: any) => {
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
-        const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
-        const queue = queueRaw ? JSON.parse(queueRaw) : [];
-        queue.push(offlineTx);
-        await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+        await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, userId, offlineTx);
         transactionId = tempId;
       } else {
         // Online — insert to Supabase
@@ -1349,10 +1363,7 @@ export const processNotification = async (taskData: any) => {
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
-      const queueRaw = await AsyncStorage.getItem('offline_tx_queue');
-      const queue = queueRaw ? JSON.parse(queueRaw) : [];
-      queue.push(offlineTx);
-      await AsyncStorage.setItem('offline_tx_queue', JSON.stringify(queue));
+      await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, userId, offlineTx);
       transactionId = tempId;
     }
 

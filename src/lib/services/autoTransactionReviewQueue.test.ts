@@ -11,6 +11,8 @@ import {
 } from './autoTransactionReviewQueue';
 import { subscribeFinanceDataChanged } from './dataEvents';
 import { SmartCandidate, AutoTransactionClass } from './transactionIntelligence';
+import { supabase } from '../core';
+import { REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from './userScopedQueues';
 
 export const mockTransactions = [
   { id: 'tx_existing_1', reference_number: 'ref_exists', amount: 500, type: 'expense', created_at: new Date().toISOString() }
@@ -48,6 +50,9 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 describe('Auto Transaction Review Queue Service', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'test_user_id' } },
+    });
     await clearReviewQueue();
   });
 
@@ -127,6 +132,98 @@ describe('Auto Transaction Review Queue Service', () => {
     
     const count = await getPendingCount();
     expect(count).toBe(0);
+  });
+
+  it('saves and loads review queue items only under the current user key', async () => {
+    const candidate = mockCandidate('sig_scoped_save');
+
+    await enqueueReviewCandidate(candidate);
+
+    const scopedRaw = await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'test_user_id'));
+    const globalRaw = await AsyncStorage.getItem(REVIEW_QUEUE_BASE_KEY);
+    const queue = await getReviewQueue();
+
+    expect(globalRaw).toBeNull();
+    expect(scopedRaw).toContain('sig_scoped_save');
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toEqual(expect.objectContaining({
+      id: 'sig_scoped_save',
+      user_id: 'test_user_id',
+      queueOwnerId: 'test_user_id',
+    }));
+  });
+
+  it('does not show user A review queue items as user B', async () => {
+    (supabase.auth.getUser as jest.Mock).mockResolvedValueOnce({
+      data: { user: { id: 'user_a' } },
+    });
+    await enqueueReviewCandidate(mockCandidate('sig_user_a'));
+
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user_b' } },
+    });
+
+    const queueForB = await getReviewQueue();
+    expect(queueForB).toEqual([]);
+
+    const userAQueue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_a')) || '[]');
+    expect(userAQueue).toHaveLength(1);
+    expect(userAQueue[0].id).toBe('sig_user_a');
+  });
+
+  it('does not let user B mutate user A review queue actions', async () => {
+    (supabase.auth.getUser as jest.Mock).mockResolvedValueOnce({
+      data: { user: { id: 'user_a' } },
+    });
+    await enqueueReviewCandidate(mockCandidate('sig_user_a_action'));
+
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user_b' } },
+    });
+
+    await expect(markIgnored('sig_user_a_action')).resolves.toBe(false);
+    await expect(markPosted('sig_user_a_action', 'tx_b')).resolves.toBe(false);
+
+    const userAQueue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_a')) || '[]');
+    expect(userAQueue[0].status).toBe('pending');
+    expect(userAQueue[0].createdTransactionId).toBeUndefined();
+  });
+
+  it('skips owner-mismatched review items with privacy-safe structural logs only', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await AsyncStorage.setItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_b'), JSON.stringify([{
+      id: 'sig_sensitive',
+      user_id: 'user_a',
+      queueOwnerId: 'user_a',
+      status: 'pending',
+      createdAt: Date.now(),
+      reasons: ['sensitive note should not log'],
+      candidate: {
+        ...mockCandidate('sig_sensitive'),
+        amount: 98765,
+        merchantOrPerson: 'Sensitive Merchant',
+      },
+    }]));
+
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user_b', email: 'userb@example.com' } },
+    });
+
+    try {
+      const queue = await getReviewQueue();
+      expect(queue).toEqual([]);
+
+      const logs = JSON.stringify(warnSpy.mock.calls);
+      expect(logs).toContain('auto_transaction_review_queue_v1');
+      expect(logs).toContain('skipped');
+      expect(logs).toContain('count');
+      expect(logs).not.toContain('98765');
+      expect(logs).not.toContain('Sensitive Merchant');
+      expect(logs).not.toContain('sensitive note should not log');
+      expect(logs).not.toContain('userb@example.com');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('marks items as reviewed or ignored and updates pending count', async () => {

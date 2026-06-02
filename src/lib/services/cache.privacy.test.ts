@@ -2,7 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getBankAccounts } from '../database/financial';
 import { getPeopleLedger, getPlaces } from '../database/userdata';
 import { getTransactions, supabase } from '../core';
-import { CACHE_KEYS, getCached, prefetchAllData, setCache } from './cache';
+import { CACHE_KEYS, clearCache, getCached, prefetchAllData, setCache } from './cache';
+import { OFFLINE_TX_QUEUE_BASE_KEY, REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from './userScopedQueues';
 
 jest.mock('../database/financial', () => ({
   getBankAccounts: jest.fn(),
@@ -27,6 +28,27 @@ describe('cache privacy sanitization', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
     jest.clearAllMocks();
+  });
+
+  it('clears current user financial queues on sign-out cache cleanup without touching another user queue', async () => {
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user_a' } },
+    });
+    await AsyncStorage.setItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'), JSON.stringify([
+      { user_id: 'user_a', queueOwnerId: 'user_a', amount: 123, note: 'current user queued note' },
+    ]));
+    await AsyncStorage.setItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_a'), JSON.stringify([
+      { user_id: 'user_a', queueOwnerId: 'user_a', id: 'review_a', status: 'pending' },
+    ]));
+    await AsyncStorage.setItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'), JSON.stringify([
+      { user_id: 'user_b', queueOwnerId: 'user_b', amount: 456, note: 'other user queued note' },
+    ]));
+
+    await clearCache();
+
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'))).not.toBeNull();
   });
 
   it('redacts historical transaction raw_sms before writing transaction cache', async () => {

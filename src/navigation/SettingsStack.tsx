@@ -2,10 +2,13 @@ import React from 'react';
 import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
 import Settings from '../screens/user/Settings';
 import { BanksScreen, BankConfigScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
-import PorterTestScreen from '../screens/porter/PorterTestScreen';
 import ReconciliationProposalsScreen from '../screens/transactions/ReconciliationProposalsScreen';
 import DebtFreedomScreen from '../screens/financial/DebtFreedomScreen';
 import IncomeReviewScreen from '../screens/financial/IncomeReviewScreen';
+
+const PorterTestScreen = __DEV__
+  ? require('../screens/porter/PorterTestScreen').default
+  : null;
 
 export type SettingsStackParamList = {
   SettingsHome: undefined;
@@ -44,7 +47,7 @@ export default function SettingsStack() {
       <Stack.Screen name="DebtFreedomCoach" component={DebtFreedomScreen} />
       <Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />
       <Stack.Screen name="Places" component={PlacesScreen} />
-      <Stack.Screen name="PorterTest" component={PorterTestScreen} />
+      {__DEV__ && PorterTestScreen ? <Stack.Screen name="PorterTest" component={PorterTestScreen} /> : null}
     </Stack.Navigator>
   );
 }

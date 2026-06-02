@@ -11,6 +11,8 @@ describe('ReviewQueueScreen self-transfer routing gate', () => {
     expect(source).toContain('Count as expense');
     expect(source).not.toContain('Create Income');
     expect(source).not.toContain('Create Expense');
+    expect(source).toContain('isReviewedDebitCandidate(item)');
+    expect(source).toContain('recordReviewQueueExpense(item, selectedBank)');
   });
 
   it('exposes self-transfer posting UI without income or expense wording', () => {

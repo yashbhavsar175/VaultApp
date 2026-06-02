@@ -13,6 +13,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, AppConfirmModal, AppButton } from '../../components';
 import { getVaultItems, addVaultItem, updateVaultItem, deleteVaultItem } from '../../lib/database/vaultDb';
 import { CACHE_KEYS, removeCache } from '../../lib/services/cache';
+import { setVaultSecureWindow } from '../../lib/services/vaultSecurity';
 
 type VaultCategory = 'bank_pin' | 'upi_pin' | 'card' | 'netbanking' | 'app_password' | 'other';
 
@@ -72,31 +73,85 @@ const TEMPLATES: Record<VaultCategory, { label: string; isSecret: boolean }[]> =
   ],
 };
 
+const VAULT_LOCK_UNAVAILABLE_MESSAGE = 'Vault lock is unavailable on this device. Set up biometrics or use a future app PIN.';
+const CLIPBOARD_CLEAR_DELAY_MS = 15_000;
+
+function summarizeVaultError(error: unknown) {
+  if (error && typeof error === 'object') {
+    const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+    return {
+      code: typeof maybeError.code === 'string' ? maybeError.code : null,
+      name: typeof maybeError.name === 'string' ? maybeError.name : null,
+      status: typeof maybeError.status === 'number' || typeof maybeError.status === 'string' ? maybeError.status : null,
+    };
+  }
+
+  return {
+    code: null,
+    name: typeof error,
+    status: null,
+  };
+}
+
 export default function SecureVaultScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
 
   // ── SECURITY: Vault Lock State ─────────────────────────────────────────────
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [vaultLockMessage, setVaultLockMessage] = useState<string | null>(null);
   const isUnlockedRef = useRef(isUnlocked);
   const isAuthenticatingRef = useRef(isAuthenticating);
   const loadItemsRef = useRef<() => Promise<void>>(async () => {});
+  const clipboardClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCopiedSecretRef = useRef<string | null>(null);
   useEffect(() => { isUnlockedRef.current = isUnlocked; }, [isUnlocked]);
   useEffect(() => { isAuthenticatingRef.current = isAuthenticating; }, [isAuthenticating]);
+
+  const clearCopiedSecretFromClipboard = useCallback(async () => {
+    const copiedSecret = lastCopiedSecretRef.current;
+    if (!copiedSecret) return;
+
+    try {
+      const getString = (Clipboard as any).getString;
+      if (typeof getString === 'function') {
+        const currentClipboard = await getString();
+        if (currentClipboard !== copiedSecret) return;
+      }
+
+      Clipboard.setString('');
+    } catch {
+      // Clipboard access is best-effort and must never expose the copied value.
+    } finally {
+      lastCopiedSecretRef.current = null;
+    }
+  }, []);
+
+  const scheduleClipboardClear = useCallback((value: string) => {
+    if (clipboardClearTimerRef.current) {
+      clearTimeout(clipboardClearTimerRef.current);
+    }
+    lastCopiedSecretRef.current = value;
+    clipboardClearTimerRef.current = setTimeout(() => {
+      clipboardClearTimerRef.current = null;
+      void clearCopiedSecretFromClipboard();
+    }, CLIPBOARD_CLEAR_DELAY_MS);
+  }, [clearCopiedSecretFromClipboard]);
 
   const authenticateUser = useCallback(async () => {
     if (isAuthenticatingRef.current) return;
     isAuthenticatingRef.current = true;
     setIsAuthenticating(true);
+    setVaultLockMessage(null);
     try {
       const rnBiometrics = new ReactNativeBiometrics();
       const { available } = await rnBiometrics.isSensorAvailable();
 
       if (!available) {
-        // Emulator or device with no biometrics enrolled — allow access directly
-        isUnlockedRef.current = true;
-        setIsUnlocked(true);
-        await loadItemsRef.current();
+        isUnlockedRef.current = false;
+        setIsUnlocked(false);
+        setVaultLockMessage(VAULT_LOCK_UNAVAILABLE_MESSAGE);
+        HapticFeedback.trigger('notificationError');
         return;
       }
 
@@ -127,7 +182,7 @@ export default function SecureVaultScreen() {
       // User cancelled — don't show error toast for deliberate cancels
       const msg: string = e?.message || '';
       if (!msg.includes('cancel') && !msg.includes('Cancel')) {
-        console.error('Biometric auth error:', e);
+        console.error('Biometric auth error:', summarizeVaultError(e));
         Toast.hide();
         Toast.show({
           type: 'error',
@@ -183,8 +238,13 @@ export default function SecureVaultScreen() {
   const lockVault = useCallback(() => {
     isUnlockedRef.current = false;
     setIsUnlocked(false);
+    if (clipboardClearTimerRef.current) {
+      clearTimeout(clipboardClearTimerRef.current);
+      clipboardClearTimerRef.current = null;
+    }
+    void clearCopiedSecretFromClipboard();
     clearDecryptedState();
-  }, [clearDecryptedState]);
+  }, [clearCopiedSecretFromClipboard, clearDecryptedState]);
 
   // Auto-lock when app goes to background and clear decrypted values from state.
   useEffect(() => {
@@ -215,7 +275,7 @@ export default function SecureVaultScreen() {
       if (!isUnlockedRef.current) return;
       setItems(mapped);
     } catch (e) {
-      console.error('Error loading vault items:', e);
+      console.error('Error loading vault items:', summarizeVaultError(e));
       Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to load vault items' });
     } finally {
       setLoading(false);
@@ -229,12 +289,16 @@ export default function SecureVaultScreen() {
   // Lock vault when navigating away from screen
   useFocusEffect(
     useCallback(() => {
+      void setVaultSecureWindow(true);
       // When screen comes into focus, lock and require auth
       lockVault();
       authenticateUser();
 
       // Cleanup when leaving screen
-      return lockVault;
+      return () => {
+        lockVault();
+        void setVaultSecureWindow(false);
+      };
     }, [authenticateUser, lockVault])
   );
 
@@ -313,8 +377,8 @@ export default function SecureVaultScreen() {
         text2: `${formTitle.trim()} has been ${editingItem ? 'updated' : 'saved'} to cloud ☁️`,
       });
     } catch (e: any) {
-      console.error('Error saving vault item:', e);
-      Toast.show({ type: 'error', text1: 'Save failed', text2: e.message });
+      console.error('Error saving vault item:', summarizeVaultError(e));
+      Toast.show({ type: 'error', text1: 'Save failed', text2: 'Could not save vault item' });
     } finally {
       setIsSaving(false);
     }
@@ -332,17 +396,18 @@ export default function SecureVaultScreen() {
       setViewingItem(null);
       Toast.show({ type: 'success', text1: 'Deleted', text2: `${item.title} removed from vault` });
     } catch (e: any) {
-      console.error('Error deleting vault item:', e);
-      Toast.show({ type: 'error', text1: 'Delete failed', text2: e.message });
+      console.error('Error deleting vault item:', summarizeVaultError(e));
+      Toast.show({ type: 'error', text1: 'Delete failed', text2: 'Could not delete vault item' });
     } finally {
       setIsDeleting(false);
     }
   };
 
-  const copyToClipboard = (value: string, label: string) => {
+  const copyToClipboard = (value: string) => {
     HapticFeedback.trigger('selection');
     Clipboard.setString(value);
-    Toast.show({ type: 'info', text1: 'Copied', text2: `${label} copied to clipboard` });
+    scheduleClipboardClear(value);
+    Toast.show({ type: 'info', text1: 'Copied', text2: 'Copied. Clipboard will be cleared soon.' });
   };
 
   const toggleReveal = (index: number) => {
@@ -380,7 +445,7 @@ export default function SecureVaultScreen() {
             Vault is Locked
           </Text>
           <Text style={[typography.body, { color: colors.subtext, textAlign: 'center', marginTop: spacing.sm, marginBottom: spacing.xl, lineHeight: 22 }]}>
-            Verify your identity to access your{`\n`}saved PINs, passwords, and secrets.
+            {vaultLockMessage || `Verify your identity to access your\nsaved PINs, passwords, and secrets.`}
           </Text>
 
           <AppButton
@@ -611,7 +676,7 @@ export default function SecureVaultScreen() {
                       </TouchableOpacity>
                     )}
                     {field.value ? (
-                      <TouchableOpacity onPress={() => copyToClipboard(field.value, field.label)} style={styles.fieldAction}>
+                      <TouchableOpacity onPress={() => copyToClipboard(field.value)} style={styles.fieldAction}>
                         <MaterialCommunityIcons name="content-copy" size={18} color={colors.subtext} />
                       </TouchableOpacity>
                     ) : null}

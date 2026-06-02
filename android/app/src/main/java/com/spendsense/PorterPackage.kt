@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class PorterPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(PorterModule(reactContext))
+        return listOf(PorterModule(reactContext), VaultSecurityModule(reactContext))
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {

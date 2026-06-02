@@ -31,6 +31,12 @@ import {
 } from '../privacy/rawText';
 import { recordBalanceSignalForUser } from './balanceSignalRecorder';
 import { recordSmsTransactionEvidence } from './runtimeTransactionEvidence';
+import {
+  OFFLINE_DELETE_QUEUE_BASE_KEY,
+  USER_QUEUE_ACTIONS,
+  appendUserScopedQueueItem,
+  logUserQueueAction,
+} from './userScopedQueues';
 
 export function summarizeParsedSmsForLog(parsed: ParsedTransaction) {
   return {
@@ -257,12 +263,19 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
 
         // OFFLINE RELIABILITY: check connectivity before hitting Supabase
         const netState = await NetInfo.fetch();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          logUserQueueAction(OFFLINE_DELETE_QUEUE_BASE_KEY, USER_QUEUE_ACTIONS.skipped, 1);
+          return;
+        }
+
         if (netState.isConnected) {
           // Online — delete from Supabase immediately
           const { error } = await supabase
             .from('transactions')
             .delete()
-            .eq('id', transactionId);
+            .eq('id', transactionId)
+            .eq('user_id', user.id);
 
           if (error) {
             console.error('Error deleting transaction:', error);
@@ -281,10 +294,10 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
         } else {
           // Offline — queue for background sync, dismiss immediately for uninterrupted UX
           console.log('Offline — queuing delete for background sync');
-          const queueRaw = await AsyncStorage.getItem('offline_delete_queue');
-          const queue: string[] = queueRaw ? JSON.parse(queueRaw) : [];
-          if (!queue.includes(transactionId)) queue.push(transactionId);
-          await AsyncStorage.setItem('offline_delete_queue', JSON.stringify(queue));
+          await appendUserScopedQueueItem(OFFLINE_DELETE_QUEUE_BASE_KEY, user.id, {
+            transactionId,
+            _queued_at: new Date().toISOString(),
+          });
           await notifee.cancelNotification(notification.id);
           console.log('Delete queued — notification dismissed');
         }

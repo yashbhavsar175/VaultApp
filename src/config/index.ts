@@ -3,7 +3,7 @@
  * Consolidated: env.ts + constants/bankLogos.ts
  * 
  * Contains:
- * - Environment configuration (Supabase, API keys)
+ * - Environment configuration (Supabase and public client configuration)
  * - Bank information (colors, emojis, domains)
  * - App configuration and feature flags
  */
@@ -28,10 +28,6 @@ import Config from 'react-native-config';
 export const SUPABASE_URL = Config.SUPABASE_URL!;
 export const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY!;
 
-// AI Configuration
-export const GEMINI_API_KEY = Config.GEMINI_API_KEY!;
-export const OPENAI_API_KEY = Config.OPENAI_API_KEY!; // Not currently used
-
 // Google Sign-In Configuration
 export const GOOGLE_WEB_CLIENT_ID = Config.GOOGLE_WEB_CLIENT_ID!;
 
@@ -45,9 +41,6 @@ export const FEATURES = {
   SMS_AUTO_CAPTURE: false, // Not yet implemented
   GOOGLE_SIGNIN: true,
 };
-
-// AI Provider Selection
-export const AI_PROVIDER: 'openai' | 'gemini' = 'gemini';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANK INFORMATION

@@ -4,9 +4,11 @@ import {
   createTransferTransaction,
   findDuplicateLinkedRefundTransaction,
   parseTransaction,
+  syncOfflineTransactions,
   supabase,
 } from './core';
 import { emitFinanceDataChanged } from './services/dataEvents';
+import { OFFLINE_TX_QUEUE_BASE_KEY, getUserScopedQueueKey } from './services/userScopedQueues';
 
 jest.mock('./services/notifications', () => ({
   showTransactionConfirmation: jest.fn(),
@@ -288,5 +290,122 @@ describe('linked refund transaction helper', () => {
     });
 
     expect(duplicate?.id).toBe('refund_1');
+  });
+});
+
+describe('offline transaction queue user isolation', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+
+    mockSupabase.__mocks.mockGetUser.mockResolvedValue({
+      data: { user: { id: 'user_a' } },
+    });
+    mockSupabase.__mocks.mockSingle.mockResolvedValue({
+      data: {
+        id: 'tx_synced_1',
+        user_id: 'user_a',
+        amount: 125,
+        type: 'expense',
+        note: 'Scoped queued transaction',
+        category: 'general',
+        created_at: '2026-06-02T00:00:00.000Z',
+      },
+      error: null,
+    });
+  });
+
+  const queuedTransaction = (ownerId: string, overrides: Record<string, any> = {}) => ({
+    user_id: ownerId,
+    queueOwnerId: ownerId,
+    amount: 125,
+    type: 'expense',
+    note: 'Scoped queued transaction',
+    category: 'general',
+    _localId: `local_${ownerId}`,
+    _queued_at: '2026-06-02T00:00:00.000Z',
+    ...overrides,
+  });
+
+  it('does not sync user A queued transactions while user B is authenticated', async () => {
+    await AsyncStorage.setItem(
+      getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'),
+      JSON.stringify([queuedTransaction('user_a')]),
+    );
+    mockSupabase.__mocks.mockGetUser.mockResolvedValue({
+      data: { user: { id: 'user_b' } },
+    });
+
+    await syncOfflineTransactions();
+
+    expect(mockSupabase.__mocks.mockInsert).not.toHaveBeenCalled();
+    const userAQueue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a')) || '[]');
+    expect(userAQueue).toHaveLength(1);
+  });
+
+  it('quarantines the legacy global queue and does not post orphaned transactions', async () => {
+    await AsyncStorage.setItem(OFFLINE_TX_QUEUE_BASE_KEY, JSON.stringify([
+      {
+        amount: 777,
+        note: 'Legacy orphaned note should not sync',
+        type: 'expense',
+        category: 'general',
+      },
+    ]));
+
+    await syncOfflineTransactions();
+
+    expect(mockSupabase.__mocks.mockInsert).not.toHaveBeenCalled();
+    expect(await AsyncStorage.getItem(OFFLINE_TX_QUEUE_BASE_KEY)).toBeNull();
+    const keys = await AsyncStorage.getAllKeys();
+    expect(keys.some(key => key.startsWith(`${OFFLINE_TX_QUEUE_BASE_KEY}:legacy_quarantine:`))).toBe(true);
+  });
+
+  it('syncs a user-scoped queue item for the same owner', async () => {
+    await AsyncStorage.setItem(
+      getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'),
+      JSON.stringify([queuedTransaction('user_a')]),
+    );
+
+    await syncOfflineTransactions();
+
+    expect(mockSupabase.__mocks.mockInsert).toHaveBeenCalledWith(expect.objectContaining({
+      user_id: 'user_a',
+      amount: 125,
+      type: 'expense',
+      note: 'Scoped queued transaction',
+    }));
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+  });
+
+  it('skips owner-mismatched scoped queue entries with privacy-safe structural logs only', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await AsyncStorage.setItem(
+      getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'),
+      JSON.stringify([queuedTransaction('user_a', {
+        amount: 98765,
+        note: 'Sensitive offline note',
+        raw_sms: 'Sensitive SMS body',
+      })]),
+    );
+    mockSupabase.__mocks.mockGetUser.mockResolvedValue({
+      data: { user: { id: 'user_b', email: 'userb@example.com' } },
+    });
+
+    try {
+      await syncOfflineTransactions();
+
+      expect(mockSupabase.__mocks.mockInsert).not.toHaveBeenCalled();
+      const logs = JSON.stringify(warnSpy.mock.calls);
+      expect(logs).toContain('offline_tx_queue');
+      expect(logs).toContain('skipped');
+      expect(logs).toContain('count');
+      expect(logs).not.toContain('98765');
+      expect(logs).not.toContain('Sensitive offline note');
+      expect(logs).not.toContain('Sensitive SMS body');
+      expect(logs).not.toContain('userb@example.com');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

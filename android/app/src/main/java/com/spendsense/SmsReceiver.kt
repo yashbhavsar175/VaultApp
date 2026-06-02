@@ -39,7 +39,15 @@ class SmsReceiver : BroadcastReceiver() {
                         }
                     }
                     
-                    Log.d(TAG, "SMS Received from: $sender")
+                    val compactSender = sender.replace(Regex("""[\s()-]"""), "")
+                    val senderKind = when {
+                        sender.isBlank() -> "missing"
+                        compactSender.matches(Regex("""\+?\d{6,}""")) -> "phone_like"
+                        sender.matches(Regex("""[A-Za-z]{2}-.*""")) -> "dlt_prefixed"
+                        sender.matches(Regex("""[A-Za-z0-9_-]+""")) -> "token"
+                        else -> "other"
+                    }
+                    Log.d(TAG, "SMS Received senderPresent=${sender.isNotBlank()} senderKind=$senderKind")
                     Log.d(TAG, "SMS Body length: ${messageBody.length}")
                     
                     // Start Headless JS Service

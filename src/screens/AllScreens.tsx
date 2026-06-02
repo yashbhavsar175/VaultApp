@@ -28,8 +28,5 @@ export { PlacesScreen } from './places';
 // Vault screens
 export { SecureVaultScreen } from './vault';
 
-// Porter screens
-export { PorterTestScreen } from './porter';
-
 // Dashboard (main screen - kept in root)
 export { default as Dashboard } from './Dashboard';

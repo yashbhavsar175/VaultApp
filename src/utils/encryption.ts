@@ -9,6 +9,8 @@
 import Aes from 'react-native-aes-crypto';
 import { supabase } from '../lib/core';
 
+const VAULT_TEXT_ENCRYPTION_PREFIX = 'vault:v1:';
+
 // Generate a deterministic key from user ID
 // NOTE: In production, consider using a user-provided master password
 // or device-specific secure storage for better security
@@ -23,6 +25,23 @@ async function getDerivedKey(): Promise<string> {
   // Generate a 256-bit key using PBKDF2
   const key = await Aes.pbkdf2(baseKey, 'vault-salt-v1', 5000, 256, 'sha256');
   return key;
+}
+
+function summarizeCryptoError(error: unknown) {
+  if (error && typeof error === 'object') {
+    const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+    return {
+      code: typeof maybeError.code === 'string' ? maybeError.code : null,
+      name: typeof maybeError.name === 'string' ? maybeError.name : null,
+      status: typeof maybeError.status === 'number' || typeof maybeError.status === 'string' ? maybeError.status : null,
+    };
+  }
+
+  return {
+    code: null,
+    name: typeof error,
+    status: null,
+  };
 }
 
 /**
@@ -40,7 +59,7 @@ export async function encryptField(value: string): Promise<string> {
     // Store IV with encrypted data (IV:encrypted)
     return `${iv}:${encrypted}`;
   } catch (error) {
-    console.error('Encryption error:', error);
+    console.error('Encryption error:', summarizeCryptoError(error));
     throw new Error('Failed to encrypt field');
   }
 }
@@ -64,10 +83,31 @@ export async function decryptField(encryptedValue: string): Promise<string> {
     const decrypted = await Aes.decrypt(encrypted, key, iv, 'aes-256-cbc');
     return decrypted;
   } catch (error) {
-    console.error('Decryption error:', error);
+    console.error('Decryption error:', summarizeCryptoError(error));
     // Return masked value on error to prevent data loss
     return '••••••••';
   }
+}
+
+/**
+ * Emergency Vault text encryption for fields like notes.
+ * TODO(vault-encryption-migration): replace the current user-id-derived key
+ * with a versioned keystore/user-secret key and migrate existing rows.
+ */
+export async function encryptVaultText(value: string): Promise<string> {
+  if (!value) return value;
+  if (value.startsWith(VAULT_TEXT_ENCRYPTION_PREFIX)) return value;
+
+  return `${VAULT_TEXT_ENCRYPTION_PREFIX}${await encryptField(value)}`;
+}
+
+export async function decryptVaultText(value: string): Promise<string> {
+  if (!value) return value;
+  if (!value.startsWith(VAULT_TEXT_ENCRYPTION_PREFIX)) {
+    return value;
+  }
+
+  return decryptField(value.slice(VAULT_TEXT_ENCRYPTION_PREFIX.length));
 }
 
 /**

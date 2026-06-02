@@ -92,6 +92,8 @@ const PERSONAL_TRANSFER_PATTERN =
   /\b(?:family|friend|brother|sister|mom|mother|dad|father|papa|mummy|personal transfer|sent to|received from)\b/i;
 const BORROWED_REPAYMENT_PATTERN = /\b(?:borrowed|debt repayment|repay(?:ment|aid)?)\b/i;
 const REFUND_REIMBURSEMENT_PATTERN = /\b(?:refunds?|reimburse(?:ment|d)?)\b/i;
+const REVIEWED_EXPENSE_CATEGORY = 'Reviewed Expense';
+const REVIEWED_EXPENSE_NOTE = 'Reviewed expense';
 
 function summaryText(transaction: Transaction): string {
   return [transaction.category, transaction.note]
@@ -132,6 +134,15 @@ export function isDashboardIncome(
 
 export function isDashboardExpense(transaction: Transaction): boolean {
   if (transaction.type !== 'expense') return false;
+  if (transaction.account_match_status === 'ignored' || transaction.account_match_status === 'review_required') {
+    return false;
+  }
+  if (
+    transaction.category === REVIEWED_EXPENSE_CATEGORY &&
+    transaction.note === REVIEWED_EXPENSE_NOTE
+  ) {
+    return true;
+  }
 
   const text = summaryText(transaction);
   if (MOVEMENT_PATTERN.test(text) || NON_EXPENSE_CATEGORY_PATTERN.test(text)) return false;

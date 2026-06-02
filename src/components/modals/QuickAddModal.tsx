@@ -19,7 +19,6 @@ import { parseNaturalLanguageTxn, ParsedTransaction } from '../../utils/nlpParse
 import { addTransaction } from '../../lib/core';
 import { CACHE_KEYS, updateCache } from '../../lib/services/cache';
 import { Transaction } from '../../types';
-import { GEMINI_API_KEY } from '../../lib/services/cache';
 
 type VoiceModule = typeof import('@react-native-voice/voice').default;
 let voiceModule: VoiceModule | null = null;
@@ -48,8 +47,6 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
   const [isListening, setIsListening] = useState(false);
 
   const [aiWarning, setAiWarning] = useState<{ emoji: string; msg: string } | null>(null);
-  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastAiTextRef = useRef('');
   const isListeningRef = useRef(false);
 
   // Smart contextual warning generator — instant, no API!
@@ -130,62 +127,14 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
     return defaults[seed % defaults.length];
   };
 
-  // Try upgrading warning with Gemini AI (silent background attempt)
-  const tryGeminiUpgrade = async (text: string) => {
-    if (text === lastAiTextRef.current) return;
-    lastAiTextRef.current = text;
-
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{
-                text: `You are a concise English assistant in finance app SpendSense. User typed "${text}" but it has no amount/type. Give a SHORT friendly English warning (max 15 words) referencing "${text}". Pick one emoji. Reply ONLY: {"emoji":"😜","msg":"message"}`
-              }]
-            }],
-            generationConfig: { temperature: 1.0, maxOutputTokens: 60 }
-          })
-        }
-      );
-
-      if (response.status !== 200) return; // Silently skip on rate limit
-
-      const data = await response.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const jsonMatch = rawText.match(/\{[\s\S]*?\}/);
-      if (jsonMatch) {
-        const aiResult = JSON.parse(jsonMatch[0]);
-        if (aiResult.emoji && aiResult.msg) {
-          setAiWarning({ emoji: aiResult.emoji, msg: aiResult.msg });
-        }
-      }
-    } catch {
-      // Silently fail — local warning already shown
-    }
-  };
-
-  // Trigger: instant local warning + delayed Gemini upgrade attempt
+  // Keep malformed-input warnings fully local. User-entered financial text must
+  // not leave the device as part of an automatic background enhancement.
   useEffect(() => {
     if (parsed && !parsed.amount && !parsed.type && input.trim().length > 2) {
-      // Show local warning INSTANTLY
       setAiWarning(getSmartWarning(input.trim()));
-      
-      // Try Gemini upgrade in background after 1.5s debounce
-      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
-      warningTimerRef.current = setTimeout(() => {
-        tryGeminiUpgrade(input.trim());
-      }, 1500);
     } else {
       setAiWarning(null);
-      lastAiTextRef.current = '';
     }
-    return () => {
-      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
-    };
   }, [parsed, input]);
 
   useEffect(() => {

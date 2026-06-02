@@ -1,10 +1,11 @@
 import React from 'react';
-import { Text } from 'react-native';
+import { Text, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 import TransactionDetail from './TransactionDetail';
 import { Transaction, TransactionEvidence } from '../../types';
 import { getBankAccounts } from '../../lib/database/financial';
 import { getEvidenceForTransaction } from '../../lib/services/transactionEvidence';
+import { saveReviewClassificationPreferenceForTransaction } from '../../lib/services/reviewClassificationPreferences';
 
 const mockTransactionSingle = jest.fn();
 const mockSupabaseFrom = jest.fn((_table?: string) => {
@@ -101,6 +102,10 @@ jest.mock('../../lib/services/transactionEvidence', () => ({
   getEvidenceForTransaction: jest.fn(),
 }));
 
+jest.mock('../../lib/services/reviewClassificationPreferences', () => ({
+  saveReviewClassificationPreferenceForTransaction: jest.fn(),
+}));
+
 jest.mock('../../lib/privacy/rawText', () => ({
   isRedactedRawTextRecord: jest.fn((value?: string | null) => Boolean(value?.startsWith('[redacted]'))),
   sanitizeTransactionRawSmsForPrivacy: jest.fn((transaction: Transaction) => transaction),
@@ -108,6 +113,7 @@ jest.mock('../../lib/privacy/rawText', () => ({
 
 const mockedGetBankAccounts = getBankAccounts as jest.Mock;
 const mockedGetEvidenceForTransaction = getEvidenceForTransaction as jest.Mock;
+const mockedSavePreference = saveReviewClassificationPreferenceForTransaction as jest.Mock;
 
 function childText(children: unknown): string {
   if (Array.isArray(children)) return children.map(childText).join('');
@@ -265,6 +271,87 @@ describe('TransactionDetail Source Trace', () => {
     );
 
     expect(renderedText(renderer)).toContain('Notification from Notification source');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('renders review decision and suggestion-only intelligence cards for reviewed expense transactions', async () => {
+    const renderer = await renderDetail(transaction({
+      id: 'tx_reviewed_expense',
+      amount: 2,
+      type: 'expense',
+      note: 'Reviewed expense',
+      category: 'Reviewed Expense',
+      sms_source: 'sms',
+      sms_sender: 'AD-KOTAKB-S',
+      account_last4: '1447',
+      account_match_status: 'manual_confirmed',
+      account_match_confidence: 'medium',
+      account_match_reason: 'review_queue_expense_confirmed',
+      reference_number: '651916430927',
+      primary_evidence_id: null,
+    }), []);
+    const text = renderedText(renderer);
+
+    expect(text).toContain('Review decision');
+    expect(text).toContain('Status Counted as expense');
+    expect(text).toContain('If this happens again');
+    expect(text).toContain('Always ask me');
+    expect(text).toContain('Count as expense next time');
+    expect(text).toContain('Do not count as expense');
+    expect(text).toContain('Suggest this category next time');
+    expect(text).toContain('Matched Account Bank Of Baroda ••5191');
+    expect(text).toContain('Ref / UTR 651916430927');
+    expect(text).not.toContain('?');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('saves a future suggestion without silently posting another transaction', async () => {
+    mockedSavePreference.mockResolvedValueOnce({});
+    const tx = transaction({
+      id: 'tx_reviewed_preference',
+      type: 'expense',
+      note: 'Reviewed expense',
+      category: 'Reviewed Expense',
+      account_match_status: 'manual_confirmed',
+    });
+    const renderer = await renderDetail(tx, []);
+    const button = renderer.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.findAllByType(Text).some(textNode =>
+        childText(textNode.props.children).includes('Count as expense next time')
+      ));
+
+    await ReactTestRenderer.act(async () => {
+      await button?.props.onPress();
+    });
+
+    expect(mockedSavePreference).toHaveBeenCalledWith(tx, 'count_as_expense');
+    expect(renderedText(renderer)).toContain('Suggest expense next time');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('shows the reversible not-counted state after a later correction', async () => {
+    const renderer = await renderDetail(transaction({
+      id: 'tx_not_expense',
+      type: 'expense',
+      note: 'Reviewed expense',
+      category: 'Reviewed Expense',
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    }), []);
+    const text = renderedText(renderer);
+
+    expect(text).toContain('Status Not counted');
+    expect(text).toContain('Mark as expense');
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();
