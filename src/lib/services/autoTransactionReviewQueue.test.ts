@@ -9,6 +9,7 @@ import {
   markPosted,
   checkForDuplicateTransaction
 } from './autoTransactionReviewQueue';
+import { subscribeFinanceDataChanged } from './dataEvents';
 import { SmartCandidate, AutoTransactionClass } from './transactionIntelligence';
 
 export const mockTransactions = [
@@ -167,6 +168,25 @@ describe('Auto Transaction Review Queue Service', () => {
     const queue = await getReviewQueue();
     expect(queue[0].status).toBe('posted');
     expect(queue[0].createdTransactionId).toBe('tx_new_123');
+  });
+
+  it('emits a privacy-safe review refresh event after queue actions', async () => {
+    const listener = jest.fn();
+    const unsubscribe = subscribeFinanceDataChanged(listener);
+    const cand = mockCandidate('sig_event_test');
+    await enqueueReviewCandidate(cand);
+
+    await markIgnored('sig_event_test');
+
+    expect(listener).toHaveBeenCalledWith({
+      areas: ['review'],
+      source: 'review_queue:changed',
+      at: expect.any(Number),
+    });
+    expect(JSON.stringify(listener.mock.calls)).not.toContain('Test Merchant');
+    expect(JSON.stringify(listener.mock.calls)).not.toContain('HDFCBK');
+
+    unsubscribe();
   });
 
   it('identifies duplicate transaction by reference correctly', async () => {

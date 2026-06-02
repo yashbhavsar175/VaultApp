@@ -12,6 +12,7 @@ import { getReviewQueue } from '../lib/services/autoTransactionReviewQueue';
 const fs = require('fs') as { readFileSync: (filePath: string, encoding: 'utf8') => string };
 
 const mockNavigate = jest.fn();
+let mockFinanceDataChangedListener: ((payload: { areas?: string[]; source?: string; at: number }) => void) | null = null;
 
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: mockNavigate }),
@@ -87,8 +88,13 @@ jest.mock('../lib/services/cache', () => ({
 }));
 
 jest.mock('../lib/services/dataEvents', () => ({
-  financeDataChangedAffects: jest.fn(() => false),
-  subscribeFinanceDataChanged: jest.fn(() => jest.fn()),
+  financeDataChangedAffects: jest.fn((payload: { areas?: string[] }, areas: string[]) => (
+    !payload.areas || payload.areas.length === 0 || payload.areas.some(area => areas.includes(area))
+  )),
+  subscribeFinanceDataChanged: jest.fn((listener: typeof mockFinanceDataChangedListener) => {
+    mockFinanceDataChangedListener = listener;
+    return jest.fn();
+  }),
 }));
 
 jest.mock('../lib/services/incomeReview', () => ({
@@ -223,6 +229,7 @@ function pressByText(renderer: ReactTestRenderer.ReactTestRenderer, text: string
 describe('Dashboard review prompt', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFinanceDataChangedListener = null;
   });
 
   it('keeps historical excluded rows out of the actionable CTA count', async () => {
@@ -284,6 +291,32 @@ describe('Dashboard review prompt', () => {
     });
   });
 
+  it('refreshes the review prompt immediately after a review queue event', async () => {
+    const renderer = await renderDashboard([], {
+      queueItems: [queueItem()],
+    });
+    expect(allText(renderer)).toContain('Money movements need review');
+
+    mockedGetIncomeReviewCandidates.mockResolvedValueOnce([]);
+    mockedGetReviewQueue.mockResolvedValueOnce([]);
+
+    await ReactTestRenderer.act(async () => {
+      mockFinanceDataChangedListener?.({
+        areas: ['review'],
+        source: 'review_queue:changed',
+        at: Date.now(),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(allText(renderer)).not.toContain('Money movements need review');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
   it('renders honest mixed-source copy and exposes both review routes', async () => {
     const renderer = await renderDashboard([], {
       incomeCandidates: [incomeCandidate()],
@@ -292,15 +325,15 @@ describe('Dashboard review prompt', () => {
     const text = allText(renderer);
 
     expect(text).toContain('1 credit and 1 movement need review');
-    expect(text).toContain('Review income');
-    expect(text).toContain('Review movements');
+    expect(text).toContain('Review credits');
+    expect(text).toContain('Review payments');
     expect(text).not.toContain('private.person@oksbi');
     expect(text).not.toContain('9876543210');
 
-    pressByText(renderer, 'Review income');
+    pressByText(renderer, 'Review credits');
     expect(mockNavigate).toHaveBeenCalledWith('Settings', { screen: 'IncomeReview' });
     mockNavigate.mockClear();
-    pressByText(renderer, 'Review movements');
+    pressByText(renderer, 'Review payments');
     expect(mockNavigate).toHaveBeenCalledWith('ReviewQueue');
 
     await ReactTestRenderer.act(() => {

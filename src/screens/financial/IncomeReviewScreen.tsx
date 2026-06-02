@@ -449,7 +449,7 @@ export default function IncomeReviewScreen() {
   return (
     <ScreenWrapper>
       <AppHeader
-        title="Income Review"
+        title="Money Movement Review"
         showBack
         rightAction={{ icon: 'refresh', onPress: () => load(true) }}
       />

@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import HapticFeedback from 'react-native-haptic-feedback';
 import { supabase, deleteTransaction, updateTransaction } from '../../lib/core';
-import { BankAccount, Transaction } from '../../types';
+import { BankAccount, Transaction, TransactionEvidence } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppHeader, AppButton, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
@@ -17,10 +17,11 @@ import {
   getTransactionTypeLabel,
   formatTransactionDateTime,
 } from '../../utils/transactionHelpers';
-import { extractUpiIdFromText, getUpiHandle, getUpiProviderName } from '../../utils/upi';
+import { getUpiProviderName, maskUpiId } from '../../utils/upi';
 import { getBankAccounts } from '../../lib/database/financial';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
 import { isRedactedRawTextRecord, sanitizeTransactionRawSmsForPrivacy } from '../../lib/privacy/rawText';
+import { getEvidenceForTransaction } from '../../lib/services/transactionEvidence';
 
 type TransactionDetailRouteProp = RouteProp<
   { TransactionDetail: { transactionId: string } },
@@ -55,6 +56,139 @@ function toTitleCase(value: string): string {
     .replace(/\b\w/g, char => char.toUpperCase());
 }
 
+function safeDisplayText(value?: string | null, maxLength = 96): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  if (
+    /\b(?:otp|one\s*time\s*password|verification\s*code|security\s*code)\b/i.test(trimmed) ||
+    /\b(?:\+?91[-\s]?)?[6-9]\d{9}\b/.test(trimmed) ||
+    /\b(?:address|flat|tower|road|street|society|sector|near|landmark|pincode|pin code)\b/i.test(trimmed) ||
+    /\b\d(?:[ -]?\d){11,}\b/.test(trimmed)
+  ) {
+    return null;
+  }
+
+  const cleaned = trimmed
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, maxLength);
+  return cleaned || null;
+}
+
+function safePackageName(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^[A-Za-z0-9._-]{2,96}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function safeReferenceNumber(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const cleaned = trimmed.replace(/[^A-Za-z0-9_-]+/g, '').slice(0, 64);
+  return cleaned || null;
+}
+
+function safeLast4(value?: string | null): string | null {
+  const digits = (value || '').replace(/\D/g, '');
+  return digits.length === 4 ? digits : null;
+}
+
+function maskedOwnerLabel(last4?: string | null): string | null {
+  const digits = safeLast4(last4);
+  return digits ? `••${digits}` : null;
+}
+
+function formatOwnerLabel(name?: string | null, last4?: string | null): string | null {
+  const safeName = safeDisplayText(name, 64);
+  const masked = maskedOwnerLabel(last4);
+  if (safeName && masked) return `${safeName} ${masked}`;
+  if (safeName) return safeName;
+  return masked ? `Account ${masked}` : null;
+}
+
+function safeMaskedUpi(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !trimmed.includes('@')) return null;
+  if (/\b(?:\+?91[-\s]?)?[6-9]\d{9}\b/.test(trimmed)) return maskUpiId(trimmed);
+  if (trimmed.includes('*')) {
+    return trimmed.replace(/[^A-Za-z0-9._*@-]+/g, '').slice(0, 80) || null;
+  }
+  return maskUpiId(trimmed);
+}
+
+function formatSourceType(value?: string | null): string {
+  if (value === 'sms') return 'SMS';
+  if (value === 'notification') return 'Notification';
+  if (value === 'manual') return 'Manual';
+  if (value === 'accessibility') return 'Accessibility';
+  if (value === 'imported') return 'Imported';
+  if (value === 'upi') return 'Notification';
+  if (value === 'bank') return 'SMS';
+  return 'Automatic';
+}
+
+function formatDirection(transaction: Transaction, evidence?: TransactionEvidence | null): string {
+  const direction = evidence?.direction;
+  if (direction === 'credit') return 'Credit';
+  if (direction === 'debit') return 'Debit';
+  if (direction === 'transfer') return 'Transfer';
+  if (transaction.type === 'income') return 'Credit';
+  if (transaction.type === 'expense') return 'Debit';
+  if (transaction.type === 'transfer') return 'Transfer';
+  return toTitleCase(transaction.type);
+}
+
+function formatInstrument(value?: string | null): string {
+  switch (value) {
+    case 'bank_account':
+      return 'Bank account';
+    case 'credit_card':
+      return 'Credit card';
+    case 'debit_card':
+      return 'Debit card';
+    case 'wallet':
+      return 'Wallet';
+    case 'loan':
+      return 'Loan';
+    default:
+      return 'Unknown';
+  }
+}
+
+function formatMatchStatus(transaction: Transaction, evidence?: TransactionEvidence | null): string | null {
+  const status = transaction.account_match_status || evidence?.match_status || null;
+  if (!status) return null;
+  return toTitleCase(status);
+}
+
+function formatMatchConfidence(transaction: Transaction, evidence?: TransactionEvidence | null): string | null {
+  const confidence = transaction.account_match_confidence || evidence?.confidence_level || null;
+  if (!confidence) return null;
+  return toTitleCase(confidence);
+}
+
+function dashboardStatus(transaction: Transaction): string {
+  if (transaction.account_match_status === 'review_required') return 'Not counted: needs review';
+  if (transaction.is_transfer_pending) return 'Not counted: waiting for matching transfer';
+  if (transaction.type === 'income') return 'Counted as income';
+  if (transaction.type === 'expense') return 'Counted as expense';
+  if (transaction.type === 'transfer') return 'Not counted: personal transfer';
+  if (transaction.type === 'refund') return 'Counted as refund adjustment';
+  return `Counted as ${getTransactionTypeLabel(transaction.type).toLowerCase()}`;
+}
+
+function selectPrimaryEvidence(
+  transaction: Transaction,
+  evidenceRows: TransactionEvidence[]
+): TransactionEvidence | null {
+  if (transaction.primary_evidence_id) {
+    const primary = evidenceRows.find(row => row.id === transaction.primary_evidence_id);
+    if (primary) return primary;
+  }
+  return evidenceRows[0] || null;
+}
+
 function getKnownSenderName(sender?: string | null): string | null {
   if (!sender) return null;
   const normalized = sender.toLowerCase();
@@ -66,7 +200,7 @@ function getKnownSenderName(sender?: string | null): string | null {
   if (normalized.includes('dreamplug') || normalized.includes('cred')) return 'CRED';
   if (normalized.includes('amazon')) return 'Amazon Pay';
   if (normalized.includes('utkspr') || normalized.includes('utk') || normalized.includes('supercard')) return 'SuperCard / Utkarsh';
-  if (normalized.includes('super.money') || normalized.includes('superm') || normalized.includes('money.super') || normalized.includes('super')) return 'super.money';
+  if (normalized.includes('super.money') || normalized.includes('superm') || normalized.includes('money.super') || normalized.includes('super')) return 'Super.money';
   if (normalized.includes('slice') || normalized.includes('slce')) return 'slice';
 
   return null;
@@ -75,66 +209,66 @@ function getKnownSenderName(sender?: string | null): string | null {
 function formatSender(sender?: string | null): string | null {
   const trimmed = sender?.trim();
   if (!trimmed) return null;
+  const safeSender = safeDisplayText(trimmed, 64);
+  if (!safeSender) return null;
 
-  const knownName = getKnownSenderName(trimmed);
+  const knownName = getKnownSenderName(safeSender);
   if (knownName) {
-    return `${knownName} (${trimmed})`;
+    return `${knownName} (${safeSender})`;
   }
 
-  return trimmed;
+  return safeSender;
 }
 
-function getEntrySourceTrace(transaction: Transaction, bankName: string | null, colors: ThemeColors): SourceTrace {
-  const source = transaction.sms_source?.toLowerCase();
+function getSourceAppLabel(evidence?: TransactionEvidence | null, transaction?: Transaction | null): string | null {
+  const explicit = safeDisplayText(evidence?.source_app, 64);
+  if (explicit) return explicit;
+
+  const packageName = safePackageName(evidence?.source_package);
+  if (packageName) return getKnownSenderName(packageName) || packageName;
+
+  return getKnownSenderName(transaction?.sms_sender) || null;
+}
+
+function getEntrySourceTrace(
+  transaction: Transaction,
+  evidence: TransactionEvidence | null,
+  accountLabel: string | null,
+  colors: ThemeColors
+): SourceTrace {
+  const evidenceSource = evidence?.source_type;
+  const transactionSource = transaction.sms_source?.toLowerCase();
+  const source = evidenceSource || transactionSource;
+  const sourceApp = getSourceAppLabel(evidence, transaction);
   const senderName = getKnownSenderName(transaction.sms_sender);
-  const upiId = transaction.upi_id || extractUpiIdFromText(transaction.raw_sms);
-  const upiProvider = getUpiProviderName(upiId);
+  const evidenceBank = safeDisplayText(evidence?.bank_name, 64);
 
   if (!source || source === 'manual') {
     return {
       icon: 'pencil-circle',
       title: 'Manual Entry',
-      subtitle: bankName ? `Added manually for ${bankName}` : 'Added manually in the app',
+      subtitle: accountLabel ? `Added manually for ${accountLabel}` : 'Added manually in the app',
       color: colors.accent,
     };
   }
 
   if (source === 'sms' || source === 'bank') {
-    // Build detailed subtitle with all available info
-    let subtitle = '';
-    
-    if (senderName) {
-      subtitle = `Detected from ${senderName}`;
-    } else if (bankName) {
-      subtitle = `From ${bankName}`;
-    } else if (transaction.account_last4) {
-      subtitle = `Account ending ${transaction.account_last4}`;
-    } else {
-      subtitle = 'Captured from a bank message';
-    }
-    
-    // Add UPI info if available
-    if (upiId && upiProvider) {
-      subtitle += ` • ${upiProvider}`;
-    }
-    
+    const sourceName = senderName || evidenceBank || accountLabel || 'SMS source';
     return {
       icon: 'message-text-clock',
-      title: senderName ? `${senderName} SMS` : bankName ? `${bankName} SMS` : 'Bank SMS',
-      subtitle,
+      title: `SMS from ${sourceName}`,
+      subtitle: accountLabel ? `Matched account: ${accountLabel}` : 'Captured from a bank message',
       color: colors.info,
     };
   }
 
-  if (source === 'upi') {
+  if (source === 'notification' || source === 'upi') {
+    const sourceName = sourceApp || 'Notification source';
+    const packageName = safePackageName(evidence?.source_package);
     return {
       icon: 'cellphone-message',
-      title: senderName ? `${senderName} Alert` : 'UPI/App Alert',
-      subtitle: senderName && upiProvider && senderName !== upiProvider
-        ? `Detected by ${senderName}; UPI handle looks like ${upiProvider}`
-        : upiProvider
-          ? `UPI handle looks like ${upiProvider}`
-          : 'Captured from a payment app notification',
+      title: `Notification from ${sourceName}`,
+      subtitle: packageName ? `Package: ${packageName}` : 'Captured from a payment app notification',
       color: colors.success,
     };
   }
@@ -142,7 +276,7 @@ function getEntrySourceTrace(transaction: Transaction, bankName: string | null, 
   return {
     icon: 'radar',
     title: `${toTitleCase(source)} Entry`,
-    subtitle: transaction.sms_sender ? `Sender ${transaction.sms_sender}` : 'Captured automatically',
+    subtitle: sourceApp ? `Captured from ${sourceApp}` : 'Captured automatically',
     color: colors.warning,
   };
 }
@@ -152,8 +286,8 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [transaction, setTransaction] = useState<Transaction | null>(null);
   const [bankName, setBankName] = useState<string | null>(null);
+  const [transactionEvidence, setTransactionEvidence] = useState<TransactionEvidence[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showRawMessage, setShowRawMessage] = useState(false);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     visible: boolean;
@@ -169,14 +303,14 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
   const applyBankNameFromCache = useCallback(async (tx: Transaction) => {
     if (!tx.account_id) {
-      setBankName(tx.account_last4 ? `Account ending ${tx.account_last4}` : null);
+      setBankName(formatOwnerLabel(null, tx.account_last4));
       return;
     }
 
     const cachedBanks = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
     const bank = cachedBanks?.data.find(account => account.id === tx.account_id);
     if (bank && isMountedRef.current) {
-      setBankName(`${bank.bank_name} (${bank.account_last4})`);
+      setBankName(formatOwnerLabel(bank.bank_name, bank.account_last4));
     }
   }, []);
 
@@ -184,6 +318,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
     let hasCachedTransaction = false;
 
     try {
+      setTransactionEvidence([]);
       const cachedTransactions = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
       const cachedTransaction = cachedTransactions?.data.find(tx => tx.id === transactionId);
 
@@ -224,10 +359,22 @@ export default function TransactionDetail({ route, navigation }: Props) {
         const bankData = bankAccounts.find(account => account.id === safeTransaction.account_id);
 
         if (bankData && isMountedRef.current) {
-          setBankName(`${bankData.bank_name} (${bankData.account_last4})`);
+          setBankName(formatOwnerLabel(bankData.bank_name, bankData.account_last4));
         }
       } else if (isMountedRef.current) {
-        setBankName(safeTransaction.account_last4 ? `Account ending ${safeTransaction.account_last4}` : null);
+        setBankName(formatOwnerLabel(null, safeTransaction.account_last4));
+      }
+
+      try {
+        const evidence = await getEvidenceForTransaction(safeTransaction.id);
+        if (isMountedRef.current) {
+          setTransactionEvidence(evidence);
+        }
+      } catch {
+        if (isMountedRef.current) {
+          setTransactionEvidence([]);
+        }
+        console.warn('[TransactionDetail] Source evidence unavailable');
       }
     } catch (error) {
       if (!isMountedRef.current) return;
@@ -335,37 +482,53 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const txColor = getTransactionColor(transaction.type);
   const txIcon = getTransactionIcon(transaction.type);
   const { date: formattedDate, time: formattedTime } = formatTransactionDateTime(transaction.created_at);
-  const sourceTrace = getEntrySourceTrace(transaction, bankName, colors);
-  const senderLabel = formatSender(transaction.sms_sender);
-  const accountLabel = bankName || (transaction.account_last4 ? `Account ending ${transaction.account_last4}` : null);
+  const primaryEvidence = selectPrimaryEvidence(transaction, transactionEvidence);
+  const evidenceLast4 = primaryEvidence?.account_last4 || primaryEvidence?.card_last4 || null;
+  const evidenceAccountLabel = formatOwnerLabel(primaryEvidence?.bank_name, evidenceLast4);
+  const accountLabel = evidenceAccountLabel || bankName || formatOwnerLabel(null, transaction.account_last4);
+  const sourceTrace = getEntrySourceTrace(transaction, primaryEvidence, accountLabel, colors);
+  const sourcePackage = safePackageName(primaryEvidence?.source_package);
+  const senderLabel = formatSender(primaryEvidence?.sender || transaction.sms_sender);
   const rawMessage = transaction.raw_sms?.trim();
   const isRedactedRawMessage = isRedactedRawTextRecord(rawMessage);
-  const upiId = transaction.upi_id || extractUpiIdFromText(rawMessage);
-  const detectedApp = getKnownSenderName(transaction.sms_sender);
-  const upiProvider = getUpiProviderName(upiId);
-  const upiHandle = getUpiHandle(upiId);
-  const appRoute = detectedApp && upiProvider && detectedApp !== upiProvider
-    ? `${detectedApp} -> ${upiProvider}`
-    : null;
+  const sourceApp = getSourceAppLabel(primaryEvidence, transaction);
+  const maskedUpi = safeMaskedUpi(primaryEvidence?.upi_id_masked) || safeMaskedUpi(transaction.upi_id);
+  const upiProvider = getUpiProviderName(maskedUpi || transaction.upi_id);
   const balanceAfter = transaction.balance !== null && transaction.balance !== undefined
     ? formatAmount(Number(transaction.balance))
     : null;
   const savedAt = new Date(transaction.created_at).toLocaleString();
+  const sourceType = primaryEvidence?.source_type || transaction.sms_source || 'manual';
+  const matchStatus = formatMatchStatus(transaction, primaryEvidence);
+  const matchConfidence = formatMatchConfidence(transaction, primaryEvidence);
+  const matchReason = safeDisplayText(transaction.account_match_reason || primaryEvidence?.match_reason_code, 64);
+  const referenceNumber = safeReferenceNumber(primaryEvidence?.reference_number || transaction.reference_number);
+  const amountFromEvidence = primaryEvidence?.amount != null
+    ? formatAmount(Number(primaryEvidence.amount))
+    : formatAmount(Number(transaction.amount));
   const traceRows = [
-    { icon: 'radar', label: 'Captured From', value: sourceTrace.title },
-    appRoute ? { icon: 'swap-horizontal', label: 'App Route', value: appRoute } : null,
-    detectedApp ? { icon: 'cellphone', label: 'Detected App', value: detectedApp } : null,
+    { icon: 'radar', label: 'Source type', value: formatSourceType(sourceType) },
+    sourceApp ? { icon: 'cellphone', label: 'Source app', value: sourceApp } : null,
+    sourcePackage ? { icon: 'package-variant-closed', label: 'Package', value: sourcePackage } : null,
     senderLabel ? { icon: 'account-voice', label: 'Sender', value: senderLabel } : null,
     accountLabel ? { icon: 'bank', label: 'Matched Account', value: accountLabel } : null,
-    upiProvider ? { icon: 'cellphone-link', label: 'UPI Provider', value: upiHandle ? `${upiProvider} (@${upiHandle})` : upiProvider } : null,
-    upiId ? { icon: 'qrcode', label: 'UPI ID', value: upiId } : null,
-    transaction.reference_number ? { icon: 'identifier', label: 'Reference / UTR', value: transaction.reference_number } : null,
+    matchStatus ? { icon: 'link-variant', label: 'Match status', value: matchStatus } : null,
+    matchConfidence ? { icon: 'speedometer', label: 'Match confidence', value: matchConfidence } : null,
+    matchReason ? { icon: 'text-box-check-outline', label: 'Match reason', value: matchReason } : null,
+    { icon: 'swap-vertical', label: 'Direction', value: formatDirection(transaction, primaryEvidence) },
+    { icon: 'cash-multiple', label: 'Amount', value: amountFromEvidence },
+    { icon: 'credit-card-outline', label: 'Instrument', value: formatInstrument(primaryEvidence?.instrument_hint) },
+    referenceNumber ? { icon: 'identifier', label: 'Ref / UTR', value: referenceNumber } : null,
+    maskedUpi ? { icon: 'qrcode', label: 'UPI', value: maskedUpi } : null,
+    upiProvider ? { icon: 'cellphone-link', label: 'UPI provider', value: upiProvider } : null,
     balanceAfter ? { icon: 'wallet-outline', label: 'Balance After', value: balanceAfter } : null,
     transaction.is_transfer_pending
       ? { icon: 'swap-horizontal-circle-outline', label: 'Transfer Status', value: 'Waiting for matching transfer entry' }
       : null,
+    { icon: 'view-dashboard-outline', label: 'Dashboard status', value: dashboardStatus(transaction) },
     { icon: 'clock-check-outline', label: 'Saved At', value: savedAt },
     { icon: 'identifier', label: 'Record ID', value: transaction.id },
+    isRedactedRawMessage ? { icon: 'message-lock-outline', label: 'Message metadata', value: 'Redacted metadata only' } : null,
   ].filter(Boolean) as TraceRow[];
 
   return (
@@ -479,44 +642,6 @@ export default function TransactionDetail({ route, navigation }: Props) {
             />
           ))}
 
-          {rawMessage ? (
-            <View style={{ marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <MaterialCommunityIcons name="message-text-outline" size={20} color={colors.subtext} />
-                  <Text style={[typography.caption, { color: colors.subtext, marginLeft: spacing.sm }]}>
-                    {isRedactedRawMessage ? 'Message Metadata' : 'Raw Message'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => {
-                    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-                    setShowRawMessage(!showRawMessage);
-                  }}
-                  style={{
-                    backgroundColor: colors.border + '50',
-                    paddingHorizontal: 10,
-                    paddingVertical: 4,
-                    borderRadius: 6,
-                  }}>
-                  <Text style={[typography.caption, { color: colors.accent, fontWeight: '600' }]}>
-                    {showRawMessage ? 'Hide' : 'Show'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-              {showRawMessage ? (
-                <Text style={[typography.body, { color: colors.text, marginTop: spacing.sm, backgroundColor: colors.border + '20', padding: 8, borderRadius: 6 }]}>
-                  {rawMessage}
-                </Text>
-              ) : (
-                <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontStyle: 'italic' }]}>
-                  {isRedactedRawMessage
-                    ? 'Stored as redacted metadata; full message is not retained.'
-                    : 'Hidden for privacy (OTPs, accounts, etc. are redacted by default)'}
-                </Text>
-              )}
-            </View>
-          ) : null}
         </Card>
 
         {/* Delete Button */}

@@ -1,8 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SmartCandidate } from './transactionIntelligence';
 import { getTransactions } from '../core';
+import { emitFinanceDataChanged } from './dataEvents';
 
 const STORAGE_KEY = 'auto_transaction_review_queue_v1';
+
+function emitReviewQueueChanged(): void {
+  emitFinanceDataChanged({
+    areas: ['review'],
+    source: 'review_queue:changed',
+  });
+}
 
 export interface ReviewItem {
   id: string;
@@ -110,6 +118,7 @@ export async function markReviewed(id: string): Promise<boolean> {
 
     queue[index].status = 'reviewed';
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    emitReviewQueueChanged();
     return true;
   } catch (e) {
     console.error('Failed to mark item reviewed:', e);
@@ -125,6 +134,7 @@ export async function markIgnored(id: string): Promise<boolean> {
 
     queue[index].status = 'ignored';
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    emitReviewQueueChanged();
     return true;
   } catch (e) {
     console.error('Failed to mark item ignored:', e);
@@ -153,6 +163,7 @@ export async function markPosted(id: string, transactionId?: string): Promise<bo
       queue[index].createdTransactionId = transactionId;
     }
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    emitReviewQueueChanged();
     return true;
   } catch (e) {
     console.error('Failed to mark item posted:', e);

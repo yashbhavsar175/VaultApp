@@ -1078,7 +1078,7 @@ export default function Settings() {
               <MaterialCommunityIcons name="text-box-search-outline" size={22} color="#06b6d4" />
               <View style={{ flex: 1, marginLeft: spacing.md }}>
                 <Text style={[typography.bodyBold, { color: colors.text }]}>
-                  Income Review
+                  Money Movement Review: Credits
                 </Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
                   Review credits before they count as income
@@ -1096,10 +1096,10 @@ export default function Settings() {
               <MaterialCommunityIcons name="inbox-multiple-outline" size={22} color="#f59e0b" />
               <View style={{ flex: 1, marginLeft: spacing.md }}>
                 <Text style={[typography.bodyBold, { color: colors.text }]}>
-                  Auto Transaction Review
+                  Money Movement Review: Payments
                 </Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Manage transactions awaiting your approval
+                  Review payments and money movements
                 </Text>
               </View>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />

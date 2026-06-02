@@ -341,22 +341,26 @@ export default function Dashboard() {
           loadData();
           setIsInitialLoad(false);
         } else {
+          void loadReviewPromptDataSilently();
           // Debounced reload — waits for data to settle
           debouncedLoadSilently();
         }
       });
       return () => task.cancel();
-    }, [isInitialLoad, debouncedLoadSilently, loadData])
+    }, [isInitialLoad, debouncedLoadSilently, loadData, loadReviewPromptDataSilently])
   );
 
   useFocusEffect(
     React.useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
-        if (financeDataChangedAffects(payload, ['transactions', 'ledger', 'review'])) {
+        if (financeDataChangedAffects(payload, ['review'])) {
+          void loadReviewPromptDataSilently();
+        }
+        if (financeDataChangedAffects(payload, ['transactions', 'ledger'])) {
           debouncedLoadSilently();
         }
       });
-    }, [debouncedLoadSilently])
+    }, [debouncedLoadSilently, loadReviewPromptDataSilently])
   );
 
   // Cleanup debounce timer on unmount
@@ -568,14 +572,14 @@ export default function Dashboard() {
                       activeOpacity={0.8}
                       onPress={handleReviewIncome}
                       style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
-                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review income</Text>
+                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review credits</Text>
                       <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       activeOpacity={0.8}
                       onPress={handleReviewMovements}
                       style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
-                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review movements</Text>
+                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review payments</Text>
                       <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
                     </TouchableOpacity>
                   </>

@@ -484,6 +484,8 @@ const MIN_REASONABLE_PORTER_TRIP_KM = 0.2;
 const DISPLAY_ACTIVE_TTL_MS = 12_000;
 const DISPLAY_DUPLICATE_SUPPRESS_MS = 10_000;
 const MEANINGFUL_PICKUP_DISTANCE_DELTA_KM = 0.2;
+const PICKUP_DISTANCE_MATCH_MIN_TOLERANCE_KM = 0.2;
+const PICKUP_DISTANCE_MATCH_RATIO_TOLERANCE = 0.1;
 const GEOCODE_TIMEOUT_MS = 1200;
 const GEOCODE_MAX_CANDIDATES = 3;
 const GEOCODE_PARALLEL_CANDIDATES = 3;
@@ -807,17 +809,24 @@ function buildCalculatedDistanceMessage(
 ): string {
   const lines: string[] = [];
   const pickupCalculated = distances.pickupSource === 'calculated' && isUsableCalculatedDistance(distances.toPickup);
+  const pickupEstimated = distances.pickupSource === 'porter_distance_from_ui' && isUsableCalculatedDistance(distances.toPickup);
   const tripCalculated = distances.tripSource === 'calculated' && isUsableCalculatedDistance(distances.tripDistance);
 
-  if (!pickupCalculated && !tripCalculated) {
+  if (!pickupCalculated && !pickupEstimated && !tripCalculated) {
     if (distances.failureReason === 'address_unclear') {
       return `SpendSense unavailable\n${distanceReasonLabel(distances.failureReason)}`;
     }
     return `SpendSense unavailable: ${distanceReasonLabel(distances.failureReason)}`;
   }
 
-  lines.push(distances.isApproximate ? 'SpendSense approx' : 'SpendSense');
-  lines.push(pickupCalculated ? `Pickup: ${distances.toPickup}` : `Pickup: ${distanceReasonLabel(distances.failureReason)}`);
+  lines.push(distances.isApproximate || pickupEstimated ? 'SpendSense approx' : 'SpendSense');
+  if (pickupCalculated) {
+    lines.push(`Pickup: ${distances.toPickup}`);
+  } else if (pickupEstimated) {
+    lines.push(`Pickup: ~${distances.toPickup.replace(/^~/, '')}`);
+  } else {
+    lines.push(`Pickup: ${distanceReasonLabel(distances.failureReason)}`);
+  }
 
   if (tripCalculated) {
     lines.push(`Trip: ${distances.tripDistance}`);
@@ -833,6 +842,7 @@ function buildCalculatedDistanceMessage(
 function hasAnyCalculatedDistance(distances: DistanceResult): boolean {
   return (
     (distances.pickupSource === 'calculated' && isUsableCalculatedDistance(distances.toPickup)) ||
+    (distances.pickupSource === 'porter_distance_from_ui' && isUsableCalculatedDistance(distances.toPickup)) ||
     (distances.tripSource === 'calculated' && isUsableCalculatedDistance(distances.tripDistance))
   );
 }
@@ -874,6 +884,7 @@ function isCurrentPorterResult(
   now: number = Date.now()
 ): boolean {
   if (context.runId !== activeRideRunId || activeRideSignature !== context.signature) return false;
+  if (context.screenType === 'accepted_trip') return false;
 
   const ageMs = now - context.startedAt;
   if (context.screenType === 'offer') {
@@ -1724,6 +1735,92 @@ function normalizeCalculatedPickupDistance(
   };
 }
 
+function pickupDistanceToleranceKm(referenceKm: number): number {
+  return Math.max(PICKUP_DISTANCE_MATCH_MIN_TOLERANCE_KM, referenceKm * PICKUP_DISTANCE_MATCH_RATIO_TOLERANCE);
+}
+
+function pickupDistanceDisagreesWithPorter(calculatedText?: string | null, porterText?: string | null): boolean {
+  const calculatedKm = parseDistanceKm(calculatedText);
+  const porterKm = parseDistanceKm(porterText);
+  if (calculatedKm === null || porterKm === null || porterKm <= 0) return false;
+  return Math.abs(calculatedKm - porterKm) > pickupDistanceToleranceKm(porterKm);
+}
+
+function normalizeEstimatedPorterPickupDistance(porterText?: string | null): string | null {
+  return normalizePorterPickupDistance(porterText);
+}
+
+function estimatedPorterPickupDistanceResult(
+  porterPickupDistance?: string | null,
+  failureReason?: DistanceFailureReason,
+  detail: string = 'porter_visible_pickup_estimate'
+): { toPickup: string; failureReason?: DistanceFailureReason; detail?: string; pickupSource: DistanceResult['pickupSource'] } | null {
+  const normalizedPorterPickup = normalizeEstimatedPorterPickupDistance(porterPickupDistance);
+  if (!normalizedPorterPickup) return null;
+  return {
+    toPickup: normalizedPorterPickup,
+    failureReason,
+    detail,
+    pickupSource: 'porter_distance_from_ui',
+  };
+}
+
+function resolvePickupDistanceResult(
+  calculatedResult: ReturnType<typeof normalizeCalculatedPickupDistance>,
+  porterPickupDistance: string | null | undefined,
+  routeConfidence?: GoogleRouteConfidence,
+  locationIssue?: DistanceFailureReason,
+  diagnostics?: string[]
+): ReturnType<typeof normalizeCalculatedPickupDistance> {
+  if (locationIssue === 'device_location_mismatch' || locationIssue === 'impossible_distance_suppressed') {
+    return {
+      toPickup: 'N/A',
+      failureReason: locationIssue,
+      detail: locationIssue,
+      pickupSource: 'unavailable',
+    };
+  }
+
+  if (locationIssue === 'current_location_stale' || locationIssue === 'current_location_low_accuracy') {
+    const estimated = estimatedPorterPickupDistanceResult(porterPickupDistance, locationIssue, locationIssue);
+    if (estimated) {
+      diagnostics?.push('pickup_porter_estimate_used');
+      return estimated;
+    }
+  }
+
+  if (
+    calculatedResult.pickupSource === 'calculated' &&
+    routeConfidence === 'low' &&
+    pickupDistanceDisagreesWithPorter(calculatedResult.toPickup, porterPickupDistance)
+  ) {
+    const estimated = estimatedPorterPickupDistanceResult(porterPickupDistance, undefined, 'pickup_disagreed_with_porter_ui');
+    if (estimated) {
+      diagnostics?.push('pickup_google_low_confidence_mismatch');
+      diagnostics?.push('pickup_porter_estimate_used');
+      return estimated;
+    }
+  }
+
+  if (
+    calculatedResult.pickupSource === 'unavailable' &&
+    calculatedResult.failureReason !== 'device_location_mismatch' &&
+    calculatedResult.failureReason !== 'impossible_distance_suppressed'
+  ) {
+    const estimated = estimatedPorterPickupDistanceResult(
+      porterPickupDistance,
+      calculatedResult.failureReason || 'geocode_failed_but_ui_pickup_used',
+      calculatedResult.detail || 'calculated_pickup_unavailable'
+    );
+    if (estimated) {
+      diagnostics?.push('pickup_porter_estimate_used');
+      return estimated;
+    }
+  }
+
+  return calculatedResult;
+}
+
 function differenceBucket(calculatedText?: string | null, porterText?: string | null): string | null {
   const calculatedKm = parseDistanceKm(calculatedText);
   const porterKm = parseDistanceKm(porterText);
@@ -1954,7 +2051,7 @@ async function getDistancesKm(
         await AsyncStorage.setItem('debug_porter_api_response', JSON.stringify(responseDiagnostics));
 
         const tripResult = normalizeTripDistance(tripRoute.distanceText, pair.pickup.query, pair.drop.query);
-        const pickupResult = locationIssue
+        const calculatedPickupResult = locationIssue
           ? {
               toPickup: 'N/A',
               failureReason: locationIssue,
@@ -1962,6 +2059,13 @@ async function getDistancesKm(
               pickupSource: 'unavailable' as const,
             }
           : normalizeCalculatedPickupDistance(pickupRoute.distanceText);
+        const pickupResult = resolvePickupDistanceResult(
+          calculatedPickupResult,
+          porterPickupDistance,
+          pair.confidence,
+          locationIssue || undefined,
+          diagnostics
+        );
 
         if (
           tripRoute.status === 'OK' &&
@@ -2089,7 +2193,7 @@ async function getDistancesKm(
           : getGoogleDistanceMatrixKm(pickupOrigin, pickupDestination, timeoutMs),
       ]);
       const tripResult = normalizeTripDistance(tripRoute.distanceText, primaryPickupQuery, primaryDropQuery);
-      const pickupResult = locationIssue
+      const calculatedPickupResult = locationIssue
         ? {
             toPickup: 'N/A',
             failureReason: locationIssue,
@@ -2097,6 +2201,13 @@ async function getDistancesKm(
             pickupSource: 'unavailable' as const,
           }
         : normalizeCalculatedPickupDistance(pickupRoute.distanceText);
+      const pickupResult = resolvePickupDistanceResult(
+        calculatedPickupResult,
+        porterPickupDistance,
+        undefined,
+        locationIssue || undefined,
+        diagnostics
+      );
 
       if (
         tripRoute.status === 'OK' &&
@@ -2172,7 +2283,13 @@ async function getDistancesKm(
     : (pickupRouteKm !== null
       ? formatDistanceKm(pickupRouteKm)
       : (pickupApproxKm !== null ? `~${formatDistanceKm(pickupApproxKm)}` : null));
-  const pickupResult = normalizeCalculatedPickupDistance(calculatedPickup);
+  const pickupResult = resolvePickupDistanceResult(
+    normalizeCalculatedPickupDistance(calculatedPickup),
+    porterPickupDistance,
+    undefined,
+    locationIssue || undefined,
+    diagnostics
+  );
   const calculatedTripDistance = tripRouteKm !== null
     ? formatDistanceKm(tripRouteKm)
     : (tripApproxKm !== null ? `~${formatDistanceKm(tripApproxKm)}` : null);
@@ -2366,20 +2483,27 @@ function extractPorterTripDistance(text: string, porterPickupDistance?: string |
 function detectPorterScreenType(text: string): PorterScreenType {
   const lower = text.toLowerCase();
   const hasAcceptCountdown = /\baccept\s+in\s+\d+\s*s\b/i.test(text);
+  const hasAcceptAction = /\b(?:accept|swipe\s+to\s+accept)\b/i.test(text);
   const hasFare = /(?:₹|rs\.?\s*)\s*\d+/i.test(text);
   const hasPickupDistance = !!extractPorterPickupDistance(text);
   const hasOfferAddressMarkers = lower.includes('pickup') && (lower.includes('drop') || lower.includes('destination'));
-  if (hasPickupDistance && (hasAcceptCountdown || hasFare || hasOfferAddressMarkers)) {
-    return 'offer';
-  }
   if (
     lower.includes('cancel trip') ||
     lower.includes('cash to collect') ||
     lower.includes('trip fare') ||
     lower.includes('call customer') ||
-    lower.includes('navigate')
+    lower.includes('navigate') ||
+    lower.includes('start trip') ||
+    lower.includes('end trip') ||
+    lower.includes('complete trip') ||
+    lower.includes('swipe to start') ||
+    lower.includes('swipe to end') ||
+    lower.includes('arrived at pickup')
   ) {
     return 'accepted_trip';
+  }
+  if (hasPickupDistance && (hasAcceptCountdown || hasAcceptAction || (hasFare && hasOfferAddressMarkers))) {
+    return 'offer';
   }
   return 'unknown';
 }
@@ -2391,7 +2515,8 @@ function hasLiveOfferIndicators(text: string): boolean {
 function shouldHideOverlayForScreenText(text: string, overlay: PorterOverlayState | null = activeTripOverlay): boolean {
   if (!overlay) return false;
   const screenType = detectPorterScreenType(text);
-  if (screenType === 'offer' || screenType === 'accepted_trip') return false;
+  if (screenType === 'offer') return false;
+  if (screenType === 'accepted_trip') return true;
   return isPorterHomeOrIdleText(text.toLowerCase()) || !text.toLowerCase().includes('pickup');
 }
 
@@ -2575,6 +2700,28 @@ async function processPorterScreenEvent(event: PorterScreenEvent): Promise<void>
       const screenType = detectPorterScreenType(text);
       if ((screenType === 'offer' || screenType === 'accepted_trip') && activeRideSignature) {
         markLatestPorterScreenState(activeRideSignature, screenType, screenType === 'offer', now);
+      }
+      if (screenType === 'accepted_trip') {
+        if (activeTripOverlay) {
+          hideActivePorterOverlay('offer_expired_overlay_hidden');
+        }
+        markLatestPorterScreenState(activeRideSignature, screenType, false, now);
+        debugEvent.status = 'Ignored: Porter active trip screen';
+        await AsyncStorage.setItem('debug_porter_status', debugEvent.status);
+        await recordDeliveryDebugEvent({
+          category: 'porter_distance',
+          feature: 'overlay_lifecycle',
+          packageName: event.packageName,
+          eventType,
+          message: 'active_trip_overlay_suppressed',
+          data: {
+            reason: 'active_trip_overlay_suppressed',
+            screenType,
+            textLength: text.length,
+            textSummary,
+          },
+        });
+        return;
       }
       if (shouldHideOverlayForScreenText(text)) {
         hideActivePorterOverlay('offer_expired_overlay_hidden');
@@ -3041,6 +3188,7 @@ export const __porterTestUtils = {
   normalizePorterPickupDistance,
   normalizeTripDistance,
   parseDistanceKm,
+  processPorterScreenEventForTest: processPorterScreenEvent,
   resetActivePorterOverlayForTest: () => {
     activeTripOverlay = null;
     latestPorterScreenState = null;

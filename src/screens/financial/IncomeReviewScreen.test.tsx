@@ -184,7 +184,7 @@ describe('IncomeReviewScreen', () => {
     });
     const text = renderedText(renderer);
 
-    expect(text).toContain('Income Review');
+    expect(text).toContain('Money Movement Review');
     expect(text).toContain('₹1,200');
     expect(text).toContain('Possible gig payout');
     expect(text).toContain('Dashboard: Not counted until reviewed');
@@ -512,7 +512,7 @@ describe('IncomeReviewScreen', () => {
     expect(settingsStack).toContain('IncomeReview: undefined');
     expect(settingsStack).toContain('<Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />');
     expect(bottomTabs).toContain("'IncomeReview'");
-    expect(settingsScreen).toContain('Income Review');
+    expect(settingsScreen).toContain('Money Movement Review: Credits');
     expect(settingsScreen).toContain("navigate('IncomeReview')");
   });
 });

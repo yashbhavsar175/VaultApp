@@ -1178,7 +1178,7 @@ export default function ReviewQueueScreen() {
 
   return (
     <ScreenWrapper>
-      <AppHeader title="Transaction Review" showBack={true} />
+      <AppHeader title="Money Movement Review" showBack={true} />
       
       {loading ? (
         <View style={styles.loadingContainer}>

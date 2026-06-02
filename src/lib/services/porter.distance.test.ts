@@ -142,6 +142,23 @@ describe('Porter distance parsing and fallback privacy', () => {
     expect(__porterTestUtils.hasLiveOfferIndicators(text)).toBe(true);
   });
 
+  it('classifies accepted active-trip/map text before offer distance text', () => {
+    const text = [
+      'Pickup: 14 km',
+      'PICKUP',
+      pickupAddress,
+      'DROP',
+      dropAddress,
+      'Cash to Collect ₹140',
+      'Trip Fare ₹220',
+      'Navigate',
+      'Cancel Trip',
+    ].join(' || ');
+
+    expect(__porterTestUtils.detectPorterScreenType(text)).toBe('accepted_trip');
+    expect(__porterTestUtils.hasLiveOfferIndicators(text)).toBe(false);
+  });
+
   it('does not treat visible Porter UI pickup/drop distances as SpendSense calculated distances', async () => {
     fetchMock().mockImplementation((url: string) => {
       const decoded = decodeURIComponent(url);
@@ -396,7 +413,7 @@ describe('Porter distance parsing and fallback privacy', () => {
     fetchMock().mockImplementation((url: string) => {
       const decoded = decodeURIComponent(url);
       return Promise.resolve(decoded.includes('origins=23.026,72.575')
-        ? distanceMatrixResponse(3.3)
+        ? distanceMatrixResponse(1.1)
         : distanceMatrixResponse(9.2));
     });
 
@@ -414,10 +431,39 @@ describe('Porter distance parsing and fallback privacy', () => {
     expect(result.distanceProvider).toBe('google_distance_matrix');
     expect(result.isApproximate).toBe(true);
     expect(result.routeDiagnostics?.confidence).toBe('low');
-    expect(message).toBe('SpendSense approx\nPickup: 3.3 km\nTrip: 9.2 km');
+    expect(message).toBe('SpendSense approx\nPickup: 1.1 km\nTrip: 9.2 km');
     expect(message).not.toContain('Porter:');
-    expect(message).not.toContain('1.2 km');
     expect(message).not.toContain('5.1 km');
+  });
+
+  it('uses Porter pickup estimate when a low-confidence Google route disagrees with the offer pickup', async () => {
+    (Config as Record<string, string>).GOOGLE_MAPS_API_KEY = 'test-google-key';
+    fetchMock().mockImplementation((url: string) => {
+      const decoded = decodeURIComponent(url);
+      return Promise.resolve(decoded.includes('origins=23.026,72.575')
+        ? distanceMatrixResponse(7.7)
+        : distanceMatrixResponse(16.1));
+    });
+
+    const result = await __porterTestUtils.getDistancesKm(
+      23.026,
+      72.575,
+      'Ellisbridge',
+      'Motera',
+      'Pickup 1.3 km away',
+      undefined,
+      'Drop 12.4 km'
+    );
+    const message = __porterTestUtils.buildCalculatedDistanceMessage(result, 'Pickup 1.3 km away', 'Drop 12.4 km');
+
+    expect(result.distanceProvider).toBe('google_distance_matrix');
+    expect(result.pickupSource).toBe('porter_distance_from_ui');
+    expect(result.routeDiagnostics?.events).toContain('pickup_google_low_confidence_mismatch');
+    expect(result.routeDiagnostics?.events).toContain('pickup_porter_estimate_used');
+    expect(message).toBe('SpendSense approx\nPickup: ~1.3 km\nTrip: 16.1 km');
+    expect(message).not.toContain('7.7 km');
+    expect(JSON.stringify(result.routeDiagnostics)).not.toContain('Ellisbridge');
+    expect(JSON.stringify(result.routeDiagnostics)).not.toContain('Motera');
   });
 
   it('shows address unclear instead of routing broad city-only candidates', async () => {
@@ -541,7 +587,71 @@ describe('Porter distance parsing and fallback privacy', () => {
     )).toBe(true);
   });
 
-  it('does not show Porter UI pickup when geocoding fails', async () => {
+  it('hides active overlay when Porter switches to accepted trip/map', () => {
+    const message = 'SpendSense\nPickup: 1.7 km\nTrip: 5.2 km';
+    const activeTripText = [
+      'PICKUP',
+      pickupAddress,
+      'DROP',
+      dropAddress,
+      'Start Trip',
+      'Navigate',
+      'Cancel Trip',
+    ].join(' || ');
+
+    expect(__porterTestUtils.shouldHideOverlayForScreenText(
+      activeTripText,
+      displayState('order-a', message, 1_000)
+    )).toBe(true);
+  });
+
+  it('drops late offer distance results after the trip is accepted', () => {
+    __porterTestUtils.setActivePorterResultForTest(10, 'order-accepted', {
+      signature: 'order-accepted',
+      screenType: 'accepted_trip',
+      hasLiveOffer: false,
+      seenAt: 2_000,
+    });
+
+    expect(__porterTestUtils.isCurrentPorterResult(
+      { runId: 10, signature: 'order-accepted', startedAt: 1_000, screenType: 'offer' },
+      { signature: 'order-accepted', screenType: 'accepted_trip', hasLiveOffer: false, seenAt: 2_000 },
+      3_000
+    )).toBe(false);
+  });
+
+  it('suppresses stale distance popup after accepting a Porter offer', async () => {
+    const offerText = 'SpendSense\nPickup: 14 km\nTrip unavailable';
+    const acceptedTripText = [
+      'Pickup: 14 km',
+      'PICKUP',
+      pickupAddress,
+      'DROP',
+      dropAddress,
+      'Cash to Collect ₹140',
+      'Trip Fare ₹220',
+      'Navigate',
+      'Cancel Trip',
+    ].join(' || ');
+
+    const first = __porterTestUtils.showActivePorterOverlay('order-stale-after-accept', offerText, 1_000);
+    await first?.displayPromise;
+    jest.clearAllMocks();
+
+    await __porterTestUtils.processPorterScreenEventForTest({
+      packageName: 'com.theporter.driver',
+      eventType: 'TYPE_WINDOW_CONTENT_CHANGED',
+      textContent: acceptedTripText,
+    });
+
+    expect(NativeModules.PorterModule.hidePorterDistanceOverlay).toHaveBeenCalledTimes(1);
+    expect(NativeModules.PorterModule.showOrUpdatePorterDistanceOverlay).not.toHaveBeenCalled();
+    expect(fetchMock()).not.toHaveBeenCalled();
+    const status = await AsyncStorage.getItem('debug_porter_status');
+    expect(status).toBe('Ignored: Porter active trip screen');
+  });
+
+  it('shows Porter pickup as an estimate when geocoding fails', async () => {
     fetchMock().mockResolvedValue(nominatimResponse());
 
     const result = await __porterTestUtils.getDistancesKm(
@@ -552,15 +662,14 @@ describe('Porter distance parsing and fallback privacy', () => {
       'Pickup 3.3 km away'
     );
 
-    expect(result.toPickup).toBe('N/A');
+    expect(result.toPickup).toBe('3.3 km');
     expect(result.tripDistance).toBe('N/A');
-    expect(result.failureReason).toBe('geocode_failed');
-    expect(result.pickupSource).toBe('unavailable');
+    expect(result.failureReason).toBe('geocode_failed_but_ui_pickup_used');
+    expect(result.pickupSource).toBe('porter_distance_from_ui');
 
     const message = __porterTestUtils.buildCalculatedDistanceMessage(result, 'Pickup 3.3 km away');
-    expect(message).toBe('SpendSense unavailable: geocode failed');
+    expect(message).toBe('SpendSense approx\nPickup: ~3.3 km\nTrip unavailable');
     expect(message).not.toContain('Porter:');
-    expect(message).not.toContain('3.3 km');
     expect(message).not.toContain('You -> Pickup: 3.3 km');
   });
 
@@ -899,6 +1008,30 @@ describe('Porter distance parsing and fallback privacy', () => {
     expect(result.failureReason).toBe('current_location_low_accuracy');
     expect(result.detail).toBe('current_location_low_accuracy');
     expect(result.pickupSource).toBe('unavailable');
+  });
+
+  it('uses estimated Porter pickup when current location is stale instead of a confident route', async () => {
+    (Config as Record<string, string>).GOOGLE_MAPS_API_KEY = 'test-google-key';
+    fetchMock().mockImplementation(() => Promise.resolve(distanceMatrixResponse(12.4)));
+
+    const result = await __porterTestUtils.getDistancesKm(
+      23.0260,
+      72.5750,
+      'Ellisbridge',
+      'Motera',
+      'Pickup 1.3 km away',
+      undefined,
+      'Drop 12.4 km',
+      undefined,
+      { ts: Date.now() - 90_000, accuracy: 35 }
+    );
+    const message = __porterTestUtils.buildCalculatedDistanceMessage(result, 'Pickup 1.3 km away', 'Drop 12.4 km');
+
+    expect(result.failureReason).toBe('current_location_stale');
+    expect(result.pickupSource).toBe('porter_distance_from_ui');
+    expect(result.routeDiagnostics?.events).toContain('pickup_porter_estimate_used');
+    expect(message).toBe('SpendSense approx\nPickup: ~1.3 km\nTrip: 12.4 km');
+    expect(message).not.toContain('Pickup: 12.4 km');
   });
 
   it('labels routed results as SpendSense and approximate fallback as SpendSense approx', async () => {

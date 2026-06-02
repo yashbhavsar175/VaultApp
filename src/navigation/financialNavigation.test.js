@@ -44,7 +44,7 @@ describe('financial account navigation reachability', () => {
     expect(settingsScreen).toContain("navigate('DebtFreedomCoach')");
   });
 
-  it('exposes Income Review from Settings', () => {
+  it('exposes Money Movement Review credits from Settings', () => {
     const settingsStack = read('src/navigation/SettingsStack.tsx');
     const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
     const settingsScreen = read('src/screens/user/Settings.tsx');
@@ -53,7 +53,7 @@ describe('financial account navigation reachability', () => {
     expect(settingsStack).toContain('<Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />');
 
     expect(bottomTabs).toContain("'IncomeReview'");
-    expect(settingsScreen).toContain('Income Review');
+    expect(settingsScreen).toContain('Money Movement Review: Credits');
     expect(settingsScreen).toContain("navigate('IncomeReview')");
   });
 
