@@ -1,6 +1,8 @@
-import { supabase } from '../core';
+import { addTransaction, getTransactions, supabase } from '../core';
 import { IncomeEvent, IncomeSourceType as CoachIncomeSourceType } from './debtFreedom';
 import { Transaction, TransactionEvidence } from '../../types';
+import { emitFinanceDataChanged } from './dataEvents';
+import { linkEvidenceToTransaction } from './transactionEvidence';
 
 export type IncomeReviewDecisionValue = 'count_as_income' | 'not_income' | 'needs_review';
 export type IncomeReviewIncomeSourceType =
@@ -130,11 +132,16 @@ const EVIDENCE_COLUMNS = [
   'amount',
   'direction',
   'captured_at',
+  'account_last4',
+  'card_last4',
   'merchant_or_person',
   'bank_name',
   'confidence_level',
   'match_status',
 ].join(', ');
+const REVIEWED_INCOME_NOTE = 'Reviewed income';
+const REVIEWED_INCOME_CATEGORY = 'Income';
+const REVIEWED_INCOME_DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 
 const GIG_TOKENS = ['porter', 'swiggy', 'zomato', 'rapido', 'zepto', 'delivery', 'gig', 'payout', 'earning', 'earnings'];
 const SALARY_TOKENS = ['salary'];
@@ -157,6 +164,11 @@ function hasAnyToken(text: string, tokens: string[]): boolean {
 
 function finitePositive(value?: number | null): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function safeLast4(value?: string | null): string | null {
+  const digits = (value || '').replace(/\D/g, '');
+  return digits.length === 4 ? digits : null;
 }
 
 function isMissingTableError(error: unknown): boolean {
@@ -701,7 +713,13 @@ export async function upsertIncomeReviewDecision(
     .single();
 
   if (error) throw error;
-  return data as unknown as IncomeReviewDecision;
+  const decision = data as unknown as IncomeReviewDecision;
+  emitFinanceDataChanged({
+    areas: ['review'],
+    source: 'income_review:changed',
+    transactionId: decision.transaction_id || undefined,
+  });
+  return decision;
 }
 
 export async function deleteIncomeReviewDecision(id: string): Promise<void> {
@@ -712,6 +730,106 @@ export async function deleteIncomeReviewDecision(id: string): Promise<void> {
     .eq('id', id)
     .eq('user_id', userId);
   if (error) throw error;
+  emitFinanceDataChanged({ areas: ['review'], source: 'income_review:changed' });
+}
+
+function reviewedIncomeTransactionMatchesEvidence(
+  transaction: Transaction,
+  evidence: TransactionEvidence
+): boolean {
+  const transactionTime = new Date(transaction.created_at).getTime();
+  const evidenceTime = new Date(evidence.captured_at).getTime();
+  return (
+    transaction.type === 'income'
+    && transaction.category === REVIEWED_INCOME_CATEGORY
+    && transaction.note === REVIEWED_INCOME_NOTE
+    && Number(transaction.amount) === Number(evidence.amount)
+    && transaction.sms_source === evidence.source_type
+    && safeLast4(transaction.account_last4) === safeLast4(evidence.account_last4)
+    && Number.isFinite(transactionTime)
+    && Number.isFinite(evidenceTime)
+    && Math.abs(transactionTime - evidenceTime) <= REVIEWED_INCOME_DUPLICATE_WINDOW_MS
+  );
+}
+
+async function fetchOwnedEvidence(userId: string, evidenceId: string): Promise<TransactionEvidence> {
+  const { data, error } = await supabase
+    .from('transaction_evidence')
+    .select(EVIDENCE_COLUMNS)
+    .eq('id', evidenceId)
+    .eq('user_id', userId)
+    .single();
+  if (error) throw error;
+  if (!data) throw new Error('Income review evidence was not found');
+  return data as unknown as TransactionEvidence;
+}
+
+async function resolveReviewedIncomeTransactionId(
+  userId: string,
+  payload: ReturnType<typeof sanitizeDecisionInput>,
+  existing: IncomeReviewDecision | null
+): Promise<string | null> {
+  if (payload.transaction_id) return payload.transaction_id;
+  if (existing?.transaction_id) {
+    await ensureTransactionOwner(userId, existing.transaction_id);
+    return existing.transaction_id;
+  }
+  if (!payload.evidence_id) return null;
+
+  const evidence = await fetchOwnedEvidence(userId, payload.evidence_id);
+  if (evidence.transaction_id) {
+    await ensureTransactionOwner(userId, evidence.transaction_id);
+    return evidence.transaction_id;
+  }
+  const amount = finitePositive(evidence.amount);
+  if (!amount) throw new Error('Reviewed income evidence needs a positive amount');
+
+  const transactions = await getTransactions();
+  const matches = transactions.filter(transaction => (
+    transaction.primary_evidence_id === evidence.id
+    || reviewedIncomeTransactionMatchesEvidence(transaction, evidence)
+  ));
+  if (matches.length > 1) {
+    throw new Error('Multiple matching reviewed income transactions need review');
+  }
+
+  const transaction = matches[0] || await addTransaction({
+    amount,
+    type: 'income',
+    category: REVIEWED_INCOME_CATEGORY,
+    note: REVIEWED_INCOME_NOTE,
+    created_at: evidence.captured_at,
+    sms_source: evidence.source_type,
+    account_last4: safeLast4(evidence.account_last4),
+  });
+
+  await linkEvidenceToTransaction(
+    evidence.id,
+    transaction.id,
+    'linked',
+    evidence.confidence_level,
+    'income_review_confirmed'
+  );
+  return transaction.id;
+}
+
+export async function saveIncomeReviewDecision(
+  input: IncomeReviewDecisionInput
+): Promise<IncomeReviewDecision> {
+  const payload = sanitizeDecisionInput(input);
+  if (payload.decision !== 'count_as_income' || payload.transaction_id) {
+    return upsertIncomeReviewDecision(input);
+  }
+
+  const userId = await getCurrentUserId();
+  if (payload.evidence_id) await ensureEvidenceOwner(userId, payload.evidence_id);
+  const existing = await findExistingDecision(userId, payload);
+  const transactionId = await resolveReviewedIncomeTransactionId(userId, payload, existing);
+
+  return upsertIncomeReviewDecision({
+    ...input,
+    transaction_id: transactionId,
+  });
 }
 
 function coachSourceType(sourceType: IncomeReviewIncomeSourceType | null): CoachIncomeSourceType {

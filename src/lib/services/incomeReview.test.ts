@@ -1,11 +1,14 @@
-import { supabase } from '../core';
+import { addTransaction, getTransactions, supabase } from '../core';
 import {
   applyIncomeReviewDecisionsToIncomeEvents,
   buildIncomeReviewCandidatesFromRows,
   getIncomeReviewDecisions,
   isIncomeReviewTableMissingError,
+  saveIncomeReviewDecision,
   upsertIncomeReviewDecision,
 } from './incomeReview';
+import { emitFinanceDataChanged } from './dataEvents';
+import { linkEvidenceToTransaction } from './transactionEvidence';
 import { IncomeEvent } from './debtFreedom';
 import { Transaction, TransactionEvidence } from '../../types';
 
@@ -14,16 +17,28 @@ declare const require: any;
 const fs = require('fs');
 
 jest.mock('../core', () => ({
+  addTransaction: jest.fn(),
+  getTransactions: jest.fn(),
   supabase: {
     auth: { getUser: jest.fn() },
     from: jest.fn(),
   },
+}));
+jest.mock('./dataEvents', () => ({
+  emitFinanceDataChanged: jest.fn(),
+}));
+jest.mock('./transactionEvidence', () => ({
+  linkEvidenceToTransaction: jest.fn(),
 }));
 
 const mockedSupabase = supabase as unknown as {
   auth: { getUser: jest.Mock };
   from: jest.Mock;
 };
+const mockedAddTransaction = addTransaction as jest.Mock;
+const mockedGetTransactions = getTransactions as jest.Mock;
+const mockedEmitFinanceDataChanged = emitFinanceDataChanged as jest.Mock;
+const mockedLinkEvidenceToTransaction = linkEvidenceToTransaction as jest.Mock;
 
 type QueryCall = {
   table: string;
@@ -134,10 +149,12 @@ function transaction(overrides: Partial<Transaction>): Transaction {
     category: overrides.category ?? 'Income',
     created_at: overrides.created_at || '2026-06-05T10:00:00.000Z',
     sms_source: overrides.sms_source,
+    account_last4: overrides.account_last4,
     reference_number: overrides.reference_number,
     from_account_id: overrides.from_account_id,
     to_account_id: overrides.to_account_id,
     refund_of_transaction_id: overrides.refund_of_transaction_id,
+    primary_evidence_id: overrides.primary_evidence_id,
   } as Transaction;
 }
 
@@ -167,7 +184,7 @@ function evidence(overrides: Partial<TransactionEvidence>): TransactionEvidence 
     reference_number: null,
     merchant_or_person: merchantOrPerson ?? null,
     bank_name: null,
-    account_last4: null,
+    account_last4: overrides.account_last4 ?? null,
     card_last4: null,
     instrument_hint: 'unknown',
     upi_id_masked: null,
@@ -210,6 +227,17 @@ describe('incomeReview service', () => {
     };
     mockedSupabase.auth.getUser.mockResolvedValue({ data: { user: { id: 'user_1' } } });
     mockedSupabase.from.mockImplementation((table: string) => new QueryBuilder(table));
+    mockedAddTransaction.mockReset();
+    mockedGetTransactions.mockReset();
+    mockedEmitFinanceDataChanged.mockReset();
+    mockedLinkEvidenceToTransaction.mockReset();
+    mockedGetTransactions.mockResolvedValue([]);
+    mockedLinkEvidenceToTransaction.mockResolvedValue({});
+    mockedAddTransaction.mockImplementation(async input => ({
+      id: 'reviewed_tx_1',
+      user_id: 'user_1',
+      ...input,
+    }));
   });
 
   it('loads decisions through the authenticated user path', async () => {
@@ -569,6 +597,122 @@ describe('incomeReview service', () => {
       decision: 'count_as_income',
     }));
   });
+
+  it('keeps transaction-backed Count as income decision-only and emits a review refresh', async () => {
+    rows.income_review_decisions = [];
+
+    const result = await saveIncomeReviewDecision({
+      transaction_id: 'tx_1',
+      decision: 'count_as_income',
+      income_source_type: 'other',
+    });
+
+    expect(result.transaction_id).toBe('tx_1');
+    expect(mockedAddTransaction).not.toHaveBeenCalled();
+    expect(mockedLinkEvidenceToTransaction).not.toHaveBeenCalled();
+    expect(mockedEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['review'],
+      source: 'income_review:changed',
+      transactionId: 'tx_1',
+    }));
+  });
+
+  it('creates and links one safe History transaction after explicit evidence-only Count as income', async () => {
+    rows.income_review_decisions = [];
+    rows.transaction_evidence = [evidence({
+      id: 'ev_safe',
+      signal_id: 'abcabc123456',
+      amount: 5000,
+      captured_at: '2026-06-01T08:00:00.000Z',
+      account_last4: '1447',
+      source_app: 'Private Person 9876543210',
+      merchant_or_person: 'private.person@oksbi',
+    })];
+
+    const result = await saveIncomeReviewDecision({
+      evidence_id: 'ev_safe',
+      signal_hash: 'abcabc123456',
+      decision: 'count_as_income',
+      income_source_type: 'other',
+    });
+
+    expect(mockedAddTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedAddTransaction).toHaveBeenCalledWith({
+      amount: 5000,
+      type: 'income',
+      category: 'Income',
+      note: 'Reviewed income',
+      created_at: '2026-06-01T08:00:00.000Z',
+      sms_source: 'notification',
+      account_last4: '1447',
+    });
+    expect(mockedLinkEvidenceToTransaction).toHaveBeenCalledWith(
+      'ev_safe',
+      'reviewed_tx_1',
+      'linked',
+      'medium',
+      'income_review_confirmed'
+    );
+    expect(result.transaction_id).toBe('reviewed_tx_1');
+    expect(JSON.stringify(mockedAddTransaction.mock.calls)).not.toMatch(
+      /Private Person|9876543210|private\.person@oksbi/
+    );
+  });
+
+  it('reuses a matching reviewed-income History transaction instead of creating a duplicate', async () => {
+    rows.income_review_decisions = [];
+    rows.transaction_evidence = [evidence({
+      id: 'ev_safe',
+      signal_id: 'abcabc123456',
+      amount: 5000,
+      captured_at: '2026-06-01T08:00:00.000Z',
+      account_last4: '1447',
+    })];
+    mockedGetTransactions.mockResolvedValue([
+      transaction({
+        id: 'reviewed_tx_existing',
+        amount: 5000,
+        note: 'Reviewed income',
+        category: 'Income',
+        created_at: '2026-06-01T08:01:00.000Z',
+        sms_source: 'notification',
+        account_last4: '1447',
+      }),
+    ]);
+
+    const result = await saveIncomeReviewDecision({
+      evidence_id: 'ev_safe',
+      signal_hash: 'abcabc123456',
+      decision: 'count_as_income',
+      income_source_type: 'other',
+    });
+
+    expect(mockedAddTransaction).not.toHaveBeenCalled();
+    expect(mockedLinkEvidenceToTransaction).toHaveBeenCalledWith(
+      'ev_safe',
+      'reviewed_tx_existing',
+      'linked',
+      'medium',
+      'income_review_confirmed'
+    );
+    expect(result.transaction_id).toBe('reviewed_tx_existing');
+  });
+
+  it.each(['not_income', 'needs_review'] as const)(
+    'never creates a History transaction for %s',
+    async decisionValue => {
+      rows.income_review_decisions = [];
+
+      await saveIncomeReviewDecision({
+        evidence_id: 'ev_1',
+        signal_hash: 'abcdef123456',
+        decision: decisionValue,
+      });
+
+      expect(mockedAddTransaction).not.toHaveBeenCalled();
+      expect(mockedLinkEvidenceToTransaction).not.toHaveBeenCalled();
+    }
+  );
 
   it('does not log raw values or call mutating financial tables', () => {
     const source = fs.readFileSync('src/lib/services/incomeReview.ts', 'utf8');

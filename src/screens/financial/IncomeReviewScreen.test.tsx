@@ -6,12 +6,12 @@ const path = require('path');
 const materialCommunityIcons = require('react-native-vector-icons/glyphmaps/MaterialCommunityIcons.json');
 
 import React from 'react';
-import { Text, TouchableOpacity } from 'react-native';
+import { RefreshControl, Text, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 import IncomeReviewScreen, { APPROVED_INCOME_REVIEW_ICONS } from './IncomeReviewScreen';
 import {
   getIncomeReviewScreenState,
-  upsertIncomeReviewDecision,
+  saveIncomeReviewDecision,
   deleteIncomeReviewDecision,
 } from '../../lib/services/incomeReview';
 
@@ -49,12 +49,12 @@ jest.mock('../../context/ThemeContext', () => ({
 
 jest.mock('../../lib/services/incomeReview', () => ({
   getIncomeReviewScreenState: jest.fn(),
-  upsertIncomeReviewDecision: jest.fn(),
+  saveIncomeReviewDecision: jest.fn(),
   deleteIncomeReviewDecision: jest.fn(),
 }));
 
 const mockedGetState = getIncomeReviewScreenState as jest.Mock;
-const mockedUpsert = upsertIncomeReviewDecision as jest.Mock;
+const mockedSave = saveIncomeReviewDecision as jest.Mock;
 const mockedDelete = deleteIncomeReviewDecision as jest.Mock;
 
 function read(relativePath: string): string {
@@ -117,7 +117,7 @@ async function renderWithState(state: any) {
 describe('IncomeReviewScreen', () => {
   beforeEach(() => {
     mockedGetState.mockReset();
-    mockedUpsert.mockReset();
+    mockedSave.mockReset();
     mockedDelete.mockReset();
   });
 
@@ -150,9 +150,9 @@ describe('IncomeReviewScreen', () => {
 
     expect(text).toContain('Review credits before they count as income.');
     expect(text).toContain('Family or friend transfers are not counted automatically.');
-    expect(text).toContain('This does not change transactions or balances.');
+    expect(text).toContain('Counting evidence-only income creates a safe History entry. Balances do not change.');
     expect(text).toContain('Debt Freedom Coach will use your reviewed income decisions.');
-    expect(text).toContain('No income credits need review right now.');
+    expect(text).toContain('No credits need review right now.');
     expect(text).toContain('New credits may appear here when the app cannot safely classify them.');
   });
 
@@ -187,7 +187,7 @@ describe('IncomeReviewScreen', () => {
     expect(text).toContain('Income Review');
     expect(text).toContain('₹1,200');
     expect(text).toContain('Possible gig payout');
-    expect(text).toContain('Dashboard: Counted as reviewed income');
+    expect(text).toContain('Dashboard: Not counted until reviewed');
     expect(text).toContain('Source hint: Gig payout');
     expect(text).toContain('Count as income');
     expect(text).toContain('Not income');
@@ -207,7 +207,7 @@ describe('IncomeReviewScreen', () => {
         storageStatus: 'ready',
       })
       .mockResolvedValueOnce({ candidates: [], storageStatus: 'ready' });
-    mockedUpsert.mockResolvedValue({});
+    mockedSave.mockResolvedValue({});
 
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
     await ReactTestRenderer.act(async () => {
@@ -218,7 +218,7 @@ describe('IncomeReviewScreen', () => {
       await touchableByText(renderer!, 'Count as income')!.props.onPress();
     });
 
-    expect(mockedUpsert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockedSave).toHaveBeenCalledWith(expect.objectContaining({
       transaction_id: 'tx_1',
       decision: 'count_as_income',
       income_source_type: 'gig_work',
@@ -227,7 +227,7 @@ describe('IncomeReviewScreen', () => {
     ReactTestRenderer.act(() => {
       renderer!.unmount();
     });
-    mockedUpsert.mockClear();
+    mockedSave.mockClear();
     mockedGetState
       .mockResolvedValueOnce({
         candidates: [candidate({ suggestedDecision: 'needs_review', suggestedIncomeSourceType: null })],
@@ -243,7 +243,7 @@ describe('IncomeReviewScreen', () => {
       await touchableByText(renderer!, 'Not income')!.props.onPress();
     });
 
-    expect(mockedUpsert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockedSave).toHaveBeenCalledWith(expect.objectContaining({
       transaction_id: 'tx_1',
       decision: 'not_income',
       income_source_type: null,
@@ -257,7 +257,7 @@ describe('IncomeReviewScreen', () => {
         storageStatus: 'ready',
       })
       .mockResolvedValueOnce({ candidates: [], storageStatus: 'ready' });
-    mockedUpsert.mockResolvedValue({});
+    mockedSave.mockResolvedValue({});
 
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
     await ReactTestRenderer.act(async () => {
@@ -270,11 +270,60 @@ describe('IncomeReviewScreen', () => {
       await touchableByText(renderer!, 'Count as income')!.props.onPress();
     });
 
-    expect(mockedUpsert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockedSave).toHaveBeenCalledWith(expect.objectContaining({
       transaction_id: 'tx_1',
       decision: 'count_as_income',
       income_source_type: 'other',
     }));
+  });
+
+  it('ignores an older refresh result after a decision save completes', async () => {
+    let resolveStaleRefresh: (state: any) => void = () => {};
+    const staleRefresh = new Promise(resolve => {
+      resolveStaleRefresh = resolve;
+    });
+    const unresolvedState = {
+      candidates: [candidate()],
+      storageStatus: 'ready',
+    };
+    const reviewedState = {
+      candidates: [candidate({
+        currentDecision: {
+          id: 'decision_1',
+          decision: 'count_as_income',
+          income_source_type: 'other',
+          reviewed_at: '2026-06-05T11:00:00.000Z',
+        },
+      })],
+      storageStatus: 'ready',
+    };
+    mockedGetState
+      .mockResolvedValueOnce(unresolvedState)
+      .mockReturnValueOnce(staleRefresh)
+      .mockResolvedValueOnce(reviewedState);
+    mockedSave.mockResolvedValue({});
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<IncomeReviewScreen />);
+    });
+
+    ReactTestRenderer.act(() => {
+      renderer!.root.findByType(RefreshControl).props.onRefresh();
+    });
+    await ReactTestRenderer.act(async () => {
+      await touchableByText(renderer!, 'Count as income')!.props.onPress();
+    });
+
+    expect(renderedText(renderer!)).toContain('Counted as income');
+
+    await ReactTestRenderer.act(async () => {
+      resolveStaleRefresh(unresolvedState);
+      await staleRefresh;
+    });
+
+    expect(renderedText(renderer!)).toContain('Counted as income');
+    expect(renderedText(renderer!)).not.toContain('Dashboard: Not counted until reviewed');
   });
 
   it('saves deduped transaction/evidence cards with the shared identity fields', async () => {
@@ -293,7 +342,7 @@ describe('IncomeReviewScreen', () => {
         storageStatus: 'ready',
       })
       .mockResolvedValueOnce({ candidates: [], storageStatus: 'ready' });
-    mockedUpsert.mockResolvedValue({});
+    mockedSave.mockResolvedValue({});
 
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
     await ReactTestRenderer.act(async () => {
@@ -306,7 +355,7 @@ describe('IncomeReviewScreen', () => {
       await touchableByText(renderer!, 'Not income')!.props.onPress();
     });
 
-    expect(mockedUpsert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockedSave).toHaveBeenCalledWith(expect.objectContaining({
       transaction_id: 'tx_22700',
       evidence_id: 'ev_22700',
       signal_hash: 'abcabc123456',
@@ -351,10 +400,62 @@ describe('IncomeReviewScreen', () => {
     });
 
     await ReactTestRenderer.act(async () => {
+      touchableByText(renderer!, 'Change')!.props.onPress();
+    });
+
+    await ReactTestRenderer.act(async () => {
       await touchableByText(renderer!, 'Keep reviewing')!.props.onPress();
     });
 
     expect(mockedDelete).toHaveBeenCalledWith('decision_1');
+  });
+
+  it('shows unresolved cards in the active list and keeps only the five newest reviewed decisions compact', async () => {
+    const reviewed = Array.from({ length: 6 }, (_, index) => candidate({
+      id: `transaction:reviewed_${index}`,
+      transactionId: `reviewed_${index}`,
+      amount: 2000 + index,
+      safeLabel: `Reviewed label ${index}`,
+      currentDecision: {
+        id: `decision_${index}`,
+        decision: index % 2 === 0 ? 'count_as_income' : 'not_income',
+        income_source_type: index % 2 === 0 ? 'other' : null,
+        reviewed_at: `2026-06-0${index + 1}T00:00:00.000Z`,
+      },
+    }));
+    const renderer = await renderWithState({
+      candidates: [candidate({ id: 'transaction:active', transactionId: 'active' }), ...reviewed],
+      storageStatus: 'ready',
+    });
+    const text = renderedText(renderer);
+
+    expect(text).toContain('Recently reviewed');
+    expect(text).toContain('Reviewed label 5');
+    expect(text).toContain('Reviewed label 1');
+    expect(text).not.toContain('Reviewed label 0');
+    expect(text.match(/Change/g)).toHaveLength(5);
+    expect(text.match(/₹1,200/g)).toHaveLength(1);
+  });
+
+  it('keeps legacy evidence-only reviewed income honest until the safe History entry is reconfirmed', async () => {
+    const renderer = await renderWithState({
+      candidates: [candidate({
+        id: 'evidence:legacy',
+        candidateType: 'evidence',
+        transactionId: null,
+        evidenceId: 'legacy',
+        currentDecision: {
+          id: 'decision_legacy',
+          decision: 'count_as_income',
+          income_source_type: 'other',
+          reviewed_at: '2026-06-01T00:00:00.000Z',
+        },
+      })],
+      storageStatus: 'ready',
+    });
+
+    expect(renderedText(renderer)).toContain('Income confirmation needs refresh');
+    expect(renderedText(renderer)).not.toContain('Dashboard: Counted as reviewed income');
   });
 
   it('does not render raw SMS, full UPI, phone, full number, or notes', async () => {

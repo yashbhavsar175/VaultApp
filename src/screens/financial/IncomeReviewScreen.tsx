@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -18,7 +18,7 @@ import {
   IncomeReviewCandidate,
   IncomeReviewIncomeSourceType,
   IncomeReviewStorageStatus,
-  upsertIncomeReviewDecision,
+  saveIncomeReviewDecision,
 } from '../../lib/services/incomeReview';
 
 export const APPROVED_INCOME_REVIEW_ICONS = [
@@ -30,6 +30,7 @@ export const APPROVED_INCOME_REVIEW_ICONS = [
   'chevron-down',
   'close-circle-outline',
   'database-alert-outline',
+  'pencil-outline',
   'refresh',
   'text-box-search-outline',
   'wallet-plus-outline',
@@ -49,6 +50,7 @@ const INCOME_REVIEW_ICONS = {
   source: 'wallet-plus-outline',
   selected: 'check-circle-outline',
   open: 'chevron-down',
+  change: 'pencil-outline',
 } satisfies Record<string, IncomeReviewIconName>;
 
 const SOURCE_OPTIONS: Array<{ value: IncomeReviewIncomeSourceType; label: string }> = [
@@ -83,10 +85,21 @@ function decisionLabel(candidate: IncomeReviewCandidate): string {
 }
 
 function dashboardStatusLabel(candidate: IncomeReviewCandidate): string {
-  const decision = candidate.currentDecision?.decision || candidate.suggestedDecision;
-  if (decision === 'count_as_income') return 'Dashboard: Counted as reviewed income';
+  const decision = candidate.currentDecision?.decision;
+  if (decision === 'count_as_income' && candidate.transactionId) return 'Dashboard: Counted as reviewed income';
+  if (decision === 'count_as_income') return 'Dashboard: Not counted until confirmed again';
   if (decision === 'not_income') return 'Dashboard: Not counted';
   return 'Dashboard: Not counted until reviewed';
+}
+
+function recentDecisionLabel(candidate: IncomeReviewCandidate): string {
+  if (candidate.currentDecision?.decision === 'count_as_income' && candidate.transactionId) {
+    return 'Counted as income';
+  }
+  if (candidate.currentDecision?.decision === 'count_as_income') {
+    return 'Income confirmation needs refresh';
+  }
+  return 'Not income';
 }
 
 function sourceTypeLabel(value?: IncomeReviewIncomeSourceType | null): string {
@@ -129,7 +142,22 @@ export default function IncomeReviewScreen() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sourceByCandidate, setSourceByCandidate] = useState<Record<string, IncomeReviewIncomeSourceType>>({});
+  const [changingCandidateId, setChangingCandidateId] = useState<string | null>(null);
   const isMountedRef = useRef(true);
+  const loadRequestIdRef = useRef(0);
+  const activeCandidates = useMemo(() => candidates.filter(candidate => (
+    !candidate.currentDecision || candidate.currentDecision.decision === 'needs_review'
+  )), [candidates]);
+  const recentlyReviewedCandidates = useMemo(() => candidates
+    .filter(candidate => (
+      candidate.currentDecision?.decision === 'count_as_income'
+      || candidate.currentDecision?.decision === 'not_income'
+    ))
+    .sort((a, b) => (
+      new Date(b.currentDecision?.reviewed_at || 0).getTime()
+      - new Date(a.currentDecision?.reviewed_at || 0).getTime()
+    ))
+    .slice(0, 5), [candidates]);
 
   useEffect(() => {
     return () => {
@@ -138,18 +166,19 @@ export default function IncomeReviewScreen() {
   }, []);
 
   const load = useCallback(async (isRefresh = false) => {
+    const requestId = ++loadRequestIdRef.current;
     if (isRefresh) setRefreshing(true);
     try {
       const state = await getIncomeReviewScreenState({ showExcluded: true });
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || requestId !== loadRequestIdRef.current) return;
       setCandidates(state.candidates);
       setStorageStatus(state.storageStatus);
       setError(null);
     } catch {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || requestId !== loadRequestIdRef.current) return;
       setError('Could not load income review.');
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && requestId === loadRequestIdRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
@@ -179,7 +208,7 @@ export default function IncomeReviewScreen() {
       if (decision === 'needs_review' && candidate.currentDecision?.id) {
         await deleteIncomeReviewDecision(candidate.currentDecision.id);
       } else {
-        await upsertIncomeReviewDecision({
+        await saveIncomeReviewDecision({
           transaction_id: candidate.transactionId || null,
           evidence_id: candidate.evidenceId || null,
           signal_hash: candidate.signalHash || null,
@@ -190,6 +219,7 @@ export default function IncomeReviewScreen() {
           reason_code: candidate.sourceHint,
         });
       }
+      setChangingCandidateId(null);
       await load(true);
     } catch (saveError) {
       const code = (saveError as { code?: string } | null)?.code;
@@ -239,10 +269,10 @@ export default function IncomeReviewScreen() {
     );
   };
 
-  const renderCandidate = (candidate: IncomeReviewCandidate) => {
+  const renderCandidate = (candidate: IncomeReviewCandidate, key = candidate.id) => {
     const disabled = storageStatus !== 'ready' || savingId === candidate.id;
     return (
-      <Card key={candidate.id} style={styles.card}>
+      <Card key={key} style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={{ flex: 1, marginRight: spacing.sm }}>
             <Text style={[typography.h3, { color: colors.text }]}>{rupee(candidate.amount)}</Text>
@@ -310,6 +340,37 @@ export default function IncomeReviewScreen() {
     );
   };
 
+  const renderRecentlyReviewedCandidate = (candidate: IncomeReviewCandidate) => {
+    if (changingCandidateId === candidate.id) {
+      return renderCandidate(candidate, `change:${candidate.id}`);
+    }
+
+    return (
+      <Card key={candidate.id} style={styles.recentCard}>
+        <View style={styles.cardHeader}>
+          <View style={{ flex: 1, marginRight: spacing.sm }}>
+            <Text style={[typography.bodyBold, { color: colors.text }]}>{rupee(candidate.amount)}</Text>
+            <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+              {dateLabel(candidate.receivedAt)}
+            </Text>
+            <Text style={[typography.caption, { color: colors.text, marginTop: 6, fontWeight: '700' }]}>
+              {candidate.safeLabel}
+            </Text>
+            <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+              {recentDecisionLabel(candidate)}
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => setChangingCandidateId(candidate.id)}
+            style={[styles.changeButton, { borderColor: colors.border, borderRadius: borderRadius.md }]}>
+            <MaterialCommunityIcons name={INCOME_REVIEW_ICONS.change} size={15} color={colors.accent} />
+            <Text style={[typography.caption, styles.actionText, { color: colors.accent }]}>Change</Text>
+          </TouchableOpacity>
+        </View>
+      </Card>
+    );
+  };
+
   const renderContent = () => {
     if (loading) {
       return (
@@ -331,7 +392,7 @@ export default function IncomeReviewScreen() {
                 Family or friend transfers are not counted automatically.
               </Text>
               <Text style={[typography.caption, { color: colors.subtext, marginTop: 4 }]}>
-                This does not change transactions or balances.
+                Counting evidence-only income creates a safe History entry. Balances do not change.
               </Text>
               <Text style={[typography.caption, { color: colors.subtext, marginTop: 4 }]}>
                 Debt Freedom Coach will use your reviewed income decisions.
@@ -363,17 +424,24 @@ export default function IncomeReviewScreen() {
           </Card>
         ) : null}
 
-        {candidates.length === 0 ? (
-          <View style={styles.centerState}>
+        {activeCandidates.length === 0 ? (
+          <View style={[styles.centerState, recentlyReviewedCandidates.length > 0 ? styles.compactCenterState : null]}>
             <MaterialCommunityIcons name={INCOME_REVIEW_ICONS.review} size={44} color={colors.subtext} />
             <Text style={[typography.bodyBold, { color: colors.text, marginTop: spacing.md }]}>
-              No income credits need review right now.
+              No credits need review right now.
             </Text>
             <Text style={[typography.caption, styles.centerText, { color: colors.subtext, marginTop: spacing.xs }]}>
               New credits may appear here when the app cannot safely classify them.
             </Text>
           </View>
-        ) : candidates.map(renderCandidate)}
+        ) : activeCandidates.map(candidate => renderCandidate(candidate))}
+
+        {recentlyReviewedCandidates.length > 0 ? (
+          <View style={styles.recentSection}>
+            <Text style={[typography.h3, { color: colors.text }]}>Recently reviewed</Text>
+            {recentlyReviewedCandidates.map(renderRecentlyReviewedCandidate)}
+          </View>
+        ) : null}
       </View>
     );
   };
@@ -413,8 +481,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 300,
   },
+  compactCenterState: {
+    minHeight: 160,
+  },
   card: {
     gap: 12,
+  },
+  recentSection: {
+    gap: 8,
+  },
+  recentCard: {
+    gap: 8,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -479,5 +556,13 @@ const styles = StyleSheet.create({
   actionText: {
     fontWeight: '800',
     marginLeft: 6,
+  },
+  changeButton: {
+    minHeight: 36,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 });

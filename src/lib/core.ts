@@ -193,8 +193,12 @@ async function updateTransactionsCache(
   }
 }
 
+export type AddTransactionInput = Omit<Transaction, 'id' | 'user_id' | 'created_at'> & {
+  created_at?: string;
+};
+
 export async function addTransaction(
-  tx: Omit<Transaction, 'id' | 'user_id' | 'created_at'>
+  tx: AddTransactionInput
 ): Promise<Transaction> {
   const { data: { user } } = await supabase.auth.getUser();
   
@@ -236,6 +240,7 @@ export async function addTransaction(
     }
     return fields;
   }, {});
+  const createdAt = tx.created_at?.trim();
 
   const { data, error } = await supabase
     .from('transactions')
@@ -246,6 +251,7 @@ export async function addTransaction(
       note: tx.note.trim(),
       category: tx.category,
       ...metadata,
+      ...(createdAt ? { created_at: createdAt } : {}),
     })
     .select()
     .single();
