@@ -35,12 +35,14 @@ import {
 import {
   BankAccountBalanceView,
   BankAccountDetailView,
+  CreditCardBalanceView,
   getAccountBalanceViewModels,
   getBalanceFreshnessLabel,
   getBalanceKindLabel,
   getBalanceConfidenceLabel,
   getBalanceSourceLabel,
   getBankAccountDetailView,
+  getCreditCardBalanceViewModels,
   getPendingDetectedBalanceSummary,
   PendingDetectedBalanceSummary,
 } from '../../lib/services/balanceViewModel';
@@ -48,6 +50,13 @@ import { BalanceKind, BalanceOwnerType, BankAccount } from '../../types';
 
 type AccountType = BankAccount['account_type'];
 type ManualCorrectionOwnerType = Extract<BalanceOwnerType, 'bank_account' | 'credit_card' | 'loan'>;
+
+function parseAmountField(value: string, allowBlank = false): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return allowBlank ? null : NaN;
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return NaN;
+  return Number(trimmed);
+}
 
 interface CorrectionTarget {
   ownerType: ManualCorrectionOwnerType;
@@ -95,7 +104,7 @@ function buildRemovalMessage(label: string, impact: AccountRemovalImpact): strin
   const action = impact.canHardDelete
       ? 'This item has no linked history or stored balance, so it can be permanently removed.'
     : impact.willArchive
-      ? 'This hides the account/card from your active list. It does not delete transactions or change balances.'
+      ? 'This hides it from active lists. It does not delete transactions or change balances.'
       : 'This item has history or a stored balance and cannot be removed until archive support is added for this type.';
   const warnings = impact.warnings.length > 0 ? `\n\n${impact.warnings.join('\n')}` : '';
 
@@ -166,6 +175,7 @@ export default function BankConfigScreen() {
   const { colors, typography, spacing } = useTheme();
   const navigation = useNavigation();
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);
   const [archivedOwners, setArchivedOwners] = useState<ArchivedFinancialOwners>({
     bankAccounts: [],
     creditCards: [],
@@ -196,6 +206,9 @@ export default function BankConfigScreen() {
   const [accountType, setAccountType] = useState<AccountType>('savings');
   const [startingBalance, setStartingBalance] = useState('');
   const [creditLimit, setCreditLimit] = useState('');
+  const [loanTotal, setLoanTotal] = useState('');
+  const [currentOutstanding, setCurrentOutstanding] = useState('');
+  const [monthlyEmiAmount, setMonthlyEmiAmount] = useState('');
   const [upiIds, setUpiIds] = useState('');
   
   // Bank search
@@ -208,11 +221,13 @@ export default function BankConfigScreen() {
 
   const loadBalanceViews = useCallback(async () => {
     try {
-      const [accountViews, pendingSummary] = await Promise.all([
+      const [accountViews, cardViews, pendingSummary] = await Promise.all([
         getAccountBalanceViewModels(),
+        getCreditCardBalanceViewModels(),
         getPendingDetectedBalanceSummary(),
     ]);
       setBalanceViews(Object.fromEntries(accountViews.map(view => [view.accountId, view])));
+      setCreditCardViews(cardViews);
       setPendingDetectedSummary(pendingSummary);
     } catch (error) {
       console.warn('[Balances] Failed to load account balance view metadata', {
@@ -264,6 +279,17 @@ export default function BankConfigScreen() {
       console.error('Error loading accounts silently:', error);
     }
   }, [loadArchivedOwners, loadBalanceViews]);
+
+  const cardsAndAccountsReloadQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  const reloadCardsAndAccounts = useCallback(() => {
+    const reload = cardsAndAccountsReloadQueueRef.current.then(
+      () => loadAccountsSilently(),
+      () => loadAccountsSilently()
+    );
+    cardsAndAccountsReloadQueueRef.current = reload.catch(() => undefined);
+    return reload;
+  }, [loadAccountsSilently]);
 
   // Load data with cache support
   const loadAccounts = useCallback(async () => {
@@ -366,6 +392,9 @@ export default function BankConfigScreen() {
     setAccountType(account.account_type || 'savings');
     setStartingBalance(account.starting_balance?.toString() || '0');
     setCreditLimit(account.credit_limit?.toString() || '0');
+    setLoanTotal(account.loan_total?.toString() || '0');
+    setCurrentOutstanding((account.balance ?? account.starting_balance ?? 0).toString());
+    setMonthlyEmiAmount(account.monthly_emi_amount?.toString() || '');
     setUpiIds(account.upi_ids?.join(', ') || '');
     setShowAddModal(true);
   };
@@ -376,6 +405,9 @@ export default function BankConfigScreen() {
     setAccountType('savings');
     setStartingBalance('0');
     setCreditLimit('0');
+    setLoanTotal('');
+    setCurrentOutstanding('');
+    setMonthlyEmiAmount('');
     setUpiIds('');
   };
 
@@ -396,18 +428,40 @@ export default function BankConfigScreen() {
         .map(id => id.trim())
         .filter(id => id.length > 0);
 
+      const loanAmount = parseAmountField(loanTotal);
+      if (accountType === 'loan' && (loanAmount === null || !Number.isFinite(loanAmount) || loanAmount <= 0)) {
+        Alert.alert('Error', 'Please enter a valid total loan amount');
+        return;
+      }
+
+      const loanOutstanding = parseAmountField(currentOutstanding);
+      if (accountType === 'loan' && (loanOutstanding === null || !Number.isFinite(loanOutstanding) || loanOutstanding < 0)) {
+        Alert.alert('Error', 'Please enter a valid current outstanding amount');
+        return;
+      }
+
+      const parsedMonthlyEmi = parseAmountField(monthlyEmiAmount, true);
+      if (accountType === 'loan' && parsedMonthlyEmi !== null && (!Number.isFinite(parsedMonthlyEmi) || parsedMonthlyEmi < 0)) {
+        Alert.alert('Error', 'Please enter a valid monthly EMI amount');
+        return;
+      }
+
       const accountData = {
         bank_name: bankName,
         account_last4: accountLast4,
         account_type: accountType,
-        starting_balance: parseFloat(startingBalance) || 0,
+        starting_balance: accountType === 'loan' ? loanOutstanding || 0 : parseFloat(startingBalance) || 0,
         credit_limit: accountType === 'credit_card' ? parseFloat(creditLimit) || 0 : 0,
-        loan_total: 0,
+        loan_total: accountType === 'loan' ? loanAmount || 0 : 0,
+        monthly_emi_amount: accountType === 'loan' ? parsedMonthlyEmi : null,
         upi_ids: upiArray,
       };
 
       if (editingAccount) {
-        await updateBankAccount(editingAccount.id, accountData);
+        await updateBankAccount(editingAccount.id, {
+          ...accountData,
+          ...(accountType === 'loan' ? { balance: loanOutstanding || 0 } : {}),
+        });
       } else {
         await addBankAccount(accountData);
       }
@@ -437,6 +491,7 @@ export default function BankConfigScreen() {
 
           try {
             const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);
+            await reloadCardsAndAccounts();
             Toast.show({
               type: 'success',
               text1: result.action === 'archived' ? 'Hidden' : 'Removed',
@@ -444,9 +499,8 @@ export default function BankConfigScreen() {
                 ? 'Item was hidden from active lists'
                 : 'Item was removed safely',
             });
-            loadAccountsSilently();
           } catch {
-            loadAccountsSilently();
+            await reloadCardsAndAccounts();
             Toast.show({
               type: 'error',
               text1: 'Remove failed',
@@ -475,19 +529,19 @@ export default function BankConfigScreen() {
   const handleRestoreArchivedOwner = async (target: RemovalTarget) => {
     try {
       await restoreArchivedOwner(target.ownerType, target.ownerId);
+      await reloadCardsAndAccounts();
       Toast.show({
         type: 'success',
         text1: 'Restored',
         text2: 'Item is back in your active list',
       });
-      await loadAccountsSilently();
     } catch {
       Toast.show({
         type: 'error',
         text1: 'Restore failed',
         text2: 'No transactions or balances were changed',
       });
-      await loadArchivedOwners();
+      await reloadCardsAndAccounts();
     }
   };
 
@@ -587,7 +641,7 @@ export default function BankConfigScreen() {
               Loading accounts...
             </Text>
           </View>
-        ) : accounts.length === 0 && archivedOwners.bankAccounts.length + archivedOwners.creditCards.length === 0 ? (
+        ) : accounts.length === 0 && creditCardViews.length === 0 && archivedOwners.bankAccounts.length + archivedOwners.creditCards.length === 0 ? (
           <Card style={{ padding: spacing.xl, alignItems: 'center' }}>
             <MaterialCommunityIcons name="bank-off" size={48} color={colors.subtext} style={{ opacity: 0.5 }} />
             <Text style={[typography.bodyBold, { color: colors.text, marginTop: spacing.md, textAlign: 'center' }]}>
@@ -783,17 +837,121 @@ export default function BankConfigScreen() {
                         style={{
                           width: ACCOUNT_ACTION_SIZE,
                           minHeight: ACCOUNT_ACTION_SIZE,
-                          backgroundColor: '#ef4444' + '10',
+                          backgroundColor: '#f59e0b' + '12',
                           borderRadius: 12,
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}>
-                        <MaterialCommunityIcons name="trash-can-outline" size={18} color="#ef4444" />
+                        <MaterialCommunityIcons name="archive-outline" size={18} color="#f59e0b" />
                       </TouchableOpacity>
                   </View>
                 </Card>
               );
             })}
+            {creditCardViews.length > 0 && (
+              <>
+                <Text style={[typography.caption, {
+                  color: colors.subtext,
+                  marginBottom: spacing.md,
+                  marginTop: accounts.length > 0 ? spacing.sm : 0,
+                  textTransform: 'uppercase',
+                  fontWeight: '600',
+                  letterSpacing: 1,
+                }]}>
+                  Credit Cards ({creditCardViews.length})
+                </Text>
+                {creditCardViews.map((card) => {
+                  const title = card.cardName || card.bankName;
+                  const freshnessLabel = formatBalanceUpdatedAt(card.lastUpdated ?? null);
+                  const freshnessColor = card.staleWarning ? '#f59e0b' : colors.subtext;
+
+                  return (
+                    <Card key={card.creditCardId} style={{ marginBottom: spacing.lg, padding: spacing.lg }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                        <View style={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: 24,
+                          backgroundColor: '#f59e0b' + '20',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}>
+                          <MaterialCommunityIcons name="credit-card-outline" size={24} color="#f59e0b" />
+                        </View>
+
+                        <View style={{ flex: 1, marginLeft: spacing.md, minWidth: 0 }}>
+                          <Text
+                            numberOfLines={1}
+                            style={[typography.bodyBold, { color: colors.text, fontSize: 17 }]}>
+                            {title}
+                          </Text>
+                          <Text
+                            numberOfLines={1}
+                            style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 12 }]}>
+                            Credit card · {card.bankName} ••{card.cardLast4}
+                          </Text>
+                          <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
+                            Limit: {formatCurrencyDisplay(card.creditLimit)} · Available: {formatCurrencyDisplay(card.availableLimit)}
+                          </Text>
+
+                          <View style={{ marginTop: spacing.md }}>
+                            <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
+                              Outstanding
+                            </Text>
+                            <Text
+                              numberOfLines={1}
+                              adjustsFontSizeToFit
+                              minimumFontScale={0.78}
+                              style={[typography.h3, { color: colors.text, fontSize: 24, lineHeight: 30, marginTop: 2 }]}>
+                              {formatCurrencyDisplay(card.outstanding)}
+                            </Text>
+                            <Text
+                              numberOfLines={1}
+                              style={[typography.caption, { color: freshnessColor, marginTop: 6, fontSize: 12 }]}>
+                              {card.sourceLabel} · {card.confidenceLabel} · {freshnessLabel}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      <View style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: spacing.sm,
+                        marginTop: spacing.md,
+                        paddingTop: spacing.md,
+                        borderTopWidth: 1,
+                        borderTopColor: colors.border,
+                      }}>
+                        <TouchableOpacity
+                          onPress={() => openRemoveConfirm({
+                            ownerType: 'credit_card',
+                            ownerId: card.creditCardId,
+                            label: `${title} ••${card.cardLast4}`,
+                          })}
+                          accessibilityLabel="Hide or remove credit card"
+                          accessibilityRole="button"
+                          style={{
+                            minHeight: ACCOUNT_ACTION_SIZE,
+                            flex: 1,
+                          backgroundColor: '#f59e0b' + '12',
+                            borderRadius: 12,
+                            paddingHorizontal: spacing.sm,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}>
+                          <MaterialCommunityIcons name="archive-outline" size={18} color="#f59e0b" />
+                          <Text numberOfLines={1} style={[typography.caption, { color: '#f59e0b', marginLeft: spacing.xs, fontWeight: '700' }]}>
+                            Hide
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </Card>
+                  );
+                })}
+              </>
+            )}
             {archivedOwners.bankAccounts.length + archivedOwners.creditCards.length > 0 && (
               <View style={{ marginTop: spacing.sm, marginBottom: spacing.lg }}>
                 <TouchableOpacity
@@ -930,13 +1088,14 @@ export default function BankConfigScreen() {
               <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>
                 Account Type *
               </Text>
-              <View style={{ flexDirection: 'row', gap: 8, marginBottom: spacing.md }}>
-                {(['savings', 'current', 'credit_card'] as const).map((type) => (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.md }}>
+                {(['savings', 'current', 'credit_card', 'loan'] as const).map((type) => (
                   <TouchableOpacity
                     key={type}
                     onPress={() => setAccountType(type)}
                     style={{
                       flex: 1,
+                      minWidth: '45%',
                       backgroundColor: accountType === type ? colors.accent + '20' : colors.background,
                       borderColor: accountType === type ? colors.accent : colors.border,
                       borderWidth: 1,
@@ -944,11 +1103,16 @@ export default function BankConfigScreen() {
                       padding: spacing.sm,
                       alignItems: 'center',
                     }}>
-                    <Text style={[typography.caption, { 
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.75}
+                      style={[typography.caption, {
                       color: accountType === type ? colors.accent : colors.text,
                       fontWeight: accountType === type ? 'bold' : 'normal',
                     }]}>
-                      {type === 'credit_card' ? 'Credit Card' : 
+                      {type === 'credit_card' ? 'Credit Card' :
+                       type === 'loan' ? 'Loan/EMI' :
                        type === 'current' ? 'Current' : 'Savings'}
                     </Text>
                   </TouchableOpacity>
@@ -979,7 +1143,7 @@ export default function BankConfigScreen() {
               />
 
               {/* Starting Balance (for savings/current) */}
-              {accountType !== 'credit_card' && (
+              {(accountType === 'savings' || accountType === 'current') && (
                 <>
                   <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>
                     Starting Balance
@@ -1001,6 +1165,77 @@ export default function BankConfigScreen() {
                       },
                     ]}
                   />
+                </>
+              )}
+
+              {/* Loan details */}
+              {accountType === 'loan' && (
+                <>
+                  <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>
+                    Total Loan Amount *
+                  </Text>
+                  <TextInput
+                    value={loanTotal}
+                    onChangeText={setLoanTotal}
+                    placeholder="0"
+                    placeholderTextColor={colors.subtext}
+                    keyboardType="decimal-pad"
+                    style={[
+                      typography.body,
+                      {
+                        backgroundColor: colors.background,
+                        borderRadius: 8,
+                        padding: spacing.md,
+                        color: colors.text,
+                        marginBottom: spacing.md,
+                      },
+                    ]}
+                  />
+
+                  <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>
+                    Current Outstanding *
+                  </Text>
+                  <TextInput
+                    value={currentOutstanding}
+                    onChangeText={setCurrentOutstanding}
+                    placeholder="0"
+                    placeholderTextColor={colors.subtext}
+                    keyboardType="decimal-pad"
+                    style={[
+                      typography.body,
+                      {
+                        backgroundColor: colors.background,
+                        borderRadius: 8,
+                        padding: spacing.md,
+                        color: colors.text,
+                        marginBottom: spacing.md,
+                      },
+                    ]}
+                  />
+
+                  <Text style={[typography.caption, { color: colors.subtext, marginBottom: 4 }]}>
+                    Monthly EMI Amount
+                  </Text>
+                  <TextInput
+                    value={monthlyEmiAmount}
+                    onChangeText={setMonthlyEmiAmount}
+                    placeholder="Leave blank if unknown"
+                    placeholderTextColor={colors.subtext}
+                    keyboardType="decimal-pad"
+                    style={[
+                      typography.body,
+                      {
+                        backgroundColor: colors.background,
+                        borderRadius: 8,
+                        padding: spacing.md,
+                        color: colors.text,
+                        marginBottom: spacing.xs,
+                      },
+                    ]}
+                  />
+                  <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md }]}>
+                    Used for Debt Freedom monthly payment estimates.
+                  </Text>
                 </>
               )}
 

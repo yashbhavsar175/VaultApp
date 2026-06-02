@@ -83,6 +83,13 @@ const EMPTY_PENDING_BALANCE_SUMMARY: PendingDetectedBalanceSummary = {
   loan: 0,
 };
 
+function parseAmountField(value: string, allowBlank = false): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return allowBlank ? null : NaN;
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return NaN;
+  return Number(trimmed);
+}
+
 const FINANCIAL_ACTION_SIZE = 44;
 
 type ManualCorrectionOwnerType = Extract<BalanceOwnerType, 'bank_account' | 'credit_card' | 'loan'>;
@@ -199,7 +206,7 @@ function buildRemovalMessage(label: string, impact: AccountRemovalImpact): strin
   const action = impact.canHardDelete
       ? 'This item has no linked history or stored balance, so it can be permanently removed.'
     : impact.willArchive
-      ? 'This hides the account/card from your active list. It does not delete transactions or change balances.'
+      ? 'This hides it from active lists. It does not delete transactions or change balances.'
       : 'This item has history or a stored balance and cannot be removed until archive support is added for this type.';
   const countLine = `Safety dependencies found: ${historyCount}.`;
   const warnings = impact.warnings.length > 0 ? `\n\n${impact.warnings.join('\n')}` : '';
@@ -254,6 +261,7 @@ export function BanksScreen() {
   const [currentBalance, setCurrentBalance] = useState('');
   const [creditLimit, setCreditLimit] = useState('');
   const [loanTotal, setLoanTotal] = useState('');
+  const [monthlyEmiAmount, setMonthlyEmiAmount] = useState('');
   const [saving, setSaving] = useState(false);
   
   // Autocomplete state
@@ -498,6 +506,7 @@ export function BanksScreen() {
     setCurrentBalance((bank.balance ?? bank.starting_balance).toString());
     setCreditLimit(bank.credit_limit?.toString() || '0');
     setLoanTotal(bank.loan_total?.toString() || '0');
+    setMonthlyEmiAmount(bank.monthly_emi_amount?.toString() || '');
     setShowAddModal(true);
   };
 
@@ -580,6 +589,7 @@ export function BanksScreen() {
     setCurrentBalance('');
     setCreditLimit('');
     setLoanTotal('');
+    setMonthlyEmiAmount('');
     setSuggestions([]);
     setShowSuggestions(false);
   };
@@ -621,8 +631,8 @@ export function BanksScreen() {
       return;
     }
 
-    const balance = parseFloat(startingBalance || '0');
-    if (isNaN(balance)) {
+    const balance = accountType === 'loan' ? 0 : parseFloat(startingBalance || '0');
+    if (accountType !== 'loan' && isNaN(balance)) {
       Toast.show({
         type: 'error',
         text1: 'Invalid',
@@ -631,8 +641,18 @@ export function BanksScreen() {
       return;
     }
 
-    const current = parseFloat(currentBalance || '0');
-    if (editingBank && isNaN(current)) {
+    const current = accountType === 'loan'
+      ? parseAmountField(currentBalance)
+      : parseFloat(currentBalance || '0');
+    if (accountType === 'loan' && (current === null || !Number.isFinite(current) || current < 0)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Please enter a valid current outstanding amount',
+      });
+      return;
+    }
+    if (accountType !== 'loan' && editingBank && (typeof current !== 'number' || Number.isNaN(current))) {
       Toast.show({
         type: 'error',
         text1: 'Invalid',
@@ -651,12 +671,22 @@ export function BanksScreen() {
       return;
     }
 
-    const loan = parseFloat(loanTotal || '0');
-    if (accountType === 'loan' && (isNaN(loan) || loan <= 0)) {
+    const loan = parseAmountField(loanTotal);
+    if (accountType === 'loan' && (loan === null || !Number.isFinite(loan) || loan <= 0)) {
       Toast.show({
         type: 'error',
         text1: 'Invalid',
-        text2: 'Please enter a valid loan amount',
+        text2: 'Please enter a valid total loan amount',
+      });
+      return;
+    }
+
+    const parsedMonthlyEmi = parseAmountField(monthlyEmiAmount, true);
+    if (accountType === 'loan' && parsedMonthlyEmi !== null && (!Number.isFinite(parsedMonthlyEmi) || parsedMonthlyEmi < 0)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid',
+        text2: 'Please enter a valid monthly EMI amount',
       });
       return;
     }
@@ -668,10 +698,11 @@ export function BanksScreen() {
           bank_name: bankName.trim(),
           account_last4: accountLast4.trim(),
           account_type: accountType,
-          starting_balance: balance,
-          balance: current,
+          starting_balance: accountType === 'loan' ? current || 0 : balance,
+          balance: accountType === 'loan' ? current || 0 : current || 0,
           credit_limit: limit,
-          loan_total: loan,
+          loan_total: accountType === 'loan' ? loan || 0 : 0,
+          monthly_emi_amount: accountType === 'loan' ? parsedMonthlyEmi : null,
           upi_ids: [],
         });
         Toast.show({
@@ -684,9 +715,10 @@ export function BanksScreen() {
           bank_name: bankName.trim(),
           account_last4: accountLast4.trim(),
           account_type: accountType,
-          starting_balance: balance,
+          starting_balance: accountType === 'loan' ? current || 0 : balance,
           credit_limit: limit,
-          loan_total: loan,
+          loan_total: accountType === 'loan' ? loan || 0 : 0,
+          monthly_emi_amount: accountType === 'loan' ? parsedMonthlyEmi : null,
           upi_ids: [],
         });
         Toast.show({
@@ -846,7 +878,7 @@ export function BanksScreen() {
               alignItems: 'center',
               justifyContent: 'center',
             }}>
-            <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.error} />
+            <MaterialCommunityIcons name="archive-outline" size={18} color="#f59e0b" />
           </TouchableOpacity>
           </View>
       </Card>
@@ -1155,12 +1187,12 @@ export function BanksScreen() {
                         style={{
                           width: FINANCIAL_ACTION_SIZE,
                           minHeight: FINANCIAL_ACTION_SIZE,
-                          backgroundColor: colors.error + '10',
+                          backgroundColor: '#f59e0b' + '12',
                           borderRadius: 12,
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}>
-                        <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.error} />
+                        <MaterialCommunityIcons name="archive-outline" size={18} color="#f59e0b" />
                       </TouchableOpacity>
                     </View>
                   </Card>
@@ -1395,20 +1427,26 @@ export function BanksScreen() {
                     onChangeText={setLoanTotal}
                     keyboardType="numeric"
                   />
-                  {editingBank && (
-                    <>
-                      <AppInput
-                        label="Current Outstanding *"
-                        placeholder="e.g. 450000"
-                        value={currentBalance}
-                        onChangeText={setCurrentBalance}
-                        keyboardType="numeric"
-                      />
-                      <Text style={[typography.caption, { color: colors.subtext, marginTop: -spacing.sm, marginBottom: spacing.md }]}>
-                        Remaining loan amount to be paid
-                      </Text>
-                    </>
-                  )}
+                  <AppInput
+                    label="Current Outstanding *"
+                    placeholder="e.g. 450000"
+                    value={currentBalance}
+                    onChangeText={setCurrentBalance}
+                    keyboardType="numeric"
+                  />
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+                    Remaining loan amount to be paid
+                  </Text>
+                  <AppInput
+                    label="Monthly EMI Amount"
+                    placeholder="Leave blank if unknown"
+                    value={monthlyEmiAmount}
+                    onChangeText={setMonthlyEmiAmount}
+                    keyboardType="numeric"
+                  />
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+                    Used for Debt Freedom monthly payment estimates.
+                  </Text>
                 </>
               )}
 

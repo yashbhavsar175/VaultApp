@@ -414,7 +414,6 @@ export function buildDebtItemsFromRows(rows: Partial<DebtFreedomSourceRows>, opt
     if (account.account_type === 'loan') {
       const snapshot = latestSnapshot(snapshots, 'loan', account.id, ['loan_outstanding']);
       const outstanding = finitePositive(snapshot?.amount)
-        || finitePositive(account.loan_total)
         || finitePositive(Math.abs(account.balance))
         || 0;
       if (hidden && outstanding <= 0) continue;
@@ -424,15 +423,18 @@ export function buildDebtItemsFromRows(rows: Partial<DebtFreedomSourceRows>, opt
         ownerId: account.id,
         label: 'Loan account',
         outstanding,
-        minimumMonthlyPayment: null,
+        minimumMonthlyPayment: finiteNonNegative(account.monthly_emi_amount),
         dueDate: null,
         annualInterestRate: null,
-        confidence: snapshot ? confidenceFromSnapshot(snapshot) : 'estimated',
+        confidence: snapshot
+          ? confidenceFromSnapshot(snapshot)
+          : finitePositive(Math.abs(account.balance)) ? 'exact' : 'estimated',
         isHidden: hidden,
         metadata: {
           bankName: account.bank_name || null,
           last4: normalizeDigits(account.account_last4),
           source: snapshot ? 'balance_snapshots' : 'bank_accounts',
+          totalLoanAmount: finiteNonNegative(account.loan_total),
         },
       });
       if (item) debts.push(item);
@@ -815,7 +817,11 @@ function buildDataQuality(
     ),
     duplicateDebtWarningCount: debtDuplicateGroupCount(debtItems),
     missingAprCount: debtItems.filter(debt => debt.outstanding > 0 && debt.annualInterestRate === null).length,
-    missingEmiCount: debtItems.filter(debt => debt.outstanding > 0 && debt.minimumMonthlyPayment === null).length,
+    missingEmiCount: debtItems.filter(debt =>
+      debt.outstanding > 0
+      && debt.minimumMonthlyPayment === null
+      && (debt.sourceType === 'loan' || debt.sourceType === 'loan_account')
+    ).length,
     hiddenDebtCount: debtItems.filter(debt => debt.outstanding > 0 && debt.isHidden).length,
   };
 }

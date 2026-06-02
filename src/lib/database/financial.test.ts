@@ -1,5 +1,12 @@
 import { supabase } from '../core';
-import { addEMIPayment, calculateEMIComponents, getBankAccounts, getCreditCards } from './financial';
+import {
+  addBankAccount,
+  addEMIPayment,
+  calculateEMIComponents,
+  getBankAccounts,
+  getCreditCards,
+  updateBankAccount,
+} from './financial';
 
 jest.mock('../core', () => ({
   supabase: {
@@ -237,5 +244,111 @@ describe('financial account archive filtering', () => {
     expect(rows).toEqual([]);
     expect(mockSupabase.from).toHaveBeenCalledTimes(1);
     expect(failedQuery.eq).toHaveBeenCalledWith('is_archived', true);
+  });
+});
+
+describe('Loan/EMI bank account fields', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: { id: 'user_1' } },
+    });
+  });
+
+  function loanAccountPayload(
+    overrides: Partial<Parameters<typeof addBankAccount>[0]> = {}
+  ): Parameters<typeof addBankAccount>[0] {
+    return {
+      bank_name: 'HDFC Bank',
+      account_last4: '1234',
+      account_type: 'loan' as const,
+      starting_balance: 125000,
+      credit_limit: 0,
+      loan_total: 150000,
+      monthly_emi_amount: 5000,
+      upi_ids: [],
+      ...overrides,
+    };
+  }
+
+  it('saves monthly EMI amount for Loan/EMI bank accounts', async () => {
+    const insert = jest.fn().mockResolvedValue({ error: null });
+    mockSupabase.from.mockReturnValue({ insert });
+
+    await addBankAccount(loanAccountPayload());
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('bank_accounts');
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      user_id: 'user_1',
+      account_type: 'loan',
+      starting_balance: 125000,
+      balance: 125000,
+      loan_total: 150000,
+      monthly_emi_amount: 5000,
+    }));
+  });
+
+  it('saves blank Loan/EMI monthly EMI as null on update', async () => {
+    const eqUser = jest.fn().mockResolvedValue({ error: null });
+    const eqId = jest.fn(() => ({ eq: eqUser }));
+    const update = jest.fn(() => ({ eq: eqId }));
+    mockSupabase.from.mockReturnValue({ update });
+
+    await updateBankAccount('bank_1', {
+      account_type: 'loan',
+      monthly_emi_amount: null,
+    });
+
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      account_type: 'loan',
+      monthly_emi_amount: null,
+    }));
+    expect(eqId).toHaveBeenCalledWith('id', 'bank_1');
+    expect(eqUser).toHaveBeenCalledWith('user_id', 'user_1');
+  });
+
+  it('falls back safely when monthly_emi_amount is not deployed yet', async () => {
+    const missingColumnError = {
+      code: '42703',
+      message: 'column bank_accounts.monthly_emi_amount does not exist',
+    };
+    const failedInsert = jest.fn().mockResolvedValue({ error: missingColumnError });
+    const fallbackInsert = jest.fn().mockResolvedValue({ error: null });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    mockSupabase.from
+      .mockReturnValueOnce({ insert: failedInsert })
+      .mockReturnValueOnce({ insert: fallbackInsert });
+
+    await addBankAccount(loanAccountPayload());
+
+    expect(failedInsert).toHaveBeenCalledWith(expect.objectContaining({
+      monthly_emi_amount: 5000,
+    }));
+    expect(fallbackInsert).toHaveBeenCalledWith(expect.not.objectContaining({
+      monthly_emi_amount: expect.anything(),
+    }));
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Accounts] Monthly EMI field unavailable; saving account without EMI amount',
+      { table: 'bank_accounts', code: '42703' }
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('does not hide monthly EMI validation errors behind missing-column fallback', async () => {
+    const constraintError = {
+      code: '23514',
+      message: 'violates check constraint "bank_accounts_monthly_emi_amount_nonnegative"',
+    };
+    const insert = jest.fn().mockResolvedValue({ error: constraintError });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockSupabase.from.mockReturnValue({ insert });
+
+    await expect(addBankAccount(loanAccountPayload({ monthly_emi_amount: -1 })))
+      .rejects.toEqual(constraintError);
+
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
   });
 });

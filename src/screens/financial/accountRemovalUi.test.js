@@ -6,13 +6,15 @@ function read(relativePath) {
 }
 
 describe('account removal UI copy', () => {
-  it('renders hide-or-remove controls for cards and accounts', () => {
-    const source = read('src/screens/financial/FinancialScreens.tsx');
+  it('renders archive-style hide-or-remove controls for cards and accounts', () => {
+    const source = `${read('src/screens/financial/FinancialScreens.tsx')}\n${read('src/screens/financial/BankConfigScreen.tsx')}`;
 
     expect(source).toContain('accessibilityLabel="Hide or remove bank account"');
     expect(source).toContain('accessibilityLabel="Hide or remove credit card"');
     expect(source).toContain('Remove Account/Card');
     expect(source).toContain('Hide Account/Card');
+    expect(source).toContain('name="archive-outline"');
+    expect(source).not.toContain('name="trash-can-outline"');
   });
 
   it('uses safe remove/archive copy instead of promising transaction deletion', () => {
@@ -21,7 +23,7 @@ describe('account removal UI copy', () => {
     const combined = `${cardsSource}\n${setupSource}`;
 
     expect(combined).toContain('impact.willArchive ? `Hide ${label} from active lists?` : `Remove ${label}?`');
-    expect(combined).toContain('This hides the account/card from your active list. It does not delete transactions or change balances.');
+    expect(combined).toContain('This hides it from active lists. It does not delete transactions or change balances.');
     expect(combined).toContain('If this account/card has history, it will be hidden instead of permanently deleted.');
     expect(combined).toContain('This will not delete transactions.');
     expect(combined).toContain('This will not change your balances.');
@@ -50,6 +52,48 @@ describe('account removal UI copy', () => {
     expect(restoreCall).toBeGreaterThan(-1);
     expect(restoreReload).toBeGreaterThan(restoreCall);
     expect(restoreToast).toBeGreaterThan(restoreReload);
+  });
+
+  it('renders restored standalone credit cards in Bank & Card Setup active lists', () => {
+    const source = read('src/screens/financial/BankConfigScreen.tsx');
+
+    expect(source).toContain('getCreditCardBalanceViewModels');
+    expect(source).toContain('const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);');
+    expect(source).toContain('setCreditCardViews(cardViews);');
+    expect(source).toContain('creditCardViews.length === 0');
+    expect(source).toContain('Credit Cards ({creditCardViews.length})');
+    expect(source).toContain('creditCardViews.map((card) =>');
+    expect(source).toContain("ownerType: 'credit_card'");
+    expect(source).toContain('ownerId: card.creditCardId');
+    expect(source).toContain('accessibilityLabel="Hide or remove credit card"');
+    expect(source).toContain('name="archive-outline"');
+    expect(source).toContain('Hide');
+  });
+
+  it('awaits fresh Bank & Card Setup reloads after restore before success copy', () => {
+    const source = read('src/screens/financial/BankConfigScreen.tsx');
+    const reloadDeclaration = source.indexOf('const reloadCardsAndAccounts = useCallback(() => {');
+    const removeCall = source.indexOf('const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);');
+    const removeReload = source.indexOf('await reloadCardsAndAccounts();', removeCall);
+    const removeToast = source.indexOf('Toast.show({', removeCall);
+    const restoreCall = source.indexOf('await restoreArchivedOwner(target.ownerType, target.ownerId);');
+    const restoreReload = source.indexOf('await reloadCardsAndAccounts();', restoreCall);
+    const restoreToast = source.indexOf('Toast.show({', restoreCall);
+    const restoreFailure = source.slice(
+      source.indexOf("text1: 'Restore failed'") - 120,
+      source.indexOf("text1: 'Restore failed'") + 180
+    );
+
+    expect(reloadDeclaration).toBeGreaterThan(-1);
+    expect(source).toContain('cardsAndAccountsReloadQueueRef.current = reload.catch(() => undefined);');
+    expect(removeCall).toBeGreaterThan(-1);
+    expect(removeReload).toBeGreaterThan(removeCall);
+    expect(removeToast).toBeGreaterThan(removeReload);
+    expect(restoreCall).toBeGreaterThan(-1);
+    expect(restoreReload).toBeGreaterThan(restoreCall);
+    expect(restoreToast).toBeGreaterThan(restoreReload);
+    expect(restoreFailure).toContain('await reloadCardsAndAccounts();');
+    expect(source).not.toMatch(/setCreditCardViews\([^)]*filter/);
   });
 
   it('refreshes safely after remove and restore failures without optimistic filtering', () => {

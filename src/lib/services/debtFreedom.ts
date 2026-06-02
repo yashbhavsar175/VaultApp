@@ -23,6 +23,7 @@ export interface DebtItem {
     bankName?: string | null;
     last4?: string | null;
     source?: string | null;
+    totalLoanAmount?: number | null;
   };
 }
 
@@ -653,8 +654,8 @@ function calculateMinimumDebtPayment(debts: DebtItem[]): {
     hasEstimatedCardMinimum: boolean;
     hasMissingLoanPayment: boolean;
   }>((summary, debt) => {
-    const minimumPayment = finitePositive(debt.minimumMonthlyPayment);
-    if (minimumPayment) {
+    const minimumPayment = finiteNonNegative(debt.minimumMonthlyPayment);
+    if (minimumPayment !== null) {
       summary.minimumDebtPayment += minimumPayment;
     } else if (debt.sourceType === 'credit_card') {
       summary.minimumDebtPayment += debt.outstanding * 0.05;

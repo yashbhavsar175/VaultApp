@@ -32,6 +32,21 @@ describe('EMI accounting SQL', () => {
   });
 });
 
+describe('Loan/EMI bank account SQL', () => {
+  it.each([
+    'supabase-fresh-setup.sql',
+    'supabase_bank_accounts_table.sql',
+    'supabase_loan_emi_fields.sql',
+  ])('%s supports nullable nonnegative monthly EMI amount', fileName => {
+    const sql = readSqlFile(fileName);
+    const lower = sql.toLowerCase();
+
+    expect(lower).toContain('monthly_emi_amount numeric');
+    expect(sql).toContain('bank_accounts_monthly_emi_amount_nonnegative');
+    expect(lower).toContain('monthly_emi_amount is null or monthly_emi_amount >= 0');
+  });
+});
+
 describe('transfer accounting SQL', () => {
   it.each([
     'supabase-fresh-setup.sql',

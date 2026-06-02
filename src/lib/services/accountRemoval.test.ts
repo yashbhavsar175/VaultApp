@@ -291,6 +291,73 @@ describe('account removal safety', () => {
     ]);
   });
 
+  it('restores hidden credit cards without deleting dependent history rows', async () => {
+    resetTables({
+      credit_cards: [{
+        id: 'card_hidden_history',
+        user_id: 'user_1',
+        last_4_digits: '7788',
+        credit_limit: 1000,
+        current_outstanding: 400,
+        is_archived: true,
+        archived_at: '2026-05-31T00:00:00.000Z',
+      }],
+      cc_transactions: [{
+        id: 'cc_tx_restore',
+        user_id: 'user_1',
+        card_id: 'card_hidden_history',
+        amount: 25,
+      }],
+      balance_snapshots: [{
+        id: 'snap_restore',
+        user_id: 'user_1',
+        owner_type: 'credit_card',
+        owner_id: 'card_hidden_history',
+        amount: 400,
+      }],
+      credit_card_statements: [{
+        id: 'stmt_restore',
+        user_id: 'user_1',
+        credit_card_id: 'card_hidden_history',
+        total_due: 400,
+      }],
+      account_app_mappings: [{
+        id: 'mapping_restore',
+        user_id: 'user_1',
+        owner_type: 'credit_card',
+        owner_id: 'card_hidden_history',
+      }],
+    });
+
+    await restoreArchivedOwner('credit_card', 'card_hidden_history');
+
+    expect(tables.credit_cards).toEqual([
+      expect.objectContaining({
+        id: 'card_hidden_history',
+        credit_limit: 1000,
+        current_outstanding: 400,
+        is_archived: false,
+        archived_at: null,
+      }),
+    ]);
+    expect(tables.cc_transactions).toEqual([
+      expect.objectContaining({ id: 'cc_tx_restore', card_id: 'card_hidden_history' }),
+    ]);
+    expect(tables.balance_snapshots).toEqual([
+      expect.objectContaining({ id: 'snap_restore', owner_id: 'card_hidden_history' }),
+    ]);
+    expect(tables.credit_card_statements).toEqual([
+      expect.objectContaining({ id: 'stmt_restore', credit_card_id: 'card_hidden_history' }),
+    ]);
+    expect(tables.account_app_mappings).toEqual([
+      expect.objectContaining({ id: 'mapping_restore', owner_id: 'card_hidden_history' }),
+    ]);
+    expect(emitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['accounts'],
+      source: 'account_archive:restore',
+    }));
+  });
+
   it('archives a debit card with dependencies instead of deleting it', async () => {
     resetTables({
       debit_cards: [{

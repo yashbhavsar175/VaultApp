@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS bank_accounts (
   balance numeric NOT NULL DEFAULT 0,
   credit_limit numeric NOT NULL DEFAULT 0,
   loan_total numeric NOT NULL DEFAULT 0,
+  monthly_emi_amount numeric CHECK (monthly_emi_amount IS NULL OR monthly_emi_amount >= 0),
   upi_ids text[] DEFAULT '{}',
   is_archived boolean NOT NULL DEFAULT false,
   archived_at timestamptz,
@@ -195,6 +196,7 @@ ALTER TABLE bank_accounts
   ADD COLUMN IF NOT EXISTS balance numeric NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS credit_limit numeric NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS loan_total numeric NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS monthly_emi_amount numeric,
   ADD COLUMN IF NOT EXISTS upi_ids text[] DEFAULT '{}',
   ADD COLUMN IF NOT EXISTS is_archived boolean NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS archived_at timestamptz,
@@ -217,6 +219,11 @@ ALTER TABLE bank_accounts DROP CONSTRAINT IF EXISTS bank_accounts_account_type_c
 ALTER TABLE bank_accounts
   ADD CONSTRAINT bank_accounts_account_type_check
   CHECK (account_type IN ('savings', 'current', 'credit_card', 'loan'));
+
+ALTER TABLE bank_accounts DROP CONSTRAINT IF EXISTS bank_accounts_monthly_emi_amount_nonnegative;
+ALTER TABLE bank_accounts
+  ADD CONSTRAINT bank_accounts_monthly_emi_amount_nonnegative
+  CHECK (monthly_emi_amount IS NULL OR monthly_emi_amount >= 0);
 
 ALTER TABLE bank_accounts ENABLE ROW LEVEL SECURITY;
 

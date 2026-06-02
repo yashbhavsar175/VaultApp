@@ -113,6 +113,7 @@ export interface BankAccount {
   balance: number;
   credit_limit: number;
   loan_total: number;
+  monthly_emi_amount?: number | null;
   upi_ids: string[];
   is_archived?: boolean;
   archived_at?: string | null;

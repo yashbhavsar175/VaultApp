@@ -433,6 +433,29 @@ describe('debtFreedom plan debt model', () => {
     expect(result.insightTokens).toContain('credit_card_minimum_payment_estimated');
     expect(result.isEstimate).toBe(true);
   });
+
+  it('uses known loan EMI amounts and does not estimate missing loan payments', () => {
+    const withEmi = plan({
+      debts: [debt({ sourceType: 'loan_account', outstanding: 125000, minimumMonthlyPayment: 5000 })],
+    });
+    const missingEmi = plan({
+      debts: [debt({ sourceType: 'loan_account', outstanding: 125000, minimumMonthlyPayment: null })],
+    });
+
+    expect(withEmi.minimumDebtPayment).toBe(5000);
+    expect(withEmi.insightTokens).not.toContain('loan_minimum_payment_missing');
+    expect(missingEmi.minimumDebtPayment).toBe(0);
+    expect(missingEmi.insightTokens).toContain('loan_minimum_payment_missing');
+  });
+
+  it('treats zero monthly EMI as an entered payment amount, not a missing value', () => {
+    const result = plan({
+      debts: [debt({ sourceType: 'loan_account', minimumMonthlyPayment: 0 })],
+    });
+
+    expect(result.minimumDebtPayment).toBe(0);
+    expect(result.insightTokens).not.toContain('loan_minimum_payment_missing');
+  });
 });
 
 describe('debtFreedom plan income and spending', () => {

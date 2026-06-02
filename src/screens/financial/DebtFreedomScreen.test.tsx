@@ -341,6 +341,47 @@ describe('DebtFreedomScreen', () => {
     expect(text).toContain('Minimum estimated ₹2,500');
   });
 
+  it('labels Loan/EMI rows with outstanding EMI status and missing EMI copy', async () => {
+    const loanWithEmi = {
+      id: 'loan_account:with_emi',
+      sourceType: 'loan_account' as const,
+      ownerId: 'loan_with_emi',
+      label: 'Loan account',
+      outstanding: 125000,
+      minimumMonthlyPayment: 5000,
+      dueDate: null,
+      annualInterestRate: null,
+      confidence: 'exact' as const,
+      metadata: { last4: '4321', source: 'bank_accounts', totalLoanAmount: 150000 },
+    };
+    const loanMissingEmi = {
+      ...loanWithEmi,
+      id: 'loan_account:missing_emi',
+      ownerId: 'loan_missing_emi',
+      minimumMonthlyPayment: null,
+      metadata: { last4: '8765', source: 'bank_accounts', totalLoanAmount: 150000 },
+    };
+    const vm = baseViewModel({
+      debtItems: [loanWithEmi, loanMissingEmi],
+      dataQuality: {
+        ...baseViewModel().dataQuality,
+        missingEmiCount: 1,
+      },
+    });
+    vm.plan.debts = vm.debtItems;
+    vm.plan.orderedDebts = vm.debtItems;
+
+    const renderer = await renderLoaded(vm);
+    const text = renderedText(renderer);
+
+    expect(text).toContain('Loan account ••4321');
+    expect(text).toContain('Outstanding ₹1,25,000');
+    expect(text).toContain('EMI ₹5,000');
+    expect(text).toContain('Loan account ••8765');
+    expect(text).toContain('EMI unknown');
+    expect(text).toContain('EMI amount missing for this loan.');
+  });
+
   it('uses a safe fallback when debt-free estimate data is missing', async () => {
     const vm = baseViewModel({
       plan: {

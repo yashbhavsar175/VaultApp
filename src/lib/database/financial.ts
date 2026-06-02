@@ -17,6 +17,7 @@ type ArchiveListOptions = {
 };
 
 const archiveFallbackWarnings = new Set<string>();
+const monthlyEmiFallbackWarnings = new Set<string>();
 
 function isMissingArchiveColumnError(error: any): boolean {
   const message = String(error?.message || '').toLowerCase();
@@ -32,6 +33,36 @@ function warnArchiveFallbackOnce(table: 'bank_accounts' | 'credit_cards', error:
     table,
     code: error?.code || 'unknown',
   });
+}
+
+function isMissingMonthlyEmiColumnError(error: any): boolean {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42703'
+    || (
+      (error?.code === 'PGRST204' || error?.code === 'PGRST205')
+      && message.includes('monthly_emi_amount')
+    );
+}
+
+function warnMonthlyEmiFallbackOnce(error: any): void {
+  if (monthlyEmiFallbackWarnings.has('bank_accounts')) return;
+  monthlyEmiFallbackWarnings.add('bank_accounts');
+  console.warn('[Accounts] Monthly EMI field unavailable; saving account without EMI amount', {
+    table: 'bank_accounts',
+    code: error?.code || 'unknown',
+  });
+}
+
+function normalizeMonthlyEmiAmount(value?: number | null): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function omitMonthlyEmiAmount<T extends { monthly_emi_amount?: number | null }>(
+  payload: T
+): Omit<T, 'monthly_emi_amount'> {
+  const fallbackPayload = { ...payload };
+  delete fallbackPayload.monthly_emi_amount;
+  return fallbackPayload;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -81,19 +112,34 @@ export async function addBankAccount(bank: Omit<BankAccount, 'id' | 'user_id' | 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user found');
 
+    const accountType = bank.account_type || 'savings';
+    const payload = {
+      user_id: user.id,
+      bank_name: bank.bank_name,
+      account_last4: bank.account_last4,
+      account_type: accountType,
+      starting_balance: bank.starting_balance,
+      balance: bank.starting_balance, // Initialize balance with starting_balance
+      credit_limit: bank.credit_limit || 0,
+      loan_total: bank.loan_total || 0,
+      monthly_emi_amount: accountType === 'loan'
+        ? normalizeMonthlyEmiAmount(bank.monthly_emi_amount)
+        : null,
+      upi_ids: bank.upi_ids,
+    };
+
     const { error } = await supabase
       .from('bank_accounts')
-      .insert({
-        user_id: user.id,
-        bank_name: bank.bank_name,
-        account_last4: bank.account_last4,
-        account_type: bank.account_type || 'savings',
-        starting_balance: bank.starting_balance,
-        balance: bank.starting_balance, // Initialize balance with starting_balance
-        credit_limit: bank.credit_limit || 0,
-        loan_total: bank.loan_total || 0,
-        upi_ids: bank.upi_ids,
-      });
+      .insert(payload);
+
+    if (error && isMissingMonthlyEmiColumnError(error)) {
+      warnMonthlyEmiFallbackOnce(error);
+      const { error: fallbackError } = await supabase
+        .from('bank_accounts')
+        .insert(omitMonthlyEmiAmount(payload));
+      if (fallbackError) throw fallbackError;
+      return;
+    }
 
     if (error) throw error;
   } catch (error) {
@@ -110,11 +156,34 @@ export async function updateBankAccount(
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user found');
 
+    const payload = { ...bank };
+    const hasMonthlyEmiAmount = Object.prototype.hasOwnProperty.call(bank, 'monthly_emi_amount');
+
+    if (bank.account_type === 'loan' && hasMonthlyEmiAmount) {
+      payload.monthly_emi_amount = normalizeMonthlyEmiAmount(bank.monthly_emi_amount);
+    } else if (bank.account_type && bank.account_type !== 'loan') {
+      payload.monthly_emi_amount = null;
+    } else if (hasMonthlyEmiAmount) {
+      payload.monthly_emi_amount = normalizeMonthlyEmiAmount(bank.monthly_emi_amount);
+    }
+    const payloadHasMonthlyEmiAmount = Object.prototype.hasOwnProperty.call(payload, 'monthly_emi_amount');
+
     const { error } = await supabase
       .from('bank_accounts')
-      .update(bank)
+      .update(payload)
       .eq('id', id)
       .eq('user_id', user.id);
+
+    if (error && isMissingMonthlyEmiColumnError(error) && payloadHasMonthlyEmiAmount) {
+      warnMonthlyEmiFallbackOnce(error);
+      const { error: fallbackError } = await supabase
+        .from('bank_accounts')
+        .update(omitMonthlyEmiAmount(payload))
+        .eq('id', id)
+        .eq('user_id', user.id);
+      if (fallbackError) throw fallbackError;
+      return;
+    }
 
     if (error) throw error;
   } catch (error) {

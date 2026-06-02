@@ -11,6 +11,7 @@ create table if not exists bank_accounts (
   balance numeric not null default 0,
   credit_limit numeric not null default 0,
   loan_total numeric not null default 0,
+  monthly_emi_amount numeric check (monthly_emi_amount is null or monthly_emi_amount >= 0),
   upi_ids text[] default '{}',
   is_archived boolean not null default false,
   archived_at timestamptz,
@@ -26,6 +27,7 @@ add column if not exists starting_balance numeric not null default 0,
 add column if not exists balance numeric not null default 0,
 add column if not exists credit_limit numeric not null default 0,
 add column if not exists loan_total numeric not null default 0,
+add column if not exists monthly_emi_amount numeric,
 add column if not exists upi_ids text[] default '{}',
 add column if not exists is_archived boolean not null default false,
 add column if not exists archived_at timestamptz;
@@ -47,6 +49,11 @@ alter table bank_accounts drop constraint if exists bank_accounts_account_type_c
 alter table bank_accounts
 add constraint bank_accounts_account_type_check
 check (account_type in ('savings', 'current', 'credit_card', 'loan'));
+
+alter table bank_accounts drop constraint if exists bank_accounts_monthly_emi_amount_nonnegative;
+alter table bank_accounts
+add constraint bank_accounts_monthly_emi_amount_nonnegative
+check (monthly_emi_amount is null or monthly_emi_amount >= 0);
 
 -- Enable RLS
 alter table bank_accounts enable row level security;

@@ -167,6 +167,7 @@ function bankAccount(overrides: Partial<BankAccount> = {}): BankAccount {
     balance: overrides.balance ?? 0,
     credit_limit: overrides.credit_limit ?? 0,
     loan_total: overrides.loan_total ?? 90000,
+    monthly_emi_amount: overrides.monthly_emi_amount,
     upi_ids: overrides.upi_ids || [],
     is_archived: overrides.is_archived,
     archived_at: overrides.archived_at,
@@ -290,6 +291,47 @@ describe('buildDebtItemsFromRows', () => {
     }));
   });
 
+  it('maps Loan/EMI bank accounts from current outstanding and monthly EMI, not total loan amount', () => {
+    const items = buildDebtItemsFromRows({
+      bankAccounts: [
+        bankAccount({
+          id: 'loan_account_1',
+          loan_total: 150000,
+          balance: 125000,
+          monthly_emi_amount: 5000,
+        }),
+      ],
+    }, JUNE_OPTIONS);
+
+    expect(items[0]).toEqual(expect.objectContaining({
+      sourceType: 'loan_account',
+      outstanding: 125000,
+      minimumMonthlyPayment: 5000,
+      confidence: 'exact',
+      metadata: expect.objectContaining({
+        totalLoanAmount: 150000,
+      }),
+    }));
+  });
+
+  it('does not invent a Loan/EMI payment when monthly EMI is missing', () => {
+    const items = buildDebtItemsFromRows({
+      bankAccounts: [
+        bankAccount({
+          id: 'loan_account_missing_emi',
+          loan_total: 150000,
+          balance: 125000,
+          monthly_emi_amount: null,
+        }),
+      ],
+    }, JUNE_OPTIONS);
+
+    expect(items[0]).toEqual(expect.objectContaining({
+      outstanding: 125000,
+      minimumMonthlyPayment: null,
+    }));
+  });
+
   it('uses latest exact credit-card snapshot for outstanding confidence', () => {
     const items = buildDebtItemsFromRows({
       creditCards: [creditCard()],
@@ -330,7 +372,7 @@ describe('buildDebtItemsFromRows', () => {
   it('flags duplicate standalone loan and loan-style bank account groups', () => {
     const items = buildDebtItemsFromRows({
       loans: [loan({ id: 'loan_a', current_outstanding: 100000, lender_name: 'HDFC Bank' })],
-      bankAccounts: [bankAccount({ id: 'bank_loan_a', loan_total: 102000, bank_name: 'HDFC Bank' })],
+      bankAccounts: [bankAccount({ id: 'bank_loan_a', loan_total: 102000, balance: 100000, bank_name: 'HDFC Bank' })],
     }, JUNE_OPTIONS);
     const groupKeys = items.map(item => item.duplicateGroupKey).filter(Boolean);
     expect(new Set(groupKeys).size).toBe(1);
@@ -584,6 +626,30 @@ describe('getDebtFreedomCoachViewModel', () => {
     expect(viewModel.plan.warnings.map(warning => warning.code)).toContain('essential_expense_missing');
   });
 
+  it('uses Loan/EMI current outstanding and monthly EMI with hidden card debt included', async () => {
+    const viewModel = await getDebtFreedomCoachViewModel({
+      ...JUNE_OPTIONS,
+      rows: {
+        bankAccounts: [
+          bankAccount({
+            id: 'codex37a_loan',
+            loan_total: 150000,
+            balance: 125000,
+            monthly_emi_amount: 5000,
+          }),
+        ],
+        creditCards: [
+          creditCard({ id: 'hidden_card_1', current_outstanding: 400, is_archived: true }),
+          creditCard({ id: 'hidden_card_2', current_outstanding: 400, is_archived: true }),
+        ],
+      },
+    });
+
+    expect(viewModel.plan.totalDebt).toBe(125800);
+    expect(viewModel.plan.minimumDebtPayment).toBe(5040);
+    expect(viewModel.plan.warnings.map(warning => warning.code)).toContain('hidden_debt_included');
+  });
+
   it('uses confirmed monthly income from settings', async () => {
     const viewModel = await getDebtFreedomCoachViewModel({
       ...JUNE_OPTIONS,
@@ -733,7 +799,7 @@ describe('getDebtFreedomCoachViewModel', () => {
       ...JUNE_OPTIONS,
       rows: {
         loans: [loan({ id: 'loan_a', current_outstanding: 100000, lender_name: 'HDFC Bank' })],
-        bankAccounts: [bankAccount({ id: 'bank_loan_a', loan_total: 102000, bank_name: 'HDFC Bank' })],
+        bankAccounts: [bankAccount({ id: 'bank_loan_a', loan_total: 102000, balance: 100000, bank_name: 'HDFC Bank' })],
       },
     });
     expect(viewModel.debtItems).toHaveLength(2);
@@ -750,12 +816,13 @@ describe('getDebtFreedomCoachViewModel', () => {
           transaction({ id: 'unknown', category: 'Income', note: 'UPI credit received', amount: 1000 }),
         ],
         creditCards: [creditCard({ current_outstanding: 5000, is_archived: true })],
+        bankAccounts: [bankAccount({ id: 'loan_missing_emi', balance: 10000, monthly_emi_amount: null })],
       },
     });
     expect(viewModel.dataQuality).toEqual(expect.objectContaining({
       hiddenDebtCount: 1,
       needsIncomeReviewCount: 1,
-      missingAprCount: 1,
+      missingAprCount: 2,
       missingEmiCount: 1,
     }));
     expect(viewModel.plan.warnings.map(warning => warning.code)).toContain('hidden_debt_included');

@@ -245,7 +245,13 @@ function safeDebtLabel(debt: DebtItem): string {
 
 function minimumPaymentLabel(debt: DebtItem): string {
   if (debt.minimumMonthlyPayment !== null && debt.minimumMonthlyPayment !== undefined && Number.isFinite(debt.minimumMonthlyPayment)) {
+    if (debt.sourceType === 'loan' || debt.sourceType === 'loan_account') {
+      return `EMI ${rupee(debt.minimumMonthlyPayment)}`;
+    }
     return `Minimum exact ${rupee(debt.minimumMonthlyPayment)}`;
+  }
+  if (debt.sourceType === 'loan' || debt.sourceType === 'loan_account') {
+    return 'EMI unknown';
   }
   if (debt.sourceType === 'credit_card' && Number.isFinite(debt.outstanding) && debt.outstanding > 0) {
     return `Minimum estimated ${rupee(debt.outstanding * 0.05)}`;
@@ -459,8 +465,12 @@ export default function DebtFreedomScreen() {
             : null}
         </View>
       </View>
-      <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>
-        {rupee(debt.outstanding)}
+      <Text
+        style={[typography.bodyBold, { color: colors.text }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}>
+        {`Outstanding ${rupee(debt.outstanding)}`}
       </Text>
     </View>
   );
@@ -796,6 +806,17 @@ export default function DebtFreedomScreen() {
         ) : null}
 
         {renderSettingsPrompt(viewModel)}
+
+        {dataQuality.missingEmiCount > 0 ? (
+          <Card>
+            <View style={styles.sectionHeader}>
+              <DebtFreedomIcon name={DEBT_FREEDOM_ICONS.alert} size={20} color="#f59e0b" />
+              <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.sm, flex: 1 }]}>
+                EMI amount missing for this loan.
+              </Text>
+            </View>
+          </Card>
+        ) : null}
 
         {!hasDebt ? (
           <Card style={styles.emptyDebtCard}>
