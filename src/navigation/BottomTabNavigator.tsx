@@ -1,7 +1,7 @@
 import React from 'react';
 import { TouchableOpacity } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { CommonActions, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useTheme } from '../context/ThemeContext';
@@ -21,6 +21,14 @@ type TabIconProps = {
 
 const HIDDEN_DASHBOARD_TAB_SCREENS = ['Transactions', 'TransactionDetail', 'Banks', 'Analytics', 'DetectedAccountsScreen'];
 const HIDDEN_SETTINGS_TAB_SCREENS = ['Banks', 'BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'ReconciliationProposals', 'DebtFreedomCoach', 'IncomeReview', 'Places', 'PorterTest'];
+const SETTINGS_TAB_ROUTE = 'Settings';
+const SETTINGS_ROOT_ROUTE = 'SettingsHome';
+
+type SettingsTabRoute = {
+  state?: {
+    key?: string;
+  };
+};
 
 function TabBarButton(props: any) {
   // Strip null values from navigation props — TouchableOpacity only accepts undefined
@@ -48,6 +56,29 @@ function VaultTabIcon({ color, size }: TabIconProps) {
 
 function SettingsTabIcon({ color, size }: TabIconProps) {
   return <MaterialCommunityIcons name="cog" color={color} size={size} />;
+}
+
+function resetSettingsTabToRoot(navigation: any, route: SettingsTabRoute) {
+  const settingsStackKey = route.state?.key;
+
+  if (settingsStackKey) {
+    navigation.dispatch({
+      ...CommonActions.reset({
+        index: 0,
+        routes: [{ name: SETTINGS_ROOT_ROUTE }],
+      }),
+      target: settingsStackKey,
+    });
+    navigation.dispatch(CommonActions.navigate({ name: SETTINGS_TAB_ROUTE }));
+    return;
+  }
+
+  navigation.dispatch(
+    CommonActions.navigate({
+      name: SETTINGS_TAB_ROUTE,
+      params: { screen: SETTINGS_ROOT_ROUTE },
+    }),
+  );
 }
 
 export default function BottomTabNavigator() {
@@ -117,8 +148,14 @@ export default function BottomTabNavigator() {
         <Tab.Screen
           name="Settings"
           component={SettingsStack}
+          listeners={({ navigation, route }) => ({
+            tabPress: event => {
+              event.preventDefault();
+              resetSettingsTabToRoot(navigation, route as SettingsTabRoute);
+            },
+          })}
           options={({ route }) => {
-            const routeName = getFocusedRouteNameFromRoute(route) ?? 'SettingsHome';
+            const routeName = getFocusedRouteNameFromRoute(route) ?? SETTINGS_ROOT_ROUTE;
             return {
               tabBarIcon: SettingsTabIcon,
               tabBarStyle: HIDDEN_SETTINGS_TAB_SCREENS.includes(routeName)

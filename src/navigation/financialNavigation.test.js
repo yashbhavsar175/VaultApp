@@ -56,4 +56,63 @@ describe('financial account navigation reachability', () => {
     expect(settingsScreen).toContain('Income Review');
     expect(settingsScreen).toContain("navigate('IncomeReview')");
   });
+
+  it('opens Settings root after Income Review was active', () => {
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+
+    expect(bottomTabs).toContain("import { CommonActions, getFocusedRouteNameFromRoute }");
+    expect(bottomTabs).toContain("const SETTINGS_TAB_ROUTE = 'Settings'");
+    expect(bottomTabs).toContain("const SETTINGS_ROOT_ROUTE = 'SettingsHome'");
+    expect(bottomTabs).toContain('tabPress: event =>');
+    expect(bottomTabs).toContain('event.preventDefault()');
+    expect(bottomTabs).toContain('resetSettingsTabToRoot(navigation, route as SettingsTabRoute)');
+    expect(bottomTabs).toContain('const settingsStackKey = route.state?.key');
+    expect(bottomTabs).toContain('CommonActions.reset({');
+    expect(bottomTabs).toContain('routes: [{ name: SETTINGS_ROOT_ROUTE }]');
+    expect(bottomTabs).toContain('target: settingsStackKey');
+    expect(bottomTabs).toContain('navigation.dispatch(CommonActions.navigate({ name: SETTINGS_TAB_ROUTE }))');
+    expect(bottomTabs).toContain("'IncomeReview'");
+  });
+
+  it('opens Settings root after Debt Freedom was active', () => {
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+
+    expect(bottomTabs).toContain('CommonActions.reset({');
+    expect(bottomTabs).toContain('routes: [{ name: SETTINGS_ROOT_ROUTE }]');
+    expect(bottomTabs).toContain('target: settingsStackKey');
+    expect(bottomTabs).toContain("'DebtFreedomCoach'");
+  });
+
+  it('keeps hidden Settings routes hidden from the tab bar', () => {
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+
+    expect(bottomTabs).toContain('getFocusedRouteNameFromRoute(route) ?? SETTINGS_ROOT_ROUTE');
+    expect(bottomTabs).toContain('HIDDEN_SETTINGS_TAB_SCREENS.includes(routeName)');
+    expect(bottomTabs).toContain("{ display: 'none' as const }");
+
+    [
+      'IncomeReview',
+      'DebtFreedomCoach',
+      'ReconciliationProposals',
+      'BankConfigScreen',
+      'Banks',
+    ].forEach(routeName => {
+      expect(bottomTabs).toContain(`'${routeName}'`);
+    });
+  });
+
+  it('keeps Settings tab back navigation safe after resetting nested utility routes', () => {
+    const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
+
+    expect(bottomTabs).toContain('index: 0');
+    expect(bottomTabs).toContain('routes: [{ name: SETTINGS_ROOT_ROUTE }]');
+    expect(bottomTabs).toContain('target: settingsStackKey');
+    expect(bottomTabs).toContain('return;');
+  });
+
+  it('keeps the Dashboard review CTA targeting Income Review directly', () => {
+    const dashboard = read('src/screens/Dashboard.tsx');
+
+    expect(dashboard).toContain("navigate('Settings', { screen: 'IncomeReview' })");
+  });
 });
