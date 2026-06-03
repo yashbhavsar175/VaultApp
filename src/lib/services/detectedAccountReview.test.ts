@@ -963,6 +963,31 @@ describe('detected account review service', () => {
       matched_owner_id: 'card_existing',
     }));
 
+    const legacyCardItems = buildDetectedAccountReviewItems(
+      [makeDetection({
+        detection_type: 'credit_card',
+        card_last4: '2246',
+        account_last4: null,
+      })],
+      [{
+        id: 'legacy_card_bank_1',
+        user_id: 'user_1',
+        bank_name: 'HDFC Bank',
+        account_last4: '2246',
+        account_type: 'credit_card',
+      } as any],
+      [],
+      []
+    );
+
+    expect(legacyCardItems[0].duplicateOwner).toEqual(expect.objectContaining({
+      ownerType: 'bank_account',
+      ownerId: 'legacy_card_bank_1',
+      last4: '2246',
+      subtitle: 'Legacy credit card setup',
+    }));
+    expect(legacyCardItems[0].canConfirmNew).toBe(false);
+
     const debitSetup = setupSupabase({
       detected_accounts: [makeDetection({
         detection_type: 'debit_card',

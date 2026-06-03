@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import notifee from '@notifee/react-native';
 import {
   handleTransactionNotificationEvent,
+  showFinancialEventNotification,
   showTransactionConfirmation,
   showSmsFailedNotification,
   summarizeParsedSmsForLog,
@@ -12,6 +13,7 @@ describe('notification privacy paths', () => {
     jest.clearAllMocks();
     await AsyncStorage.clear();
     (notifee as any).cancelNotification = jest.fn(() => Promise.resolve());
+    (notifee as any).getNotificationSettings = jest.fn(() => Promise.resolve({ authorizationStatus: 1 }));
   });
 
   it('shows failed SMS notifications without raw body text', async () => {
@@ -46,6 +48,9 @@ describe('notification privacy paths', () => {
     const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
     const serializedPayload = JSON.stringify(payload);
 
+    expect(payload.title).toBe('Transaction saved');
+    expect(payload.body).toContain('Expense');
+    expect(payload.body).not.toContain('Sensitive Merchant');
     expect(payload.data.rawSms).toMatch(/^redacted_sms len=\d+ hash=[a-f0-9]{8}/);
     expect(serializedPayload).not.toContain('OTP 123456');
     expect(serializedPayload).not.toContain('9876543210');
@@ -116,5 +121,38 @@ describe('notification privacy paths', () => {
     expect(serializedSummary).not.toContain('codex28kr@bank');
     expect(serializedSummary).not.toContain('OTP 123456');
     expect(serializedSummary).not.toContain('Main Road');
+  });
+
+  it('shows review notifications with safe review copy when called directly', async () => {
+    await expect(showFinancialEventNotification({
+      route: 'review_queue',
+      sourceKind: 'notification',
+      amount: 1250,
+      direction: 'debit',
+      accountLast4: '1234',
+      eventId: 'runtime:notification:test:abcdef12',
+    })).resolves.toBe('sent');
+
+    const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
+    const serializedPayload = JSON.stringify(payload);
+    expect(payload.title).toBe('Money movement needs review');
+    expect(payload.body).toContain('Rs.1,250.00');
+    expect(payload.body).toContain('account ending 1234');
+    expect(payload.body).toContain('needs review');
+    expect(serializedPayload).not.toContain('runtime:notification:test:abcdef12');
+  });
+
+  it('blocks local financial notifications safely when notification permission is denied', async () => {
+    (notifee as any).getNotificationSettings = jest.fn(() => Promise.resolve({ authorizationStatus: 0 }));
+
+    await expect(showFinancialEventNotification({
+      route: 'review_queue',
+      sourceKind: 'sms',
+      amount: 99,
+      direction: 'credit',
+      eventId: 'sig_permission_denied',
+    })).resolves.toBe('blocked');
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
   });
 });

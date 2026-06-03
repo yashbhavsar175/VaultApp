@@ -26,10 +26,6 @@ import {
   ReviewClassificationPreferenceAction,
   saveReviewClassificationPreferenceForTransaction,
 } from '../../lib/services/reviewClassificationPreferences';
-import {
-  REVIEWED_EXPENSE_CATEGORY,
-  REVIEWED_EXPENSE_NOTE,
-} from '../../lib/services/reviewQueueExpenses';
 
 type TransactionDetailRouteProp = RouteProp<
   { TransactionDetail: { transactionId: string } },
@@ -56,6 +52,52 @@ interface TraceRow {
   icon: string;
   label: string;
   value: string;
+}
+
+type ConfidenceDisplaySource = 'transaction' | 'evidence' | 'manual_confirmed_decision' | 'ignored_decision' | 'needs_review_fallback';
+
+function isJestRuntime(): boolean {
+  return Boolean((globalThis as { process?: { env?: { JEST_WORKER_ID?: string } } }).process?.env?.JEST_WORKER_ID);
+}
+
+function safeIdSuffix(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(-8) : null;
+}
+
+function confidenceDisplaySource(
+  transaction: Transaction,
+  evidence?: TransactionEvidence | null
+): ConfidenceDisplaySource {
+  if (transaction.account_match_status === 'manual_confirmed') return 'manual_confirmed_decision';
+  if (transaction.account_match_status === 'ignored') return 'ignored_decision';
+  if (transaction.account_match_confidence) return 'transaction';
+  if (evidence?.confidence_level) return 'evidence';
+  return 'needs_review_fallback';
+}
+
+function logTransactionDetailConfidence(input: {
+  transaction: Transaction;
+  evidence?: TransactionEvidence | null;
+  evidenceCount: number;
+  displayedConfidence: string;
+  source: ConfidenceDisplaySource;
+}) {
+  if (!__DEV__ || isJestRuntime()) return;
+
+  console.log('[TransactionDetailConfidence]', {
+    txIdSuffix: safeIdSuffix(input.transaction.id),
+    status: input.transaction.account_match_status || null,
+    reason: input.transaction.account_match_reason || null,
+    txConfidence: input.transaction.account_match_confidence || null,
+    displayedConfidence: input.displayedConfidence,
+    displayedFrom: input.source,
+    evidenceCount: input.evidenceCount,
+    primaryEvidenceIdSuffix: safeIdSuffix(input.evidence?.id),
+    txPrimaryEvidenceIdSuffix: safeIdSuffix(input.transaction.primary_evidence_id),
+    evidenceConfidence: input.evidence?.confidence_level || null,
+    evidenceMatchStatus: input.evidence?.match_status || null,
+  });
 }
 
 function toTitleCase(value: string): string {
@@ -174,6 +216,15 @@ function formatMatchConfidence(transaction: Transaction, evidence?: TransactionE
   const confidence = transaction.account_match_confidence || evidence?.confidence_level || null;
   if (!confidence) return null;
   return toTitleCase(confidence);
+}
+
+function formatReviewDecisionConfidence(
+  transaction: Transaction,
+  evidence?: TransactionEvidence | null
+): string {
+  if (transaction.account_match_status === 'manual_confirmed') return 'User confirmed';
+  if (transaction.account_match_status === 'ignored') return 'User corrected';
+  return formatMatchConfidence(transaction, evidence) || 'Needs review';
 }
 
 function dashboardStatus(transaction: Transaction): string {
@@ -470,14 +521,18 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
   const handleExpenseCountedState = async (countAsExpense: boolean) => {
     if (!transaction) return;
+    const selectedEvidence = selectPrimaryEvidence(transaction, transactionEvidence);
 
     try {
       const updatedTransaction = await updateTransaction(transaction.id, countAsExpense
         ? {
           account_match_status: 'manual_confirmed',
           account_match_reason: 'review_detail_expense_confirmed',
-          category: REVIEWED_EXPENSE_CATEGORY,
-          note: REVIEWED_EXPENSE_NOTE,
+          ...(transaction.account_match_confidence
+            ? { account_match_confidence: transaction.account_match_confidence }
+            : selectedEvidence?.confidence_level
+              ? { account_match_confidence: selectedEvidence.confidence_level }
+              : {}),
         }
         : {
           account_match_status: 'ignored',
@@ -563,6 +618,15 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const sourceType = primaryEvidence?.source_type || transaction.sms_source || 'manual';
   const matchStatus = formatMatchStatus(transaction, primaryEvidence);
   const matchConfidence = formatMatchConfidence(transaction, primaryEvidence);
+  const reviewDecisionConfidence = formatReviewDecisionConfidence(transaction, primaryEvidence);
+  const reviewDecisionConfidenceSource = confidenceDisplaySource(transaction, primaryEvidence);
+  logTransactionDetailConfidence({
+    transaction,
+    evidence: primaryEvidence,
+    evidenceCount: transactionEvidence.length,
+    displayedConfidence: reviewDecisionConfidence,
+    source: reviewDecisionConfidenceSource,
+  });
   const matchReason = safeDisplayText(transaction.account_match_reason || primaryEvidence?.match_reason_code, 64);
   const referenceNumber = safeReferenceNumber(primaryEvidence?.reference_number || transaction.reference_number);
   const amountFromEvidence = primaryEvidence?.amount != null
@@ -602,13 +666,13 @@ export default function TransactionDetail({ route, navigation }: Props) {
     isAutomaticTransaction
   );
   const preferenceStatus = savedPreferenceAction === 'count_as_expense'
-    ? 'Suggest expense next time'
+    ? 'Saved: suggest expense next time'
     : savedPreferenceAction === 'not_expense'
-      ? 'Suggest not expense next time'
+      ? 'Saved: suggest not expense next time'
       : savedPreferenceAction === 'suggest_category'
-        ? 'Suggest this category next time'
+        ? 'Saved: suggest this category next time'
         : savedPreferenceAction === 'always_ask'
-          ? 'Always ask before saving'
+          ? 'Saved: always ask next time'
           : null;
 
   return (
@@ -751,7 +815,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
             <DetailRow
               icon="speedometer"
               label="Confidence"
-              value={matchConfidence || (transaction.account_match_status === 'manual_confirmed' ? 'User confirmed' : 'Needs review')}
+              value={reviewDecisionConfidence}
               colors={colors}
               typography={typography}
               spacing={spacing}
@@ -777,7 +841,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
                 style={[styles.controlButton, { borderColor: colors.border }]}
                 onPress={() => setIsEditModalVisible(true)}
               >
-                <MaterialCommunityIcons name="tag-edit-outline" size={18} color={colors.accent} />
+                <MaterialCommunityIcons name="tag-text-outline" size={18} color={colors.accent} />
                 <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
                   Change category
                 </Text>
@@ -801,9 +865,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
             )}
             <View style={styles.preferenceActions}>
               {([
-                ['always_ask', 'comment-question-outline', 'Always ask me'],
+                ['always_ask', 'bell-ring-outline', 'Always ask next time'],
                 ['count_as_expense', 'cash-check', 'Count as expense next time'],
-                ['not_expense', 'cash-remove', 'Do not count as expense'],
+                ['not_expense', 'cash-remove', 'Suggest not expense next time'],
                 ['suggest_category', 'tag-heart-outline', 'Suggest this category next time'],
               ] as const).map(([action, icon, label]) => (
                 <TouchableOpacity

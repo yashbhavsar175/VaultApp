@@ -9,6 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import {
   isSpamMessage,
+  showFinancialEventNotification,
   showSmsFailedNotification,
   showTransactionConfirmation
 } from '../services/notifications';
@@ -60,6 +61,7 @@ interface ParsedTransaction {
   source: 'bank' | 'upi';
   rawSender: string;
   accountLast4?: string;
+  cardLast4?: string;
   upiId?: string;
 }
 
@@ -135,6 +137,20 @@ const TRANSACTION_CONTEXT_PATTERNS = [
   /\b(?:to|from|at)\s+[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\b/i,
 ];
 
+const FINANCIAL_EVENT_DEBUG =
+  typeof __DEV__ === 'undefined' ? true : __DEV__;
+
+type EventDebugDetails = {
+  sourceKind: 'sms' | 'notification';
+  direction?: 'credit' | 'debit';
+  amount?: number;
+  accountLast4?: string;
+  cardLast4?: string;
+  routeDecision?: string;
+  reasonCode?: string;
+  eventIdSuffix?: string;
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SHARED HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -185,11 +201,22 @@ function identifySource(sender: string, body = ''): 'bank' | 'upi' | 'unknown' {
 
 function extractAccountLast4(body: string): string | undefined {
   const accountPatterns = [
-    /(?:SuperCard|Card)\s+(\d{4})/i,
-    /(?:A\/?C|Acct|Account)\s*(?:no\.?|number)?\s*[-:xX*]*\s*(\d{3,5})/i,
-    /XX(\d{4})/i,
+    /(?:A\/?C|Acct|Account)\s*(?:ending\s*(?:with\s*)?|no\.?|number)?\s*[-:xX* ]*\s*(\d{3,5})/i,
   ];
   for (const pattern of accountPatterns) {
+    const match = body.match(pattern);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+function extractCreditCardLast4(body: string): string | undefined {
+  const cardPatterns = [
+    /\b(?:credit\s*)?card\b[^.]{0,48}?\b(?:ending|ended)\s*(?:with\s*)?[-:xX* ]*(\d{4})\b/i,
+    /\b(?:credit\s*)?card(?:\s*(?:no\.?|number))?\s*(?:xx|x{2,}|[*]+)\s*(\d{4})\b/i,
+    /\bcc\b[^.]{0,32}?\b(?:ending|ended|xx|x{2,}|[*]+)\s*(?:with\s*)?[-:xX* ]*(\d{4})\b/i,
+  ];
+  for (const pattern of cardPatterns) {
     const match = body.match(pattern);
     if (match) return match[1];
   }
@@ -327,8 +354,198 @@ function summarizeParsedTransactionForLog(parsed: ParsedTransaction) {
     referencePresent: Boolean(parsed.reference),
     merchantPresent: Boolean(parsed.merchant),
     accountLast4Present: Boolean(parsed.accountLast4),
+    cardLast4Present: Boolean(parsed.cardLast4),
     upiIdPresent: Boolean(parsed.upiId),
   };
+}
+
+function safeErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'unknown_error';
+  const value = (error as { code?: unknown; name?: unknown; status?: unknown }).code
+    || (error as { name?: unknown }).name
+    || (error as { status?: unknown }).status;
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || 'unknown_error'
+    : 'unknown_error';
+}
+
+function suffixId(value?: string | null): string | undefined {
+  const safe = value?.replace(/[^A-Za-z0-9_:-]/g, '');
+  if (!safe) return undefined;
+  return safe.slice(-12);
+}
+
+function normalizeNameParts(value?: string | null): string[] {
+  return (value || '')
+    .toLowerCase()
+    .replace(/[^a-z\s.'-]+/g, ' ')
+    .split(/\s+/)
+    .map(part => part.replace(/[^a-z]+/g, ''))
+    .filter(part => part.length >= 2)
+    .sort();
+}
+
+function sameNameTokenSet(left?: string | null, right?: string | null): boolean {
+  const leftParts = normalizeNameParts(left);
+  const rightParts = normalizeNameParts(right);
+  if (leftParts.length < 2 || rightParts.length < 2) return false;
+  if (leftParts.length !== rightParts.length) return false;
+  return leftParts.every((part, index) => part === rightParts[index]);
+}
+
+async function getProfileNameForSelfMatch(userId: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+      console.warn('[SelfTransferPairing] Profile lookup unavailable', {
+        errorCode: safeErrorCode(error),
+      });
+      return null;
+    }
+
+    return typeof data?.full_name === 'string' ? data.full_name : null;
+  } catch (error) {
+    console.warn('[SelfTransferPairing] Profile lookup failed', {
+      errorCode: safeErrorCode(error),
+    });
+    return null;
+  }
+}
+
+async function isDebitToCurrentUser(userId: string, parsed: ParsedTransaction): Promise<boolean> {
+  if (parsed.type !== 'debit' || !parsed.merchant) return false;
+  const profileName = await getProfileNameForSelfMatch(userId);
+  return sameNameTokenSet(parsed.merchant, profileName);
+}
+
+function eventDebugLog(message: string, details: Record<string, unknown>): void {
+  if (!FINANCIAL_EVENT_DEBUG) return;
+  console.log(message, details);
+}
+
+function eventDebugWarn(message: string, details: Record<string, unknown>): void {
+  if (!FINANCIAL_EVENT_DEBUG) return;
+  console.warn(message, details);
+}
+
+async function resolveAutomaticPolicy(input: {
+  userId: string;
+  parsed: ParsedTransaction;
+  text: string;
+  sourceKind: 'sms' | 'notification';
+}): Promise<ReturnType<typeof getAutomaticTransactionPolicy> & { sameUserNameMatch?: boolean }> {
+  const sameUserNameMatch = await isDebitToCurrentUser(input.userId, input.parsed);
+  if (sameUserNameMatch) {
+    eventDebugLog('[SelfTransferPairing] Policy check', {
+      sourceKind: input.sourceKind,
+      amount: input.parsed.amount,
+      direction: input.parsed.type,
+      accountLast4: input.parsed.accountLast4,
+      sameUserNameMatch: true,
+      pairedEvidenceFound: false,
+      routeDecision: 'review_queue',
+      reasonCode: 'self_transfer',
+    });
+    return { action: 'review', reasonCode: 'self_transfer', sameUserNameMatch };
+  }
+
+  const policy = getAutomaticTransactionPolicy(input.parsed.type, input.text);
+  eventDebugLog('[SelfTransferPairing] Policy check', {
+    sourceKind: input.sourceKind,
+    amount: input.parsed.amount,
+    direction: input.parsed.type,
+    accountLast4: input.parsed.accountLast4,
+    sameUserNameMatch: false,
+    pairedEvidenceFound: false,
+    routeDecision: policy.action === 'review' ? 'review_queue' : 'stored_transaction',
+    reasonCode: policy.action === 'review' ? policy.reasonCode : policy.type,
+  });
+  return { ...policy, sameUserNameMatch };
+}
+
+async function showReviewNotificationForPolicy(input: {
+  reasonCode: AutomaticTransactionReviewReason;
+  sourceKind: 'sms' | 'notification';
+  parsed: ParsedTransaction;
+  eventId: string;
+}): Promise<void> {
+  if (input.reasonCode !== 'self_transfer') return;
+
+  await showFinancialEventNotification({
+    route: 'review_queue',
+    sourceKind: input.sourceKind,
+    amount: input.parsed.amount,
+    direction: 'neutral',
+    accountLast4: input.parsed.accountLast4,
+    cardLast4: input.parsed.cardLast4,
+    eventId: input.eventId,
+  });
+}
+
+function safeEventDetails(input: {
+  sourceKind: 'sms' | 'notification';
+  parsed?: ParsedTransaction | null;
+  routeDecision?: string;
+  reasonCode?: string;
+  eventId?: string | null;
+}) {
+  return {
+    sourceKind: input.sourceKind,
+    direction: input.parsed?.type,
+    amount: input.parsed?.amount,
+    accountLast4: input.parsed?.accountLast4,
+    cardLast4: input.parsed?.cardLast4,
+    routeDecision: input.routeDecision,
+    reasonCode: input.reasonCode,
+    eventIdSuffix: suffixId(input.eventId),
+  };
+}
+
+function recordSmsEvidenceWithDebug(
+  input: Parameters<typeof recordSmsTransactionEvidence>[0],
+  details: EventDebugDetails
+): void {
+  eventDebugLog('[AutoTransactionDebug] Evidence write attempted', {
+    ...details,
+    sourceKind: 'sms',
+  });
+  void recordSmsTransactionEvidence(input)
+    .then(status => eventDebugLog('[AutoTransactionDebug] Evidence write completed', {
+      ...details,
+      sourceKind: 'sms',
+      status,
+    }))
+    .catch(error => eventDebugWarn('[AutoTransactionDebug] Evidence write failed', {
+      ...details,
+      sourceKind: 'sms',
+      errorCode: safeErrorCode(error),
+    }));
+}
+
+function recordNotificationEvidenceWithDebug(
+  input: Parameters<typeof recordNotificationTransactionEvidence>[0],
+  details: EventDebugDetails
+): void {
+  eventDebugLog('[AutoTransactionDebug] Evidence write attempted', {
+    ...details,
+    sourceKind: 'notification',
+  });
+  void recordNotificationTransactionEvidence(input)
+    .then(status => eventDebugLog('[AutoTransactionDebug] Evidence write completed', {
+      ...details,
+      sourceKind: 'notification',
+      status,
+    }))
+    .catch(error => eventDebugWarn('[AutoTransactionDebug] Evidence write failed', {
+      ...details,
+      sourceKind: 'notification',
+      errorCode: safeErrorCode(error),
+    }));
 }
 
 function hashFromRedactedRawText(value: string): string | null {
@@ -343,7 +560,7 @@ async function enqueueAutomaticReviewCandidate(input: {
   timestamp: number;
   reasonCode: AutomaticTransactionReviewReason;
   paymentAppAccountMatch?: PaymentAppBankAccountMatch | null;
-}): Promise<{ enqueued: boolean; mappedBankAccountId: string | null }> {
+}): Promise<{ enqueued: boolean; mappedBankAccountId: string | null; reviewItemId: string }> {
   const candidate = processSignal({
     rawText: input.text,
     senderOrPackage: input.senderOrPackage,
@@ -393,11 +610,16 @@ async function enqueueAutomaticReviewCandidate(input: {
   console.info('[AutoTransaction] Routed to review queue', {
     sourceType: input.sourceType,
     direction: candidate.direction,
+    amount: candidate.amount,
+    accountLast4: candidate.accountLast4,
+    cardLast4: candidate.cardLast4,
     reasonCode: input.reasonCode,
+    queueItemIdSuffix: suffixId(candidate.signalId),
   });
 
   return {
     enqueued,
+    reviewItemId: candidate.signalId,
     mappedBankAccountId: input.paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
       ? input.paymentAppAccountMatch.mappedBankAccountId || null
       : null,
@@ -456,6 +678,7 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     // Extract reference
     const refPatterns = [
       /\b(?:UPI\s*Ref(?:erence)?|UTR|RRN|Ref(?:erence)?|Transaction ID|TXN ID)\s*(?:no\.?|number|id)?\s*[:#-]?\s*([A-Z0-9]{6,})\b/i,
+      /\bUPI\s+transaction\s+reference\s+no\.?\s*[:#-]?\s*([A-Z0-9]{6,})\b/i,
       /(?:for\s+)?UPI\s*-?\s*(\d{6,})/i,
       /\b(?:UPI ID|UPI)\s*[:#-]?\s*([A-Z0-9]{6,})\b/i,
     ];
@@ -499,9 +722,10 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     const balance = balanceMatch ? parseFloat(balanceMatch[1].replace(/,/g, '')) : undefined;
 
     const accountLast4 = extractAccountLast4(body);
+    const cardLast4 = extractCreditCardLast4(body);
     const upiId = extractUpiIdFromText(body) || undefined;
 
-    return { amount, type, reference, merchant, balance, source, rawSender: sender, accountLast4, upiId };
+    return { amount, type, reference, merchant, balance, source, rawSender: sender, accountLast4, cardLast4, upiId };
   } catch (error) {
     console.error('Error parsing transaction:', error);
     return null;
@@ -853,7 +1077,7 @@ export const processSms = async (taskData: SmsData) => {
       return;
     }
 
-    await recordBalanceSignalSafely({
+    const balanceChanged = await recordBalanceSignalSafely({
       userId,
       text: taskData.body,
       senderOrPackage: taskData.sender,
@@ -864,14 +1088,31 @@ export const processSms = async (taskData: SmsData) => {
     const parsed = parseTransaction(taskData.body, taskData.sender);
     if (!parsed) {
       console.log('SMS not recognized as financial transaction');
+      eventDebugLog('[AutoTransactionDebug] Route decision', {
+        sourceKind: 'sms',
+        routeDecision: balanceChanged ? 'balance_only' : 'ignored',
+        reasonCode: balanceChanged ? 'balance_signal_recorded' : 'parse_failed',
+      });
+      if (balanceChanged) {
+        void showFinancialEventNotification({
+          route: 'balance_only',
+          sourceKind: 'sms',
+          eventId: `${taskData.timestamp}`,
+        });
+      }
       return;
     }
 
     console.log('Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
-    const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, taskData.body);
+    const automaticPolicy = await resolveAutomaticPolicy({
+      userId,
+      parsed,
+      text: taskData.body,
+      sourceKind: 'sms',
+    });
     if (automaticPolicy.action === 'review') {
-      const { enqueued } = await enqueueAutomaticReviewCandidate({
+      const { enqueued, reviewItemId } = await enqueueAutomaticReviewCandidate({
         userId,
         text: taskData.body,
         senderOrPackage: taskData.sender,
@@ -879,10 +1120,10 @@ export const processSms = async (taskData: SmsData) => {
         timestamp: taskData.timestamp,
         reasonCode: automaticPolicy.reasonCode,
       });
-      let balanceChanged = false;
+      let reviewBalanceChanged = false;
       if (enqueued) {
         const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
-        balanceChanged = await recordEstimatedBalanceMovementSafely({
+        reviewBalanceChanged = await recordEstimatedBalanceMovementSafely({
           userId,
           bankAccountId: matchedAccountId,
           parsed,
@@ -892,19 +1133,33 @@ export const processSms = async (taskData: SmsData) => {
           timestamp: taskData.timestamp,
         });
       }
-      if (enqueued || balanceChanged) {
+      if (enqueued || reviewBalanceChanged) {
         emitFinanceDataChanged({
           areas: ['review'],
           source: 'sms:review',
         });
       }
-      void recordSmsTransactionEvidence({
+      const debugDetails = safeEventDetails({
+        sourceKind: 'sms',
+        parsed,
+        routeDecision: 'review_queue',
+        reasonCode: automaticPolicy.reasonCode,
+        eventId: reviewItemId,
+      });
+      eventDebugLog('[AutoTransactionDebug] Route decision', debugDetails);
+      recordSmsEvidenceWithDebug({
         text: taskData.body,
         sender: taskData.sender,
         parsed,
         transactionId: null,
         timestamp: taskData.timestamp,
-      }).catch(() => undefined);
+      }, debugDetails);
+      await showReviewNotificationForPolicy({
+        reasonCode: automaticPolicy.reasonCode,
+        sourceKind: 'sms',
+        parsed,
+        eventId: reviewItemId,
+      });
       return;
     }
 
@@ -929,13 +1184,18 @@ export const processSms = async (taskData: SmsData) => {
 
     if (duplicate) {
       console.log('Duplicate transaction detected - skipping');
-      void recordSmsTransactionEvidence({
+      recordSmsEvidenceWithDebug({
         text: taskData.body,
         sender: taskData.sender,
         parsed,
         transactionId: duplicate.id || null,
         timestamp: taskData.timestamp,
-      }).catch(() => undefined);
+      }, safeEventDetails({
+        sourceKind: 'sms',
+        parsed,
+        routeDecision: 'duplicate',
+        eventId: duplicate.id || null,
+      }));
       return;
     }
 
@@ -1056,13 +1316,20 @@ export const processSms = async (taskData: SmsData) => {
 
     // Show confirmation notification - this should not fail the whole operation
     if (transactionId) {
-      void recordSmsTransactionEvidence({
+      const debugDetails = safeEventDetails({
+        sourceKind: 'sms',
+        parsed,
+        routeDecision: 'stored_transaction',
+        eventId: transactionId,
+      });
+      eventDebugLog('[AutoTransactionDebug] Route decision', debugDetails);
+      recordSmsEvidenceWithDebug({
         text: taskData.body,
         sender: taskData.sender,
         parsed,
         transactionId,
         timestamp: taskData.timestamp,
-      }).catch(() => undefined);
+      }, debugDetails);
 
       try {
         await showTransactionConfirmation(
@@ -1148,7 +1415,7 @@ export const processNotification = async (taskData: any) => {
       sourcePackage: notif.app,
     });
 
-    await recordBalanceSignalSafely({
+    const balanceChanged = await recordBalanceSignalSafely({
       userId,
       text: combinedText,
       senderOrPackage: notif.app,
@@ -1206,14 +1473,30 @@ export const processNotification = async (taskData: any) => {
     const parsed = parseTransaction(combinedText, sender);
     if (!parsed) {
       console.log('Notification not recognized as financial transaction');
+      eventDebugLog('[AutoTransactionDebug] Route decision', {
+        sourceKind: 'notification',
+        routeDecision: balanceChanged ? 'balance_only' : 'ignored',
+        reasonCode: balanceChanged ? 'balance_signal_recorded' : 'parse_failed',
+      });
+      if (balanceChanged) {
+        void showFinancialEventNotification({
+          route: 'balance_only',
+          sourceKind: 'notification',
+          eventId: `${notif.time || Date.now()}`,
+        });
+      }
       if (hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText)) {
-        void recordNotificationTransactionEvidence({
+        recordNotificationEvidenceWithDebug({
           text: combinedText,
           sourcePackage: notif.app,
           sender,
           transactionId: null,
           timestamp: notif.time || Date.now(),
-        }).catch(() => undefined);
+        }, {
+          sourceKind: 'notification',
+          routeDecision: 'ignored',
+          reasonCode: 'parse_failed',
+        });
 
         await showSmsFailedNotification(combinedText, sender, 'Parse failed', {
           kind: 'notification',
@@ -1226,9 +1509,14 @@ export const processNotification = async (taskData: any) => {
 
     console.log('✅ Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
-    const automaticPolicy = getAutomaticTransactionPolicy(parsed.type, combinedText);
+    const automaticPolicy = await resolveAutomaticPolicy({
+      userId,
+      parsed,
+      text: combinedText,
+      sourceKind: 'notification',
+    });
     if (automaticPolicy.action === 'review') {
-      const { enqueued, mappedBankAccountId } = await enqueueAutomaticReviewCandidate({
+      const { enqueued, mappedBankAccountId, reviewItemId } = await enqueueAutomaticReviewCandidate({
         userId,
         text: combinedText,
         senderOrPackage: notif.app,
@@ -1237,11 +1525,11 @@ export const processNotification = async (taskData: any) => {
         reasonCode: automaticPolicy.reasonCode,
         paymentAppAccountMatch,
       });
-      let balanceChanged = false;
+      let reviewBalanceChanged = false;
       if (enqueued) {
         const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance)
           || mappedBankAccountId;
-        balanceChanged = await recordEstimatedBalanceMovementSafely({
+        reviewBalanceChanged = await recordEstimatedBalanceMovementSafely({
           userId,
           bankAccountId: matchedAccountId,
           parsed,
@@ -1254,20 +1542,34 @@ export const processNotification = async (taskData: any) => {
             : undefined,
         });
       }
-      if (enqueued || balanceChanged) {
+      if (enqueued || reviewBalanceChanged) {
         emitFinanceDataChanged({
           areas: ['review'],
           source: 'notification:review',
         });
       }
-      void recordNotificationTransactionEvidence({
+      const debugDetails = safeEventDetails({
+        sourceKind: 'notification',
+        parsed,
+        routeDecision: 'review_queue',
+        reasonCode: automaticPolicy.reasonCode,
+        eventId: reviewItemId,
+      });
+      eventDebugLog('[AutoTransactionDebug] Route decision', debugDetails);
+      recordNotificationEvidenceWithDebug({
         text: combinedText,
         sourcePackage: notif.app,
         sender,
         parsed,
         transactionId: null,
         timestamp: notif.time || Date.now(),
-      }).catch(() => undefined);
+      }, debugDetails);
+      await showReviewNotificationForPolicy({
+        reasonCode: automaticPolicy.reasonCode,
+        sourceKind: 'notification',
+        parsed,
+        eventId: reviewItemId,
+      });
       return;
     }
 
@@ -1294,14 +1596,19 @@ export const processNotification = async (taskData: any) => {
 
     if (duplicate) {
       console.log('Duplicate transaction detected - skipping');
-      void recordNotificationTransactionEvidence({
+      recordNotificationEvidenceWithDebug({
         text: combinedText,
         sourcePackage: notif.app,
         sender,
         parsed,
         transactionId: duplicate.id || null,
         timestamp: notif.time || Date.now(),
-      }).catch(() => undefined);
+      }, safeEventDetails({
+        sourceKind: 'notification',
+        parsed,
+        routeDecision: 'duplicate',
+        eventId: duplicate.id || null,
+      }));
       return;
     }
 
@@ -1429,14 +1736,21 @@ export const processNotification = async (taskData: any) => {
 
     // Show confirmation notification - this should not fail the whole operation
     if (transactionId) {
-      void recordNotificationTransactionEvidence({
+      const debugDetails = safeEventDetails({
+        sourceKind: 'notification',
+        parsed,
+        routeDecision: 'stored_transaction',
+        eventId: transactionId,
+      });
+      eventDebugLog('[AutoTransactionDebug] Route decision', debugDetails);
+      recordNotificationEvidenceWithDebug({
         text: combinedText,
         sourcePackage: notif.app,
         sender,
         parsed,
         transactionId,
         timestamp: notif.time || Date.now(),
-      }).catch(() => undefined);
+      }, debugDetails);
 
       try {
         await showTransactionConfirmation(

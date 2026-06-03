@@ -24,6 +24,21 @@ import {
   IncomeReviewDecision,
 } from '../lib/services/incomeReview';
 import { getReviewQueue, ReviewItem } from '../lib/services/autoTransactionReviewQueue';
+import {
+  DashboardSummarySnapshot,
+  getCachedDashboardSummary,
+  setCachedDashboardSummary,
+} from '../lib/services/dashboardSummaryCache';
+
+type DashboardDebugPayload = Record<string, boolean | number | string | null | undefined>;
+
+function logDashboardDebug(event: string, payload: DashboardDebugPayload) {
+  const maybeProcess = (globalThis as { process?: { env?: { JEST_WORKER_ID?: string } } }).process;
+  const isJestRuntime = Boolean(maybeProcess?.env?.JEST_WORKER_ID);
+  if (__DEV__ && !isJestRuntime) {
+    console.log('[DashboardDebug]', event, payload);
+  }
+}
 
 // Enable LayoutAnimation on Android
 const isFabricEnabled = (globalThis as any).nativeFabricUIManager != null;
@@ -45,6 +60,9 @@ export default function Dashboard() {
   const [incomeReviewDecisions, setIncomeReviewDecisions] = useState<IncomeReviewDecision[]>([]);
   const [incomeReviewCandidates, setIncomeReviewCandidates] = useState<IncomeReviewCandidate[]>([]);
   const [transactionReviewItems, setTransactionReviewItems] = useState<ReviewItem[]>([]);
+  const [cachedDashboardSummary, setCachedDashboardSummaryState] = useState<DashboardSummarySnapshot | null>(null);
+  const [hasResolvedDashboardData, setHasResolvedDashboardData] = useState(false);
+  const [hasResolvedIncomeReviewDecisions, setHasResolvedIncomeReviewDecisions] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const isMountedRef = useRef(true);
@@ -156,11 +174,38 @@ export default function Dashboard() {
     () => computeDashboardReviewBreakdown(reviewPromptSummary, incomeReviewCandidates, transactionReviewItems),
     [incomeReviewCandidates, reviewPromptSummary, transactionReviewItems]
   );
-  const reviewPromptCount = reviewBreakdown.totalReviewableCount;
-  const hasMixedReviewSources = reviewBreakdown.incomeReviewCount > 0
-    && reviewBreakdown.transactionReviewCount > 0;
+  const shouldUseCachedMonthlyTotals = Boolean(
+    cachedDashboardSummary
+    && (!hasResolvedDashboardData || !hasResolvedIncomeReviewDecisions)
+  );
+  const shouldUseCachedPeopleSummary = Boolean(
+    cachedDashboardSummary
+    && !hasResolvedDashboardData
+    && peopleLedger.length === 0
+  );
+  const shouldUseCachedReviewBreakdown = Boolean(
+    cachedDashboardSummary
+    && !hasResolvedDashboardData
+    && incomeReviewCandidates.length === 0
+    && transactionReviewItems.length === 0
+  );
+  const hasCachedDashboardDisplay = shouldUseCachedMonthlyTotals
+    || shouldUseCachedPeopleSummary
+    || shouldUseCachedReviewBreakdown;
+  const displayMonthlyTotals = shouldUseCachedMonthlyTotals
+    ? cachedDashboardSummary!.monthlyTotals
+    : monthlyTotals;
+  const displayPeopleSummary = shouldUseCachedPeopleSummary
+    ? cachedDashboardSummary!.peopleSummary
+    : peopleSummary;
+  const displayReviewBreakdown = shouldUseCachedReviewBreakdown
+    ? cachedDashboardSummary!.reviewBreakdown
+    : reviewBreakdown;
+  const reviewPromptCount = displayReviewBreakdown.totalReviewableCount;
+  const hasMixedReviewSources = displayReviewBreakdown.incomeReviewCount > 0
+    && displayReviewBreakdown.transactionReviewCount > 0;
   const reviewPromptLabel = hasMixedReviewSources
-    ? `${reviewBreakdown.incomeReviewCount} ${reviewBreakdown.incomeReviewCount === 1 ? 'credit' : 'credits'} and ${reviewBreakdown.transactionReviewCount} ${reviewBreakdown.transactionReviewCount === 1 ? 'movement' : 'movements'} need review`
+    ? `${displayReviewBreakdown.incomeReviewCount} ${displayReviewBreakdown.incomeReviewCount === 1 ? 'credit' : 'credits'} and ${displayReviewBreakdown.transactionReviewCount} ${displayReviewBreakdown.transactionReviewCount === 1 ? 'movement' : 'movements'} need review`
     : `${reviewPromptCount} ${reviewPromptCount === 1 ? 'item needs' : 'items need'} review`;
 
   const {
@@ -172,34 +217,102 @@ export default function Dashboard() {
     totalInvestment,
     totalEMI,
     monthlyBalance,
-  } = monthlyTotals;
+  } = displayMonthlyTotals;
   const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
 
   // Exact change tracking avoids JSON.stringify on full datasets during refresh.
   const lastTransactionsRef = useRef<Transaction[]>([]);
   const lastPeopleRef = useRef<PeopleLedger[]>([]);
   const isSilentLoadInFlightRef = useRef(false);
+  const reviewLoadRequestIdRef = useRef(0);
+  const cachedDashboardSummaryRef = useRef<DashboardSummarySnapshot | null>(null);
+
+  useEffect(() => {
+    logDashboardDebug('render_source', {
+      loading,
+      monthlySource: shouldUseCachedMonthlyTotals ? 'cached_summary' : 'live_state',
+      peopleSource: shouldUseCachedPeopleSummary ? 'cached_summary' : 'live_state',
+      reviewSource: shouldUseCachedReviewBreakdown ? 'cached_summary' : 'live_state',
+      hasResolvedDashboardData,
+      hasResolvedIncomeReviewDecisions,
+      transactionCount: transactions.length,
+      peopleCount: peopleLedger.length,
+      incomeReviewCount: incomeReviewCandidates.length,
+      transactionReviewCount: transactionReviewItems.length,
+      hasCachedSummary: Boolean(cachedDashboardSummary),
+    });
+  }, [
+    cachedDashboardSummary,
+    hasResolvedDashboardData,
+    hasResolvedIncomeReviewDecisions,
+    incomeReviewCandidates.length,
+    loading,
+    peopleLedger.length,
+    shouldUseCachedMonthlyTotals,
+    shouldUseCachedPeopleSummary,
+    shouldUseCachedReviewBreakdown,
+    transactionReviewItems.length,
+    transactions.length,
+  ]);
+
+  const loadCachedDashboardSummarySilently = useCallback(async () => {
+    try {
+      const snapshot = await getCachedDashboardSummary(selectedDate);
+      if (isMountedRef.current) {
+        cachedDashboardSummaryRef.current = snapshot;
+        setCachedDashboardSummaryState(snapshot);
+      }
+      logDashboardDebug('summary_cache_read', {
+        hit: Boolean(snapshot),
+        monthKey: snapshot?.monthKey,
+      });
+      return snapshot;
+    } catch {
+      if (isMountedRef.current) {
+        cachedDashboardSummaryRef.current = null;
+        setCachedDashboardSummaryState(null);
+      }
+      logDashboardDebug('summary_cache_read', { hit: false, failed: true });
+      return null;
+    }
+  }, [selectedDate]);
 
   const loadIncomeReviewDecisionsSilently = useCallback(async () => {
     try {
       const decisions = await getIncomeReviewDecisions();
-      if (isMountedRef.current) setIncomeReviewDecisions(decisions);
+      if (isMountedRef.current) {
+        setIncomeReviewDecisions(decisions);
+        setHasResolvedIncomeReviewDecisions(true);
+      }
+      logDashboardDebug('income_review_decisions_loaded', {
+        count: decisions.length,
+      });
+      return decisions;
     } catch {
       console.warn('[Dashboard] Income review decisions unavailable');
+      logDashboardDebug('income_review_decisions_unavailable', {
+        keepsCachedSummary: Boolean(cachedDashboardSummaryRef.current),
+      });
+      return [] as IncomeReviewDecision[];
     }
   }, []);
 
   const loadReviewPromptDataSilently = useCallback(async () => {
+    const requestId = ++reviewLoadRequestIdRef.current;
     try {
       const [candidates, queueItems] = await Promise.all([
         getIncomeReviewCandidates({ showExcluded: true }),
         getReviewQueue(),
       ]);
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || requestId !== reviewLoadRequestIdRef.current) {
+        return { candidates, queueItems };
+      }
       setIncomeReviewCandidates(candidates);
       setTransactionReviewItems(queueItems);
+      return { candidates, queueItems };
     } catch {
       console.warn('[Dashboard] Review prompt data unavailable');
+      return { candidates: [] as IncomeReviewCandidate[], queueItems: [] as ReviewItem[] };
     }
   }, []);
 
@@ -215,7 +328,10 @@ export default function Dashboard() {
         tx.type === next.type &&
         tx.category === next.category &&
         tx.note === next.note &&
-        tx.account_id === next.account_id
+        tx.account_id === next.account_id &&
+        tx.account_match_status === next.account_match_status &&
+        tx.account_match_reason === next.account_match_reason &&
+        tx.account_match_confidence === next.account_match_confidence
       );
     });
   }, []);
@@ -241,8 +357,18 @@ export default function Dashboard() {
 
     try {
       // Load transactions
+      let latestTransactions = lastTransactionsRef.current;
+      let latestLedger = lastPeopleRef.current;
+      let loadedTransactions = false;
+      let loadedPeopleLedger = false;
       try {
         const data = await getTransactions();
+        loadedTransactions = true;
+        latestTransactions = data;
+        logDashboardDebug('live_transactions_loaded', {
+          count: data.length,
+          changed: !areTransactionsEqual(lastTransactionsRef.current, data),
+        });
         if (!areTransactionsEqual(lastTransactionsRef.current, data)) {
           lastTransactionsRef.current = data;
           setTransactions(data);
@@ -253,13 +379,20 @@ export default function Dashboard() {
         console.error('Error loading transactions:', error);
       }
 
-      await loadIncomeReviewDecisionsSilently();
-      await loadReviewPromptDataSilently();
+      const decisions = await loadIncomeReviewDecisionsSilently();
+      const reviewData = await loadReviewPromptDataSilently();
       
       // Load people ledger data
       try {
         const ledgerData = await getPeopleLedger(true);
+        loadedPeopleLedger = true;
+        latestLedger = ledgerData;
         const activeLedger = ledgerData.filter(entry => !entry.is_settled);
+        logDashboardDebug('live_people_ledger_loaded', {
+          count: ledgerData.length,
+          activeCount: activeLedger.length,
+          changed: !arePeopleLedgerEqual(lastPeopleRef.current, ledgerData),
+        });
         if (!arePeopleLedgerEqual(lastPeopleRef.current, ledgerData)) {
           lastPeopleRef.current = ledgerData;
           setPeopleLedger(activeLedger);
@@ -269,15 +402,68 @@ export default function Dashboard() {
       } catch (error) {
         console.error('Error loading people ledger:', error);
       }
+
+      if (!loadedTransactions) {
+        logDashboardDebug('live_refresh_waiting', {
+          reason: 'transactions_not_loaded',
+          keepsCachedSummary: Boolean(cachedDashboardSummaryRef.current),
+        });
+        return;
+      }
+
+      if (isMountedRef.current) {
+        setHasResolvedDashboardData(true);
+      }
+
+      if (!loadedPeopleLedger) {
+        logDashboardDebug('live_refresh_partial', {
+          reason: 'people_ledger_not_loaded',
+          transactionCount: latestTransactions.length,
+        });
+        return;
+      }
+
+      const activeLedger = latestLedger.filter(entry => !entry.is_settled);
+      const snapshot = {
+        monthlyTotals: computeMonthlyTransactionTotals(latestTransactions, selectedDate, { incomeReviewDecisions: decisions }),
+        peopleSummary: computePeopleSummary(activeLedger),
+        reviewBreakdown: computeDashboardReviewBreakdown(
+          computeDashboardReviewPromptSummary(latestTransactions, selectedDate, { incomeReviewDecisions: decisions }),
+          reviewData.candidates,
+          reviewData.queueItems,
+        ),
+      };
+      if (isMountedRef.current) {
+        cachedDashboardSummaryRef.current = {
+          ...snapshot,
+          monthKey: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`,
+          createdAt: new Date().toISOString(),
+        };
+        setCachedDashboardSummaryState({
+          ...snapshot,
+          monthKey: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      void setCachedDashboardSummary(selectedDate, snapshot);
     } catch (error) {
       console.error('Error in loadDataSilently:', error);
     } finally {
       isSilentLoadInFlightRef.current = false;
     }
-  }, [arePeopleLedgerEqual, areTransactionsEqual, loadIncomeReviewDecisionsSilently, loadReviewPromptDataSilently]);
+  }, [
+    arePeopleLedgerEqual,
+    areTransactionsEqual,
+    computePeopleSummary,
+    loadIncomeReviewDecisionsSilently,
+    loadReviewPromptDataSilently,
+    selectedDate,
+  ]);
 
   const loadData = useCallback(async () => {
     try {
+      const cachedSummary = await loadCachedDashboardSummarySilently();
+      if (cachedSummary) setLoading(false);
       // Step 1: Try cache first for INSTANT display (no skeleton)
       const [cachedTxns, cachedLedger] = await Promise.all([
         getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS),
@@ -287,6 +473,24 @@ export default function Dashboard() {
       if (cachedTxns || cachedLedger) {
         // Cache hit! Show data instantly — no skeleton needed
         const cachedTransactions = cachedTxns?.data || [];
+        const shouldPreferSummaryOverEmptyTransactions = Boolean(
+          cachedSummary
+          && cachedTransactions.length === 0
+        );
+        const cachedLedgerData = cachedLedger?.data || [];
+        const activeCachedLedgerCount = cachedLedgerData.filter(entry => !entry.is_settled).length;
+        logDashboardDebug('raw_cache_read', {
+          hasSummary: Boolean(cachedSummary),
+          hasTransactionCache: Boolean(cachedTxns),
+          transactionCacheStale: cachedTxns?.isStale,
+          transactionCount: cachedTransactions.length,
+          hasLedgerCache: Boolean(cachedLedger),
+          ledgerCacheStale: cachedLedger?.isStale,
+          ledgerCount: cachedLedgerData.length,
+          activeLedgerCount: activeCachedLedgerCount,
+          hasResolvedIncomeReviewDecisions,
+          monthlyPrefersSummary: shouldPreferSummaryOverEmptyTransactions,
+        });
         setTransactions(cachedTransactions);
         lastTransactionsRef.current = cachedTransactions;
         if (cachedLedger?.data) {
@@ -294,6 +498,7 @@ export default function Dashboard() {
           setPeopleLedger(activeLedger);
           lastPeopleRef.current = cachedLedger.data;
         }
+        setHasResolvedDashboardData(Boolean(cachedTxns) && !shouldPreferSummaryOverEmptyTransactions);
         setLoading(false); // Skip skeleton entirely!
         void loadIncomeReviewDecisionsSilently();
         void loadReviewPromptDataSilently();
@@ -313,7 +518,17 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [loadDataSilently, loadIncomeReviewDecisionsSilently, loadReviewPromptDataSilently]);
+  }, [
+    hasResolvedIncomeReviewDecisions,
+    loadCachedDashboardSummarySilently,
+    loadDataSilently,
+    loadIncomeReviewDecisionsSilently,
+    loadReviewPromptDataSilently,
+  ]);
+
+  useEffect(() => {
+    void loadCachedDashboardSummarySilently();
+  }, [loadCachedDashboardSummarySilently]);
 
   // Keep ref always pointing to the latest loadDataSilently — prevents stale closure in debounce
   const loadDataSilentlyRef = useRef(loadDataSilently);
@@ -354,9 +569,19 @@ export default function Dashboard() {
     React.useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
         if (financeDataChangedAffects(payload, ['review'])) {
+          cachedDashboardSummaryRef.current = null;
+          setCachedDashboardSummaryState(null);
+          setHasResolvedDashboardData(true);
           void loadReviewPromptDataSilently();
         }
         if (financeDataChangedAffects(payload, ['transactions', 'ledger'])) {
+          cachedDashboardSummaryRef.current = null;
+          setCachedDashboardSummaryState(null);
+          setHasResolvedDashboardData(true);
+          if (payload.transactionId && payload.source?.includes('delete')) {
+            setTransactions(prev => prev.filter(tx => tx.id !== payload.transactionId));
+            lastTransactionsRef.current = lastTransactionsRef.current.filter(tx => tx.id !== payload.transactionId);
+          }
           debouncedLoadSilently();
         }
       });
@@ -381,15 +606,29 @@ export default function Dashboard() {
 
   const handleReviewIncome = () => {
     triggerHaptic();
-    (navigation as any).navigate('Settings', { screen: 'IncomeReview' });
+    (navigation as any).navigate('Settings', {
+      screen: 'MoneyMovementReview',
+      params: { initialSection: 'credits' },
+    });
   };
 
   const handleReviewMovements = () => {
     triggerHaptic();
-    (navigation as any).navigate('ReviewQueue');
+    (navigation as any).navigate('Settings', {
+      screen: 'MoneyMovementReview',
+      params: { initialSection: 'payments' },
+    });
   };
 
-  const handleReviewNow = reviewBreakdown.transactionReviewCount > 0
+  const handleReviewAllMovements = () => {
+    triggerHaptic();
+    (navigation as any).navigate('Settings', {
+      screen: 'MoneyMovementReview',
+      params: { initialSection: 'all' },
+    });
+  };
+
+  const handleReviewNow = displayReviewBreakdown.transactionReviewCount > 0
     ? handleReviewMovements
     : handleReviewIncome;
 
@@ -403,7 +642,7 @@ export default function Dashboard() {
     );
   }
 
-  if (loading) {
+  if (loading && !hasCachedDashboardDisplay) {
     // Skeleton loader that mimics the actual Dashboard layout
     return (
       <ScreenWrapper>
@@ -566,32 +805,13 @@ export default function Dashboard() {
                 Review them to keep your dashboard accurate.
               </Text>
               <View style={[styles.reviewPromptActions, { marginTop: spacing.md }]}>
-                {hasMixedReviewSources ? (
-                  <>
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handleReviewIncome}
-                      style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
-                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review credits</Text>
-                      <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handleReviewMovements}
-                      style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
-                      <Text style={[typography.bodyBold, { color: '#fff' }]}>Review payments</Text>
-                      <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
-                    </TouchableOpacity>
-                  </>
-                ) : (
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={handleReviewNow}
-                    style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
-                    <Text style={[typography.bodyBold, { color: '#fff' }]}>Review now</Text>
-                    <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={hasMixedReviewSources ? handleReviewAllMovements : handleReviewNow}
+                  style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
+                  <Text style={[typography.bodyBold, { color: '#fff' }]}>Review now</Text>
+                  <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
+                </TouchableOpacity>
               </View>
             </Card>
           </View>
@@ -692,10 +912,10 @@ export default function Dashboard() {
                       You Lent
                     </Text>
                     <Text style={[typography.h1, { color: colors.income, fontSize: 24, fontWeight: 'bold', marginTop: 4 }]}>
-                      {formatAmount(peopleSummary.totalLent)}
+                      {formatAmount(displayPeopleSummary.totalLent)}
                     </Text>
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 12, marginTop: 4 }]}>
-                      {peopleSummary.lentCount} {peopleSummary.lentCount === 1 ? 'person' : 'people'}
+                      {displayPeopleSummary.lentCount} {displayPeopleSummary.lentCount === 1 ? 'person' : 'people'}
                     </Text>
                   </Card>
 

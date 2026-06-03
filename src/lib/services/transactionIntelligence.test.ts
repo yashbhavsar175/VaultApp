@@ -36,6 +36,22 @@ describe('Transaction Intelligence Core', () => {
     expect(result.decision).toBe('review_required');
   });
 
+  it('classifies payment-app paid-you UPI notifications as received credits', () => {
+    const signal: RawTransactionSignal = {
+      rawText: 'BHAVSAR YASH paid you ₹20.00 Paid via SuperMoney UPI',
+      senderOrPackage: 'com.google.android.apps.nbu.paisa.user',
+      sourceType: 'notification',
+      timestamp: Date.now(),
+    };
+
+    const result = processSignal(signal);
+    expect(result.autoClass).toBe('upi_received');
+    expect(result.direction).toBe('credit');
+    expect(result.amount).toBe(20);
+    expect(result.decision).toBe('review_required');
+    expect(JSON.stringify(result)).not.toContain(signal.rawText);
+  });
+
   it('classifies credit card bill payment correctly', () => {
     const signal: RawTransactionSignal = {
       rawText: "Payment of Rs.5000 received towards your HDFC Credit Card ending 1234",
@@ -112,6 +128,49 @@ describe('Transaction Intelligence Core', () => {
     expect(result.amount).toBe(1000);
     expect(result.confidenceLevel).toBe('medium');
     expect(result.decision).toBe('review_required');
+  });
+
+  it('parses HDFC card-payment SMS with bank account last4, card last4, and reference', () => {
+    const signal: RawTransactionSignal = {
+      rawText: 'Sent Rs.589.00 from HDFC Bank A/C *0719 to Google India Digital Serv Ref 124115794477. PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246. Available limit is Rs.82999.86',
+      senderOrPackage: 'AD-HDFCBK-S',
+      sourceType: 'sms',
+      timestamp: Date.now(),
+    };
+
+    const result = processSignal(signal);
+
+    expect(result.autoClass).toBe('credit_card_bill_payment');
+    expect(result.direction).toBe('neutral');
+    expect(result.amount).toBe(589);
+    expect(result.accountLast4).toBe('0719');
+    expect(result.cardLast4).toBe('2246');
+    expect(result.last4).toBe('2246');
+    expect(result.reference).toBe('124115794477');
+    expect(result.instrumentHint).toBe('credit_card');
+    expect(result.decision).toBe('review_required');
+    expect(JSON.stringify(result)).not.toContain(signal.rawText);
+  });
+
+  it('routes Gmail HDFC credit-card VPA debit as card bill payment without storing the full VPA', () => {
+    const signal: RawTransactionSignal = {
+      rawText: 'Rs.589.00 debited from account ending 0719 towards VPA gpay-creditcard@okpayaxis Google India Digital Services Pvt Ltd. UPI transaction reference no. 124115794477',
+      senderOrPackage: 'com.google.android.apps.nbu.paisa.user',
+      sourceType: 'notification',
+      timestamp: Date.now(),
+    };
+
+    const result = processSignal(signal);
+
+    expect(result.autoClass).toBe('credit_card_bill_payment');
+    expect(result.direction).toBe('neutral');
+    expect(result.amount).toBe(589);
+    expect(result.accountLast4).toBe('0719');
+    expect(result.cardLast4).toBeNull();
+    expect(result.reference).toBe('124115794477');
+    expect(result.instrumentHint).toBe('credit_card');
+    expect(JSON.stringify(result)).not.toContain('gpay-creditcard@okpayaxis');
+    expect(JSON.stringify(result)).not.toContain(signal.rawText);
   });
 
   it.each([

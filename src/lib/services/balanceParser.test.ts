@@ -172,6 +172,19 @@ describe('balanceParser credit card balances and statements', () => {
     expect(result.reasons).toContain('card_payment_or_refund_detected');
   });
 
+  it('parses HDFC card-payment wording with account last4, card last4, and available limit', () => {
+    const text = 'Sent Rs.589.00 from HDFC Bank A/C *0719 to Google India Digital Serv Ref 124115794477. PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246. Available limit is Rs.82999.86';
+    const result = parse(text, 'AD-HDFCBK-S');
+
+    expect(result.isBalanceSignal).toBe(true);
+    expect(result.instrumentHint).toBe('credit_card');
+    expect(result.accountLast4).toBe('0719');
+    expect(result.cardLast4).toBe('2246');
+    expect(amountFor(result, 'available_limit')).toBe(82999.86);
+    expect(result.reasons).toContain('card_payment_or_refund_detected');
+    expect(JSON.stringify(result)).not.toContain(text);
+  });
+
   it('recognizes card refund/reversal without making bank income', () => {
     const result = parse('ICICI credit card 2222 refund reversal Rs.999 processed.', 'ICICIB');
 

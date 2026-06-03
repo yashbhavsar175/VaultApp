@@ -509,10 +509,14 @@ describe('IncomeReviewScreen', () => {
     const bottomTabs = read('src/navigation/BottomTabNavigator.tsx');
     const settingsScreen = read('src/screens/user/Settings.tsx');
 
+    expect(settingsStack).toContain('MoneyMovementReview:');
+    expect(settingsStack).toContain('<Stack.Screen name="MoneyMovementReview" component={MoneyMovementReviewScreen} />');
     expect(settingsStack).toContain('IncomeReview: undefined');
     expect(settingsStack).toContain('<Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />');
+    expect(bottomTabs).toContain("'MoneyMovementReview'");
     expect(bottomTabs).toContain("'IncomeReview'");
-    expect(settingsScreen).toContain('Money Movement Review: Credits');
-    expect(settingsScreen).toContain("navigate('IncomeReview')");
+    expect(settingsScreen).toContain('Money Movement Review');
+    expect(settingsScreen).toContain("navigate('MoneyMovementReview')");
+    expect(settingsScreen).not.toContain('Money Movement Review: Credits');
   });
 });

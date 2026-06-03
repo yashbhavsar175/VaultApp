@@ -587,7 +587,10 @@ export default function Transactions() {
             borderWidth: 1,
             marginBottom: 4,
           }}
-          onPress={() => (navigation as any).navigate('ReviewQueue')}>
+          onPress={() => (navigation as any).navigate('Settings', {
+            screen: 'MoneyMovementReview',
+            params: { initialSection: 'payments' },
+          })}>
           <MaterialCommunityIcons name="inbox-multiple-outline" size={24} color="#f59e0b" />
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]}>

@@ -135,6 +135,34 @@ describe('runtime transaction evidence recording', () => {
     expect(JSON.stringify(evidence)).not.toContain('9876543210');
   });
 
+  it('keeps bank account last4 and credit-card last4 separate for card payment SMS evidence', () => {
+    const text = 'Sent Rs.589.00 from HDFC Bank A/C *0719 to Google India Digital Serv Ref 124115794477. PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246.';
+
+    const evidence = mapParsedTransactionToEvidence({
+      text,
+      sender: 'AD-HDFCBK-S',
+      parsed: {
+        amount: 589,
+        type: 'debit',
+        reference: '124115794477',
+        accountLast4: '0719',
+        cardLast4: '2246',
+        source: 'bank',
+      },
+      transactionId: null,
+      timestamp: Date.parse('2026-06-03T10:00:00.000Z'),
+    });
+
+    expect(evidence).toEqual(expect.objectContaining({
+      account_last4: '0719',
+      card_last4: '2246',
+      instrument_hint: 'credit_card',
+      reference_number: '124115794477',
+      match_status: 'unlinked',
+    }));
+    expect(JSON.stringify(evidence)).not.toContain(text);
+  });
+
   it('drops raw-like account context from broad SMS merchant extraction', () => {
     const evidence = mapParsedTransactionToEvidence({
       text: 'Rs.32 debited from your HDFC Bank account XX2841 to CODEX28KR SHOP via UPI.',

@@ -30,7 +30,7 @@ import {
 } from '../../lib/database/financial';
 import { getTransactions } from '../../lib/core';
 import { scheduleDueReminders } from '../../lib/services/scheduledNotifications';
-import { BalanceKind, BalanceOwnerType, BankAccount, Transaction } from '../../types';
+import { BalanceKind, BalanceOwnerType, BalanceSnapshot, BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import BalanceCorrectionModal, { BalanceCorrectionKindOption } from '../../components/BalanceCorrectionModal';
@@ -49,10 +49,17 @@ import {
   getAccountBalanceViewModels,
   getBalanceFreshnessLabel,
   getBalanceKindLabel,
+  getBalanceConfidenceLabel,
+  getBalanceSourceLabel,
+  getBankAccountAssetBalance,
+  getBankAccountDisplayBalance,
   getBankAccountDetailView,
+  getLegacyCreditCardPosition,
   getCreditCardDetailView,
   getCreditCardBalanceViewModels,
   getPendingDetectedBalanceSummary,
+  getTotalAssetBankBalance,
+  isAssetBankAccount,
 } from '../../lib/services/balanceViewModel';
 import {
   getCategoryIcon,
@@ -418,8 +425,43 @@ export function BanksScreen() {
     }
   };
 
-  const handleCorrectionSaved = async () => {
-    await loadBalanceViews();
+  const handleCorrectionSaved = async (snapshot: BalanceSnapshot) => {
+    const ownerId = snapshot.owner_id;
+    const amount = Number(snapshot.amount);
+    if (ownerId && Number.isFinite(amount)) {
+      balanceViewsRequestRef.current += 1;
+      setBalanceViews(prev => {
+        const existing = prev[ownerId];
+        const account = banks.find(item => item.id === ownerId);
+        return {
+          ...prev,
+          [ownerId]: {
+            accountId: ownerId,
+            bankName: existing?.bankName || account?.bank_name || correctionTarget?.detectedBankName || 'Account',
+            accountLast4: existing?.accountLast4 || account?.account_last4 || correctionTarget?.accountLast4 || '',
+            accountType: existing?.accountType || account?.account_type || (snapshot.owner_type === 'loan' ? 'loan' : 'savings'),
+            displayBalance: amount,
+            balanceKind: snapshot.balance_kind,
+            source: 'manual',
+            confidence: 'exact',
+            lastUpdated: snapshot.detected_at,
+            isEstimated: false,
+            sourceLabel: getBalanceSourceLabel('manual'),
+            confidenceLabel: getBalanceConfidenceLabel('exact'),
+            staleWarning: false,
+          },
+        };
+      });
+      if (snapshot.owner_type === 'bank_account' || snapshot.owner_type === 'loan') {
+        setBanks(prev => {
+          const next = prev.map(bank => bank.id === ownerId ? { ...bank, balance: amount } : bank);
+          void setCache(CACHE_KEYS.BANK_ACCOUNTS, next);
+          return next;
+        });
+      }
+    }
+
+    loadBalanceViews();
     Toast.show({
       type: 'success',
       text1: 'Balance updated',
@@ -485,12 +527,31 @@ export function BanksScreen() {
   };
 
   const calculateCurrentBalance = (bank: BankAccount): number => {
-    return balanceViews[bank.id]?.displayBalance ?? bank.balance ?? bank.starting_balance;
+    return getBankAccountDisplayBalance(bank, balanceViews[bank.id]);
   };
 
   const getTotalBalance = (): number => {
-    return banks.reduce((sum, bank) => sum + calculateCurrentBalance(bank), 0);
+    return getTotalAssetBankBalance(banks, balanceViews);
   };
+
+  const activeBankAccounts = banks.filter(account =>
+    account.account_type === 'savings' || account.account_type === 'current' || !account.account_type
+  );
+  const legacyCreditCardAccounts = banks.filter(account => account.account_type === 'credit_card');
+  const loanAccounts = banks.filter(account => account.account_type === 'loan');
+  const hiddenCount = archivedOwners.bankAccounts.length + archivedOwners.creditCards.length;
+  const legacyCreditCardOutstanding = legacyCreditCardAccounts.reduce(
+    (sum, account) => sum + getLegacyCreditCardPosition(account, balanceViews[account.id]).outstanding,
+    0
+  );
+  const creditCardOutstanding = creditCardViews.reduce(
+    (sum, card) => sum + card.outstanding,
+    legacyCreditCardOutstanding
+  );
+  const loanOutstanding = loanAccounts.reduce(
+    (sum, account) => sum + getBankAccountDisplayBalance(account, balanceViews[account.id]),
+    0
+  );
 
   const handleAddBank = () => {
     resetForm();
@@ -744,14 +805,22 @@ export function BanksScreen() {
 
   const renderBankCard = ({ item }: { item: BankAccount }) => {
     const balanceView = balanceViews[item.id];
-    const currentBalance = balanceView?.displayBalance ?? calculateCurrentBalance(item);
     const accountType = item.account_type || 'savings';
     const bankColor = getBankColor(item.bank_name);
+    const creditPosition = getLegacyCreditCardPosition(item, balanceView);
+    const currentBalance = accountType === 'credit_card'
+      ? creditPosition.outstanding
+      : calculateCurrentBalance(item);
+    const balanceLabel = accountType === 'loan'
+      ? 'Outstanding'
+      : accountType === 'credit_card'
+        ? 'Outstanding'
+        : 'Latest Balance';
     
     let balanceColor = currentBalance >= 0 ? '#10b981' : '#ef4444';
     
     if (accountType === 'credit_card') {
-      balanceColor = '#10b981';
+      balanceColor = '#ef4444';
     } else if (accountType === 'loan') {
       balanceColor = '#ef4444';
     }
@@ -783,7 +852,7 @@ export function BanksScreen() {
               </Text>
               <View style={{ marginTop: spacing.md }}>
                 <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
-                  {accountType === 'loan' ? 'Outstanding' : accountType === 'credit_card' ? 'Balance' : 'Latest Balance'}
+                  {balanceLabel}
                 </Text>
                 <Text
                   numberOfLines={1}
@@ -801,6 +870,17 @@ export function BanksScreen() {
                   }]}>
                   {balanceView?.sourceLabel || 'Calculated'} · {balanceView?.confidenceLabel || 'Estimated'} · {formatBalanceUpdatedLabel(balanceView?.lastUpdated)}
                 </Text>
+                {accountType === 'credit_card' && (
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
+                    Available credit {formatAmount(creditPosition.availableCredit)} · Credit limit {formatAmount(creditPosition.creditLimit)}
+                  </Text>
+                )}
+                {accountType === 'loan' && item.loan_total > 0 && (
+                  <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
+                    Original loan {formatAmount(item.loan_total)}
+                    {item.monthly_emi_amount ? ` · EMI ${formatAmount(item.monthly_emi_amount)}` : ''}
+                  </Text>
+                )}
               </View>
             </View>
         </View>
@@ -985,7 +1065,7 @@ export function BanksScreen() {
   return (
     <ScreenWrapper>
       <AppHeader 
-        title="Banks"
+        title="Accounts & Cards"
         showBack={true}
         rightAction={{
           icon: "plus",
@@ -993,14 +1073,26 @@ export function BanksScreen() {
         }}
       />
       
-      <Card style={{ margin: spacing.lg, padding: spacing.lg, alignItems: 'center' }}>
-        <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.sm }]}>Total Balance</Text>
-        <Text style={[
-          typography.h1,
-          { color: totalBalance >= 0 ? colors.success : colors.error }
-        ]}>
+      <Card style={{ margin: spacing.lg, padding: spacing.lg }}>
+        <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.sm, textTransform: 'uppercase', fontWeight: '700' }]}>Summary</Text>
+        <Text style={[typography.h2, { color: totalBalance >= 0 ? colors.success : colors.error }]}>
           {formatAmount(totalBalance)}
         </Text>
+        <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>Cash & bank balance</Text>
+        <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
+          <View style={styles.accountsSummaryRow}>
+            <Text style={[typography.caption, { color: colors.subtext }]}>Credit card outstanding</Text>
+            <Text style={[typography.caption, { color: '#ef4444', fontWeight: '700' }]}>{formatAmount(creditCardOutstanding)}</Text>
+          </View>
+          <View style={styles.accountsSummaryRow}>
+            <Text style={[typography.caption, { color: colors.subtext }]}>Loan outstanding</Text>
+            <Text style={[typography.caption, { color: '#ef4444', fontWeight: '700' }]}>{formatAmount(loanOutstanding)}</Text>
+          </View>
+          <View style={styles.accountsSummaryRow}>
+            <Text style={[typography.caption, { color: colors.subtext }]}>Hidden / Archived</Text>
+            <Text style={[typography.caption, { color: colors.text, fontWeight: '700' }]}>{hiddenCount}</Text>
+          </View>
+        </View>
       </Card>
 
       {pendingDetectedSummary.total > 0 && (
@@ -1040,13 +1132,25 @@ export function BanksScreen() {
       )}
 
       <FlatList
-        data={banks}
+        data={activeBankAccounts}
         renderItem={renderBankCard}
         keyExtractor={item => item.id}
         contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}
+        ListHeaderComponent={() => (
+          activeBankAccounts.length > 0 ? (
+            <Text style={[typography.caption, {
+              color: colors.subtext,
+              marginBottom: spacing.md,
+              textTransform: 'uppercase',
+              fontWeight: '700',
+            }]}>
+              Accounts
+            </Text>
+          ) : null
+        )}
         ListFooterComponent={() => (
           <>
-          {creditCardViews.length > 0 ? (
+          {(legacyCreditCardAccounts.length > 0 || creditCardViews.length > 0) ? (
             <View style={{ marginTop: spacing.sm }}>
               <Text style={[typography.caption, {
                 color: colors.subtext,
@@ -1056,6 +1160,7 @@ export function BanksScreen() {
               }]}>
                 Credit Cards
               </Text>
+              {legacyCreditCardAccounts.map(account => renderBankCard({ item: account }))}
               {creditCardViews.map(card => {
                 const dueDateLabel = formatDueDateLabel(card.paymentDueDate);
                 return (
@@ -1098,7 +1203,7 @@ export function BanksScreen() {
                             {card.sourceLabel} · {card.confidenceLabel} · {formatBalanceUpdatedLabel(card.lastUpdated)}
                           </Text>
                           <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
-                            Available {formatAmount(card.availableLimit)}
+                            Available credit {formatAmount(card.availableLimit)}
                           </Text>
                         </View>
                       </View>
@@ -1114,7 +1219,7 @@ export function BanksScreen() {
                       </View>
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.sm }}>
                         <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
-                          Limit {formatAmount(card.creditLimit)}
+                          Credit limit {formatAmount(card.creditLimit)}
                         </Text>
                         <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
                           {card.utilizationPercent.toFixed(0)}% used
@@ -1198,6 +1303,19 @@ export function BanksScreen() {
                   </Card>
                 );
               })}
+            </View>
+          ) : null}
+          {loanAccounts.length > 0 ? (
+            <View style={{ marginTop: spacing.sm }}>
+              <Text style={[typography.caption, {
+                color: colors.subtext,
+                marginBottom: spacing.md,
+                textTransform: 'uppercase',
+                fontWeight: '700',
+              }]}>
+                Loans / EMI
+              </Text>
+              {loanAccounts.map(account => renderBankCard({ item: account }))}
             </View>
           ) : null}
           {renderArchivedSection()}
@@ -1484,8 +1602,13 @@ export function BanksScreen() {
           visible
           title={historyTarget.account.bank_name}
           subtitle={`${historyTarget.account.account_type === 'current' ? 'Current' : historyTarget.account.account_type === 'loan' ? 'Loan' : historyTarget.account.account_type === 'credit_card' ? 'Credit Card' : 'Savings'} ••${historyTarget.account.account_last4}`}
-          balanceLabel="Displayed balance"
-          balanceAmount={bankHistoryDetail?.displayBalance ?? balanceViews[historyTarget.account.id]?.displayBalance ?? calculateCurrentBalance(historyTarget.account)}
+          balanceLabel={historyTarget.account.account_type === 'credit_card' || historyTarget.account.account_type === 'loan' ? 'Outstanding' : 'Displayed balance'}
+          balanceAmount={historyTarget.account.account_type === 'credit_card'
+            ? getLegacyCreditCardPosition(
+              historyTarget.account,
+              bankHistoryDetail ?? balanceViews[historyTarget.account.id]
+            ).outstanding
+            : bankHistoryDetail?.displayBalance ?? balanceViews[historyTarget.account.id]?.displayBalance ?? calculateCurrentBalance(historyTarget.account)}
           balanceKindLabel={bankHistoryDetail ? getBalanceKindLabel(bankHistoryDetail.balanceKind) : getBalanceKindLabel(balanceViews[historyTarget.account.id]?.balanceKind || 'current_balance')}
           sourceLabel={bankHistoryDetail?.sourceLabel ?? balanceViews[historyTarget.account.id]?.sourceLabel ?? 'Calculated'}
           confidenceLabel={bankHistoryDetail?.confidenceLabel ?? balanceViews[historyTarget.account.id]?.confidenceLabel ?? 'Estimated'}
@@ -1515,8 +1638,8 @@ export function BanksScreen() {
           loading={historyLoading}
           history={cardHistoryDetail?.history ?? []}
           metrics={[
-            { label: 'Available', value: formatAmount(cardHistoryDetail?.availableLimit ?? historyTarget.card.availableLimit) },
-            { label: 'Limit', value: formatAmount(cardHistoryDetail?.creditLimit ?? historyTarget.card.creditLimit) },
+            { label: 'Available credit', value: formatAmount(cardHistoryDetail?.availableLimit ?? historyTarget.card.availableLimit) },
+            { label: 'Credit limit', value: formatAmount(cardHistoryDetail?.creditLimit ?? historyTarget.card.creditLimit) },
             { label: 'Due', value: cardHistoryDetail?.dueAmount !== null && cardHistoryDetail?.dueAmount !== undefined ? formatAmount(cardHistoryDetail.dueAmount) : '-' },
             { label: 'Min due', value: cardHistoryDetail?.minimumDue !== null && cardHistoryDetail?.minimumDue !== undefined ? formatAmount(cardHistoryDetail.minimumDue) : '-' },
             { label: 'Utilization', value: `${(cardHistoryDetail?.utilizationPercent ?? historyTarget.card.utilizationPercent).toFixed(0)}%` },
@@ -1966,7 +2089,8 @@ export function AnalyticsScreen() {
   const expenseRatio = totalIncome > 0 ? (totalSpent / totalIncome) * 100 : 0;
   const periodDays = RANGE_DAYS[timeRange];
   const avgDailySpend = totalSpent / periodDays;
-  const accountBalance = banks.reduce((sum, bank) => sum + (bank.balance ?? bank.starting_balance), 0);
+  const accountBalance = banks.reduce((sum, bank) => sum + getBankAccountAssetBalance(bank), 0);
+  const assetBankAccounts = banks.filter(isAssetBankAccount);
   const incomeCoverageDays = avgDailySpend > 0 ? accountBalance / avgDailySpend : 0;
   const activeDays = new Set(
     transactions
@@ -2235,7 +2359,7 @@ export function AnalyticsScreen() {
               { label: 'Outflow', value: formatAmount(totalOutflow), icon: 'arrow-up-circle-outline', color: '#ef4444', trend: outflowTrend.text },
               { label: 'Net Savings', value: formatAmount(netSavings), icon: 'piggy-bank-outline', color: netSavings >= 0 ? '#3b82f6' : '#ef4444', trend: formatPercent(savingsRate) },
               { label: 'Avg Spend / Day', value: formatAmount(avgDailySpend), icon: 'calendar-clock', color: '#f59e0b', trend: `${activeDays}/${periodDays} days` },
-              { label: 'Bank Balance', value: formatAmount(accountBalance), icon: 'bank-outline', color: '#7c3aed', trend: incomeCoverageDays > 0 ? `${incomeCoverageDays.toFixed(0)} day cover` : 'No cover yet' },
+              { label: 'Cash & Bank', value: formatAmount(accountBalance), icon: 'bank-outline', color: '#7c3aed', trend: incomeCoverageDays > 0 ? `${incomeCoverageDays.toFixed(0)} day cover` : 'No cover yet' },
               { label: 'Auto Tracked', value: `${autoDetectedCount}`, icon: 'radar', color: '#06b6d4', trend: `${txnCount} total entries` },
             ].map(item => (
               <Card key={item.label} style={[styles.kpiCard, { padding: spacing.md }]}>
@@ -2529,19 +2653,19 @@ export function AnalyticsScreen() {
             </Card>
           )}
 
-          {banks.length > 0 && (
+          {assetBankAccounts.length > 0 && (
             <Card style={{ padding: spacing.lg }}>
               <View style={[styles.sectionTitleRow, { marginBottom: spacing.md }]}>
                 <MaterialCommunityIcons name="bank-outline" size={20} color="#3b82f6" />
-                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Account Snapshot</Text>
+                <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.xs }]}>Cash & Bank Snapshot</Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginLeft: 'auto' }]}>
-                  {banks.length} account{banks.length === 1 ? '' : 's'}
+                  {assetBankAccounts.length} account{assetBankAccounts.length === 1 ? '' : 's'}
                 </Text>
               </View>
-              {banks.slice(0, 4).map((bank, index) => {
-                const bankBalance = bank.balance ?? bank.starting_balance;
+              {assetBankAccounts.slice(0, 4).map((bank, index) => {
+                const bankBalance = getBankAccountAssetBalance(bank);
                 return (
-                  <View key={bank.id} style={[styles.accountRow, index < Math.min(banks.length, 4) - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+                  <View key={bank.id} style={[styles.accountRow, index < Math.min(assetBankAccounts.length, 4) - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
                     <View style={[styles.bankDot, { backgroundColor: getBankColor(bank.bank_name) }]}>
                       <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>{bank.bank_name.charAt(0).toUpperCase()}</Text>
                     </View>
@@ -2568,6 +2692,12 @@ export function AnalyticsScreen() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const styles = StyleSheet.create({
+  accountsSummaryRow: {
+    minHeight: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',

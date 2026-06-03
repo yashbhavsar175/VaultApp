@@ -1,6 +1,7 @@
 import { supabase } from '../core';
 import {
   addBankAccount,
+  archiveBankAccountIfSupported,
   addEMIPayment,
   calculateEMIComponents,
   getBankAccounts,
@@ -218,6 +219,40 @@ describe('financial account archive filtering', () => {
 
     expect(query.eq).toHaveBeenCalledWith('user_id', 'user_1');
     expect(query.eq).toHaveBeenCalledWith('is_archived', true);
+  });
+
+  it('archives a legacy bank account only within the current user scope', async () => {
+    const eqUser = jest.fn().mockResolvedValue({ error: null });
+    const eqId = jest.fn(() => ({ eq: eqUser }));
+    const update = jest.fn(() => ({ eq: eqId }));
+    mockSupabase.from.mockReturnValue({ update });
+
+    const result = await archiveBankAccountIfSupported('legacy_card_bank_1');
+
+    expect(result).toBe(true);
+    expect(mockSupabase.from).toHaveBeenCalledWith('bank_accounts');
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      is_archived: true,
+      archived_at: expect.any(String),
+    }));
+    expect(eqId).toHaveBeenCalledWith('id', 'legacy_card_bank_1');
+    expect(eqUser).toHaveBeenCalledWith('user_id', 'user_1');
+  });
+
+  it('leaves legacy bank account visible when archive columns are not deployed', async () => {
+    const eqUser = jest.fn().mockResolvedValue({
+      error: {
+        code: '42703',
+        message: 'column bank_accounts.is_archived does not exist',
+      },
+    });
+    const eqId = jest.fn(() => ({ eq: eqUser }));
+    const update = jest.fn(() => ({ eq: eqId }));
+    mockSupabase.from.mockReturnValue({ update });
+
+    const result = await archiveBankAccountIfSupported('legacy_card_bank_1');
+
+    expect(result).toBe(false);
   });
 
   it('excludes archived credit cards by default', async () => {

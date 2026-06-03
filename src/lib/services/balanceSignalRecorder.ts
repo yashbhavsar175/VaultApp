@@ -72,6 +72,7 @@ interface BankAccountBalanceBasis {
 }
 
 interface CreditCardMatch {
+  ownerType: Extract<BalanceOwnerType, 'credit_card' | 'bank_account'>;
   id: string;
   bank_name?: string | null;
   last_4_digits?: string | null;
@@ -171,15 +172,37 @@ async function fetchCreditCardMatches(
   const last4 = normalizeLast4(cardLast4);
   if (!last4) return [];
 
-  const { data, error } = await supabase
+  const { data: cards, error: cardError } = await supabase
     .from('credit_cards')
     .select('id, bank_name, last_4_digits')
     .eq('user_id', userId)
     .eq('last_4_digits', last4)
     .limit(10);
 
-  if (error) throw error;
-  return (data || []) as CreditCardMatch[];
+  if (cardError) throw cardError;
+
+  const { data: legacyCards, error: legacyError } = await supabase
+    .from('bank_accounts')
+    .select('id, bank_name, account_last4')
+    .eq('user_id', userId)
+    .eq('account_type', 'credit_card')
+    .eq('account_last4', last4)
+    .limit(10);
+
+  if (legacyError) throw legacyError;
+
+  return [
+    ...((cards || []) as Array<{ id: string; bank_name?: string | null; last_4_digits?: string | null }>).map(card => ({
+      ownerType: 'credit_card' as const,
+      ...card,
+    })),
+    ...((legacyCards || []) as Array<{ id: string; bank_name?: string | null; account_last4?: string | null }>).map(card => ({
+      ownerType: 'bank_account' as const,
+      id: card.id,
+      bank_name: card.bank_name,
+      last_4_digits: card.account_last4,
+    })),
+  ];
 }
 
 async function matchCreditCard(
@@ -189,10 +212,19 @@ async function matchCreditCard(
   const matches = await fetchCreditCardMatches(userId, parsed.cardLast4);
   const bankMatches = matches.filter(card => bankNamesMatch(parsed.detectedBankName, card.bank_name));
   const candidates = parsed.detectedBankName ? bankMatches : matches;
+  const preferredCreditCards = candidates.filter(card => card.ownerType === 'credit_card');
+
+  if (preferredCreditCards.length === 1) {
+    return {
+      ownerType: 'credit_card',
+      ownerId: preferredCreditCards[0].id,
+      confidence: bankMatches.length === 1 || !parsed.detectedBankName ? 'exact' : 'estimated',
+    };
+  }
 
   if (candidates.length === 1) {
     return {
-      ownerType: 'credit_card',
+      ownerType: candidates[0].ownerType,
       ownerId: candidates[0].id,
       confidence: bankMatches.length === 1 || !parsed.detectedBankName ? 'exact' : 'estimated',
     };

@@ -35,8 +35,21 @@ export interface TransactionReconciliationProposal {
   matchedOwnerLabel?: string | null;
   reasonCode: string;
   explanationTokens: string[];
+  evidenceSummary: ReconciliationEvidenceSummary;
   score: number;
   createdAt: string;
+}
+
+export interface ReconciliationEvidenceSummary {
+  sourceTypes: EvidenceSourceType[];
+  direction: EvidenceDirection | null;
+  amountPresent: boolean;
+  referencePresent: boolean;
+  bankProofCount: number;
+  accountLast4s: string[];
+  cardLast4s: string[];
+  bankNames: string[];
+  paymentAppHint: boolean;
 }
 
 export interface GetRecentReconciliationProposalsOptions {
@@ -285,6 +298,33 @@ function hasBankProof(evidence: ReconciliationEvidence): boolean {
   return Boolean(safeLast4(evidence.accountLast4) || safeLast4(evidence.cardLast4));
 }
 
+function uniqueSafeValues(values: Array<string | null | undefined>, limit = 4): string[] {
+  return Array.from(new Set(
+    values
+      .map(value => (value || '').trim())
+      .filter(Boolean)
+  )).slice(0, limit);
+}
+
+function buildEvidenceSummary(evidences: ReconciliationEvidence[]): ReconciliationEvidenceSummary {
+  const bankProofs = evidences.filter(hasBankProof);
+  const direction = uniqueSafeValues(evidences.map(evidence => evidence.direction))[0] as EvidenceDirection | undefined;
+
+  return {
+    sourceTypes: uniqueSafeValues(evidences.map(evidence => evidence.sourceType)) as EvidenceSourceType[],
+    direction: direction || null,
+    amountPresent: evidences.some(evidence => evidence.amount !== null),
+    referencePresent: evidences.some(evidence => Boolean(evidence.referenceNumber)),
+    bankProofCount: bankProofs.length,
+    accountLast4s: uniqueSafeValues(evidences.map(evidence => safeLast4(evidence.accountLast4))),
+    cardLast4s: uniqueSafeValues(evidences.map(evidence => safeLast4(evidence.cardLast4))),
+    bankNames: uniqueSafeValues(evidences.map(evidence => evidence.bankName ? safeLabelName(evidence.bankName, 'Bank') : null), 3),
+    paymentAppHint: evidences.some(evidence =>
+      evidence.sourceType === 'notification' || Boolean(evidence.sourceApp || evidence.sourcePackage || evidence.upiIdHash)
+    ),
+  };
+}
+
 function evidenceRelated(
   a: TransactionEvidenceReadRow,
   b: TransactionEvidenceReadRow,
@@ -482,6 +522,7 @@ function buildProposal(
     matchedOwnerLabel: ownerLabel,
     reasonCode: result.reasonCode,
     explanationTokens: result.explanationTokens,
+    evidenceSummary: buildEvidenceSummary(reconciliationEvidences),
     score: result.score,
     createdAt: new Date().toISOString(),
     sortTime: newestEvidenceTime,

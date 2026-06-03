@@ -12,7 +12,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
-import { BalanceKind, BalanceOwnerType } from '../types';
+import { BalanceKind, BalanceOwnerType, BalanceSnapshot } from '../types';
 import {
   createManualBalanceCorrectionSnapshot,
   parseManualBalanceCorrectionAmount,
@@ -36,7 +36,7 @@ interface BalanceCorrectionModalProps {
   kindOptions: BalanceCorrectionKindOption[];
   defaultKind?: BalanceKind;
   onClose: () => void;
-  onSaved: () => Promise<void> | void;
+  onSaved: (snapshot: BalanceSnapshot) => Promise<void> | void;
 }
 
 export default function BalanceCorrectionModal({
@@ -84,7 +84,7 @@ export default function BalanceCorrectionModal({
     setSaving(true);
     setError(null);
     try {
-      await createManualBalanceCorrectionSnapshot({
+      const snapshot = await createManualBalanceCorrectionSnapshot({
         owner_type: ownerType,
         owner_id: ownerId,
         balance_kind: selectedKind,
@@ -94,7 +94,7 @@ export default function BalanceCorrectionModal({
         card_last4: cardLast4,
         detected_bank_name: detectedBankName,
       });
-      await onSaved();
+      await onSaved(snapshot);
       onClose();
     } catch {
       setError('Could not update balance. Try again.');

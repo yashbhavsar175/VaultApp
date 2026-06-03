@@ -22,6 +22,10 @@ import {
   TransactionReconciliationProposal,
   getRecentReconciliationProposals,
 } from '../../lib/services/transactionReconciliationProposals';
+import {
+  dismissReconciliationProposal,
+  loadDismissedReconciliationProposalIds,
+} from '../../lib/services/reconciliationProposalDismissals';
 
 const DECISION_LABELS: Record<TransactionReconciliationProposal['decision'], string> = {
   attach_account: 'Account match',
@@ -137,10 +141,45 @@ function getEligibilityDisplay(proposal: TransactionReconciliationProposal) {
   }
   return {
     label: 'Needs review',
-    helper: 'Review the evidence quality before any future confirmation.',
+    helper: 'Not enough evidence to link safely yet.',
     tone: 'warn' as const,
     icon: 'alert-circle-outline',
   };
+}
+
+function sourceTypeLabel(sourceType: string): string {
+  if (sourceType === 'sms') return 'SMS';
+  if (sourceType === 'notification') return 'Notification';
+  if (sourceType === 'manual') return 'Manual';
+  if (sourceType === 'import') return 'Import';
+  return 'Evidence';
+}
+
+function directionLabel(direction?: string | null): string {
+  if (direction === 'debit') return 'Debit';
+  if (direction === 'credit') return 'Credit';
+  if (direction === 'transfer') return 'Transfer';
+  return 'Unknown direction';
+}
+
+function buildEvidenceSummaryLines(proposal: TransactionReconciliationProposal): string[] {
+  const summary = proposal.evidenceSummary;
+  if (!summary) return [];
+
+  const sourceTypes = summary.sourceTypes.length
+    ? summary.sourceTypes.map(sourceTypeLabel).join(', ')
+    : 'Evidence';
+  const proofParts = [
+    ...summary.accountLast4s.map(last4 => `account ...${last4}`),
+    ...summary.cardLast4s.map(last4 => `card ...${last4}`),
+  ];
+
+  return [
+    `Signals: ${sourceTypes}`,
+    `Movement: ${directionLabel(summary.direction)}${summary.amountPresent ? ' with amount' : ''}`,
+    summary.referencePresent ? 'Reference: present' : 'Reference: not available',
+    proofParts.length ? `Bank proof: ${proofParts.join(', ')}` : 'Bank proof: not available',
+  ];
 }
 
 export default function ReconciliationProposalsScreen() {
@@ -156,8 +195,11 @@ export default function ReconciliationProposalsScreen() {
   const loadProposals = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const nextProposals = await getRecentReconciliationProposals();
-      setProposals(nextProposals);
+      const [nextProposals, dismissedIds] = await Promise.all([
+        getRecentReconciliationProposals(),
+        loadDismissedReconciliationProposalIds(),
+      ]);
+      setProposals(nextProposals.filter(proposal => !dismissedIds.has(proposal.proposalId)));
       setError(false);
     } catch {
       setError(true);
@@ -165,6 +207,16 @@ export default function ReconciliationProposalsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
+  }, []);
+
+  const handleDismissProposal = useCallback(async (proposal: TransactionReconciliationProposal) => {
+    await dismissReconciliationProposal(proposal.proposalId);
+    setProposals(prev => prev.filter(item => item.proposalId !== proposal.proposalId));
+    Toast.show({
+      type: 'success',
+      text1: 'Proposal dismissed',
+      text2: 'It will stay hidden on this device for this user.',
+    });
   }, []);
 
   useEffect(() => {
@@ -251,6 +303,7 @@ export default function ReconciliationProposalsScreen() {
     const evidenceLabel = `${proposal.evidenceIds.length} evidence ${proposal.evidenceIds.length === 1 ? 'signal' : 'signals'}`;
     const canConfirm = validateProposalCanBeConfirmed(proposal);
     const isConfirming = confirmingProposalId === proposal.proposalId;
+    const summaryLines = buildEvidenceSummaryLines(proposal);
 
     return (
       <Card key={proposal.proposalId} style={{ marginBottom: spacing.md }}>
@@ -293,6 +346,16 @@ export default function ReconciliationProposalsScreen() {
             </Text>
         </View>
 
+        {summaryLines.length > 0 ? (
+          <View style={[styles.evidenceBox, { backgroundColor: colors.background, borderRadius: borderRadius.md }]}>
+            {summaryLines.map(line => (
+              <Text key={line} style={[typography.caption, { color: colors.subtext, lineHeight: 18 }]}>
+                {line}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
         {canConfirm ? (
           <TouchableOpacity
             testID={`confirm-match-${proposal.proposalId}`}
@@ -313,6 +376,17 @@ export default function ReconciliationProposalsScreen() {
             </Text>
           </TouchableOpacity>
         ) : null}
+
+        <TouchableOpacity
+          testID={`dismiss-proposal-${proposal.proposalId}`}
+          style={[styles.dismissButton, { borderColor: colors.border, borderRadius: borderRadius.md }]}
+          activeOpacity={0.75}
+          onPress={() => handleDismissProposal(proposal)}>
+          <MaterialCommunityIcons name="close-circle-outline" size={17} color={colors.subtext} />
+          <Text style={[typography.caption, { color: colors.subtext, marginLeft: 6, fontWeight: '800' }]}>
+            Dismiss
+          </Text>
+        </TouchableOpacity>
 
         <View style={[styles.metaRow, { borderTopColor: colors.border }]}>
           <Text style={[typography.caption, { color: colors.subtext }]}>Score {proposal.score}</Text>
@@ -479,10 +553,10 @@ export default function ReconciliationProposalsScreen() {
             <View style={styles.centerState}>
               <MaterialCommunityIcons name="source-branch-sync" size={44} color={colors.subtext} />
               <Text style={[typography.bodyBold, { color: colors.text, marginTop: spacing.md }]}>
-                No reconciliation proposals yet
+                No safe matches available yet
               </Text>
               <Text style={[typography.caption, styles.centerText, { color: colors.subtext, marginTop: spacing.xs }]}>
-                Payment match suggestions will appear here for review and explicit confirmation.
+                Payment match suggestions appear here only when there is enough sanitized evidence to review.
               </Text>
             </View>
           ) : (
@@ -551,11 +625,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  evidenceBox: {
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
   confirmButton: {
     minHeight: 42,
     marginTop: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dismissButton: {
+    minHeight: 40,
+    marginTop: 10,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',

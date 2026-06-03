@@ -267,6 +267,59 @@ describe('balance signal runtime recorder', () => {
     }));
   });
 
+  it('matches existing HDFC card ending 2246 from card-payment evidence without creating a detected card', async () => {
+    tables.credit_cards.push({
+      id: 'card_hdfc_2246',
+      user_id: 'user_1',
+      bank_name: 'HDFC Bank',
+      last_4_digits: '2246',
+    });
+
+    await recordBalanceSignalForUser({
+      userId: 'user_1',
+      sourceType: 'sms',
+      senderOrPackage: 'AD-HDFCBK-S',
+      timestamp: Date.UTC(2026, 5, 3),
+      text: 'Sent Rs.589.00 from HDFC Bank A/C *0719 to Google India Digital Serv Ref 124115794477. PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246. Available limit is Rs.82999.86',
+    });
+
+    expect(tables.detected_accounts).toHaveLength(0);
+    expect(tables.balance_snapshots[0]).toEqual(expect.objectContaining({
+      owner_type: 'credit_card',
+      owner_id: 'card_hdfc_2246',
+      account_last4: '0719',
+      card_last4: '2246',
+      balance_kind: 'available_limit',
+      amount: 82999.86,
+    }));
+  });
+
+  it('does not create a detected card when a legacy credit-card bank account already matches last4', async () => {
+    tables.bank_accounts.push({
+      id: 'legacy_card_2246',
+      user_id: 'user_1',
+      bank_name: 'HDFC Bank',
+      account_last4: '2246',
+      account_type: 'credit_card',
+    });
+
+    await recordBalanceSignalForUser({
+      userId: 'user_1',
+      sourceType: 'sms',
+      senderOrPackage: 'AD-HDFCBK-S',
+      timestamp: Date.UTC(2026, 5, 3),
+      text: 'PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246. Available limit is Rs.82999.86',
+    });
+
+    expect(tables.detected_accounts).toHaveLength(0);
+    expect(tables.balance_snapshots[0]).toEqual(expect.objectContaining({
+      owner_type: 'bank_account',
+      owner_id: 'legacy_card_2246',
+      card_last4: '2246',
+      balance_kind: 'available_limit',
+    }));
+  });
+
   it('creates a pending detected credit card candidate when the card is missing', async () => {
     await recordBalanceSignalForUser({
       userId: 'user_1',
@@ -284,6 +337,23 @@ describe('balance signal runtime recorder', () => {
     expect(tables.balance_snapshots[0]).toEqual(expect.objectContaining({
       owner_type: 'detected_card',
       owner_id: tables.detected_accounts[0].id,
+    }));
+  });
+
+  it('creates an unmatched HDFC detected card with parsed last4 instead of unknown', async () => {
+    await recordBalanceSignalForUser({
+      userId: 'user_1',
+      sourceType: 'sms',
+      senderOrPackage: 'AD-HDFCBK-S',
+      timestamp: Date.UTC(2026, 5, 3),
+      text: 'PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246. Available limit is Rs.82999.86',
+    });
+
+    expect(tables.detected_accounts[0]).toEqual(expect.objectContaining({
+      detection_type: 'credit_card',
+      detected_bank_name: 'HDFC Bank',
+      card_last4: '2246',
+      status: 'pending',
     }));
   });
 

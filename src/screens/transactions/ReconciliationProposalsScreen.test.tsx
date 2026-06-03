@@ -10,6 +10,10 @@ import ReactTestRenderer from 'react-test-renderer';
 import ReconciliationProposalsScreen from './ReconciliationProposalsScreen';
 import { getRecentReconciliationProposals } from '../../lib/services/transactionReconciliationProposals';
 import {
+  dismissReconciliationProposal,
+  loadDismissedReconciliationProposalIds,
+} from '../../lib/services/reconciliationProposalDismissals';
+import {
   buildConfirmPayloadFromProposal,
   confirmTransactionAccountMatch,
 } from '../../lib/services/transactionReconciliationActions';
@@ -49,6 +53,11 @@ jest.mock('../../lib/services/transactionReconciliationProposals', () => ({
   getRecentReconciliationProposals: jest.fn(),
 }));
 
+jest.mock('../../lib/services/reconciliationProposalDismissals', () => ({
+  dismissReconciliationProposal: jest.fn(),
+  loadDismissedReconciliationProposalIds: jest.fn(),
+}));
+
 jest.mock('../../lib/services/transactionReconciliationActions', () => ({
   buildConfirmPayloadFromProposal: jest.fn((proposal: any) => ({
     transactionId: proposal.transactionId,
@@ -81,6 +90,8 @@ jest.mock('react-native-toast-message', () => ({
 }));
 
 const mockedGetRecent = getRecentReconciliationProposals as jest.Mock;
+const mockedLoadDismissed = loadDismissedReconciliationProposalIds as jest.Mock;
+const mockedDismissProposal = dismissReconciliationProposal as jest.Mock;
 const mockedBuildPayload = buildConfirmPayloadFromProposal as jest.Mock;
 const mockedConfirmMatch = confirmTransactionAccountMatch as jest.Mock;
 const mockedToast = Toast as unknown as { show: jest.Mock; hide: jest.Mock };
@@ -99,6 +110,17 @@ function proposal(overrides: Record<string, unknown> = {}) {
     matchedOwnerLabel: 'HDFC Bank ••1234',
     reasonCode: 'same_reference_bank_evidence',
     explanationTokens: ['reference_match', 'bank_evidence', 'owner_unique'],
+    evidenceSummary: {
+      sourceTypes: ['notification', 'sms'],
+      direction: 'debit',
+      amountPresent: true,
+      referencePresent: true,
+      bankProofCount: 1,
+      accountLast4s: ['1234'],
+      cardLast4s: [],
+      bankNames: ['HDFC Bank'],
+      paymentAppHint: true,
+    },
     score: 100,
     createdAt: NOW,
     ...overrides,
@@ -135,6 +157,7 @@ async function pressByTestID(renderer: ReactTestRenderer.ReactTestRenderer, test
 
 async function renderScreen(proposals: any[]) {
   mockedGetRecent.mockResolvedValueOnce(proposals);
+  mockedLoadDismissed.mockResolvedValueOnce(new Set());
   let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
 
   await ReactTestRenderer.act(async () => {
@@ -151,6 +174,8 @@ describe('ReconciliationProposalsScreen', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date(NOW));
     jest.clearAllMocks();
+    mockedLoadDismissed.mockResolvedValue(new Set());
+    mockedDismissProposal.mockResolvedValue(undefined);
     mockedConfirmMatch.mockResolvedValue({
       transaction_id: 'tx_existing',
       status: 'manual_confirmed',
@@ -165,7 +190,8 @@ describe('ReconciliationProposalsScreen', () => {
     const renderer = await renderScreen([]);
     const text = renderedText(renderer);
 
-    expect(text).toContain('No reconciliation proposals yet');
+    expect(text).toContain('No safe matches available yet');
+    expect(text).toContain('Payment match suggestions appear here only when there is enough sanitized evidence to review.');
     expect(mockedGetRecent).toHaveBeenCalledTimes(1);
   });
 
@@ -182,6 +208,10 @@ describe('ReconciliationProposalsScreen', () => {
     expect(text).toContain('Confirm Match');
     expect(text).toContain('Score 100');
     expect(text).toContain('2 evidence signals');
+    expect(text).toContain('Signals: Notification, SMS');
+    expect(text).toContain('Movement: Debit with amount');
+    expect(text).toContain('Reference: present');
+    expect(text).toContain('Bank proof: account ...1234');
     expect(text).not.toContain('Attach');
     expect(text).not.toContain('Apply');
     expect(text).not.toContain('Accept');
@@ -218,6 +248,17 @@ describe('ReconciliationProposalsScreen', () => {
         matchedOwnerLabel: 'Axis Bank ••8888',
         reasonCode: 'upi_only_not_bank_proof',
         score: 15,
+        evidenceSummary: {
+          sourceTypes: ['notification'],
+          direction: 'debit',
+          amountPresent: true,
+          referencePresent: false,
+          bankProofCount: 0,
+          accountLast4s: [],
+          cardLast4s: [],
+          bankNames: [],
+          paymentAppHint: true,
+        },
       }),
     ]);
     const text = renderedText(renderer);
@@ -226,6 +267,7 @@ describe('ReconciliationProposalsScreen', () => {
     expect(text).toContain('Needs review');
     expect(text).toContain('Unknown account');
     expect(text).toContain('UPI handle is not bank proof');
+    expect(text).toContain('Bank proof: not available');
     expect(text).not.toContain('SBI');
     expect(text).not.toContain('Axis Bank');
     expect(text).not.toContain('Confirm Match');
@@ -422,6 +464,41 @@ describe('ReconciliationProposalsScreen', () => {
     expect(renderer.root.findAllByProps({ testID: 'confirm-match-mapping_hint' })).toHaveLength(0);
     expect(mockedBuildPayload).not.toHaveBeenCalled();
     expect(mockedConfirmMatch).not.toHaveBeenCalled();
+  });
+
+  it('filters locally dismissed proposals for the current user', async () => {
+    mockedGetRecent.mockResolvedValueOnce([
+      proposal({ proposalId: 'kept_proposal' }),
+      proposal({ proposalId: 'dismissed_proposal', matchedOwnerLabel: 'ICICI Bank ••4321' }),
+    ]);
+    mockedLoadDismissed.mockResolvedValueOnce(new Set(['dismissed_proposal']));
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<ReconciliationProposalsScreen />);
+    });
+    await ReactTestRenderer.act(async () => {
+      await Promise.resolve();
+    });
+
+    const text = renderedText(renderer!);
+    expect(text).toContain('HDFC Bank ••1234');
+    expect(text).not.toContain('ICICI Bank');
+  });
+
+  it('dismisses a proposal locally without confirming or mutating transactions', async () => {
+    const renderer = await renderScreen([proposal({ proposalId: 'dismiss_me' })]);
+
+    await pressByTestID(renderer, 'dismiss-proposal-dismiss_me');
+
+    expect(mockedDismissProposal).toHaveBeenCalledWith('dismiss_me');
+    expect(mockedBuildPayload).not.toHaveBeenCalled();
+    expect(mockedConfirmMatch).not.toHaveBeenCalled();
+    expect(renderedText(renderer)).not.toContain('HDFC Bank ••1234');
+    expect(mockedToast.show).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      text1: 'Proposal dismissed',
+    }));
   });
 
   it('has no direct database mutation code and only imports the explicit action wrapper', () => {

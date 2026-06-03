@@ -23,6 +23,7 @@ const mockedSupabase = supabase as unknown as {
 function setupSnapshotInsert() {
   const tables: string[] = [];
   const inserts: Record<string, any[]> = {};
+  const updates: Record<string, any[]> = {};
 
   mockedSupabase.auth.getUser.mockResolvedValue({
     data: { user: { id: 'user_1' } },
@@ -30,6 +31,10 @@ function setupSnapshotInsert() {
 
   mockedSupabase.from.mockImplementation((table: string) => {
     tables.push(table);
+    const updateQuery: any = {
+      eq: jest.fn(() => updateQuery),
+      then: (resolve: any, reject: any) => Promise.resolve({ data: null, error: null }).then(resolve, reject),
+    };
     return {
       insert: jest.fn((payload) => {
         inserts[table] = [...(inserts[table] || []), payload];
@@ -46,10 +51,14 @@ function setupSnapshotInsert() {
           })),
         };
       }),
+      update: jest.fn((payload) => {
+        updates[table] = [...(updates[table] || []), payload];
+        return updateQuery;
+      }),
     };
   });
 
-  return { tables, inserts };
+  return { tables, inserts, updates };
 }
 
 describe('manual balance correction snapshots', () => {
@@ -63,7 +72,7 @@ describe('manual balance correction snapshots', () => {
   });
 
   it('creates a manual exact bank available balance snapshot payload', async () => {
-    const { tables, inserts } = setupSnapshotInsert();
+    const { tables, inserts, updates } = setupSnapshotInsert();
 
     await createManualBalanceCorrectionSnapshot({
       owner_type: 'bank_account',
@@ -75,7 +84,7 @@ describe('manual balance correction snapshots', () => {
       note: 'Manual branch check',
     });
 
-    expect(tables).toEqual(['balance_snapshots']);
+    expect(tables).toEqual(['balance_snapshots', 'bank_accounts']);
     expect(inserts.balance_snapshots[0]).toEqual(expect.objectContaining({
       user_id: 'user_1',
       owner_type: 'bank_account',
@@ -90,6 +99,7 @@ describe('manual balance correction snapshots', () => {
       raw_source_metadata: { source: 'manual', kind: 'balance_correction' },
       note: 'Manual branch check',
     }));
+    expect(updates.bank_accounts[0]).toEqual({ balance: 1234.56 });
   });
 
   it('creates a manual exact bank current balance snapshot payload', () => {
@@ -187,8 +197,8 @@ describe('manual balance correction snapshots', () => {
     })).toThrow('Balance owner is required');
   });
 
-  it('does not insert fake transaction, card transaction, emi, or bank balance rows', async () => {
-    const { tables } = setupSnapshotInsert();
+  it('does not insert fake transaction, card transaction, emi, or bank account rows', async () => {
+    const { tables, inserts, updates } = setupSnapshotInsert();
 
     await createManualBalanceCorrectionSnapshot({
       owner_type: 'bank_account',
@@ -197,11 +207,12 @@ describe('manual balance correction snapshots', () => {
       amount: 100,
     });
 
-    expect(tables).toEqual(['balance_snapshots']);
+    expect(tables).toEqual(['balance_snapshots', 'bank_accounts']);
     expect(tables).not.toContain('transactions');
     expect(tables).not.toContain('cc_transactions');
     expect(tables).not.toContain('emi_payments');
-    expect(tables).not.toContain('bank_accounts');
+    expect(inserts.bank_accounts).toBeUndefined();
+    expect(updates.bank_accounts[0]).toEqual({ balance: 100 });
   });
 
   it('sanitizes manual notes and metadata', async () => {

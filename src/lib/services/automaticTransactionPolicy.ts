@@ -27,7 +27,7 @@ const CASH_DEPOSIT_PATTERN =
 const CASH_WITHDRAWAL_PATTERN =
   /\bwithdraw(?:al|n)?\b|\bwithdrawn\b/i;
 const CREDIT_CARD_BILL_PATTERN =
-  /\b(?:credit card|card|cc)\s+(?:bill\s+)?payment\b|\bpayment\b.*\b(?:credit card|card bill)\b/i;
+  /\b(?:credit\s*card|creditcard|card|cc)\s+(?:bill\s+)?payment\b|\bpayment\b.*\b(?:credit\s*card|creditcard|card bill)\b|\b(?:gpay|googlepay|paytm|phonepe|cred)?[-_.]?(?:creditcard|cardbill|cc)[-_.]?[a-z0-9._-]*@[a-z0-9.-]+\b/i;
 const DEBT_REPAYMENT_PATTERN =
   /\b(?:loan|debt|borrowed money)\s+repay(?:ment|aid)?\b|\brepay(?:ment|aid)?\b.*\b(?:loan|debt|borrowed)\b/i;
 const BORROWED_PATTERN =
@@ -36,6 +36,30 @@ const REFUND_OR_REIMBURSEMENT_PATTERN =
   /\b(?:refund(?:ed)?|reimburse(?:ment|d)?)\b/i;
 const MERCHANT_EXPENSE_PATTERN =
   /\b(?:merchant|vendor|purchase|purchased|shopping|shop|store|mart|restaurant|cafe|food|fuel|petrol|diesel|rent|utility|utilities|recharge|grocery|groceries|bill payment|pos|ecom|amazon|flipkart|zomato|swiggy|blinkit|zepto|uber|ola|rapido)\b/i;
+
+function extractDebitCounterparty(text: string): string | null {
+  const match = text.match(/\b(?:sent|paid|transferred)?\s*(?:to|towards)\s+([A-Za-z][A-Za-z\s.'-]{2,48}?)(?:\s+on\b|\s+via\b|\s+ref\b|\.|$)/i);
+  return match?.[1]?.trim() || null;
+}
+
+function looksLikePersonCounterparty(text: string): boolean {
+  if (MERCHANT_EXPENSE_PATTERN.test(text)) return false;
+
+  const counterparty = extractDebitCounterparty(text);
+  if (!counterparty) return false;
+  if (/@|\d/.test(counterparty)) return false;
+  if (/\b(?:bank|account|a\/c|upi|credit|card|loan|bill|payment|google|amazon|paytm|phonepe|supermoney|super\s+money)\b/i.test(counterparty)) {
+    return false;
+  }
+
+  const words = counterparty
+    .replace(/[^A-Za-z\s.'-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return words.length >= 2 && words.length <= 4 && words.every(word => word.length >= 2);
+}
 
 export function getAutomaticTransactionPolicy(
   direction: AutomaticTransactionDirection,
@@ -51,6 +75,10 @@ export function getAutomaticTransactionPolicy(
 
   if (PERSONAL_PATTERN.test(text)) {
     return { action: 'review', reasonCode: 'personal_transfer' };
+  }
+
+  if (CREDIT_CARD_BILL_PATTERN.test(text)) {
+    return { action: 'review', reasonCode: 'credit_card_bill_payment' };
   }
 
   if (direction === 'credit') {
@@ -69,15 +97,15 @@ export function getAutomaticTransactionPolicy(
   if (CASH_WITHDRAWAL_PATTERN.test(text)) {
     return { action: 'review', reasonCode: 'cash_withdrawal' };
   }
-  if (CREDIT_CARD_BILL_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'credit_card_bill_payment' };
-  }
   if (DEBT_REPAYMENT_PATTERN.test(text)) {
     return { action: 'review', reasonCode: 'debt_repayment' };
+  }
+  if (looksLikePersonCounterparty(text)) {
+    return { action: 'review', reasonCode: 'personal_transfer' };
   }
   if (MERCHANT_EXPENSE_PATTERN.test(text)) {
     return { action: 'post', type: 'expense' };
   }
 
-  return { action: 'review', reasonCode: 'unverified_debit' };
+  return { action: 'post', type: 'expense' };
 }

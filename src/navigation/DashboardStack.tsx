@@ -1,9 +1,10 @@
 import React from 'react';
 import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
 import Dashboard from '../screens/Dashboard';
-import { BanksScreen, AnalyticsScreen, BankConfigScreen, DetectedAccountsScreen, SMSTestScreen, BankAutoDetectScreen } from '../screens/AllScreens';
+import { BanksScreen, AnalyticsScreen, DetectedAccountsScreen, SMSTestScreen, BankAutoDetectScreen } from '../screens/AllScreens';
 import Transactions from '../screens/transactions/Transactions';
 import TransactionDetail from '../screens/transactions/TransactionDetail';
+import { AccountsAndCardsRouteRedirect } from './RouteRedirects';
 
 export type DashboardStackParamList = {
   DashboardHome: undefined;
@@ -34,7 +35,7 @@ export default function DashboardStack() {
       }}>
       <Stack.Screen name="DashboardHome" component={Dashboard} />
       <Stack.Screen name="Banks" component={BanksScreen} />
-      <Stack.Screen name="BankConfigScreen" component={BankConfigScreen} />
+      <Stack.Screen name="BankConfigScreen" component={AccountsAndCardsRouteRedirect} />
       <Stack.Screen name="DetectedAccountsScreen" component={DetectedAccountsScreen} />
       <Stack.Screen name="BankAutoDetectScreen" component={BankAutoDetectScreen} />
       <Stack.Screen name="SMSTestScreen" component={SMSTestScreen} />

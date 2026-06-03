@@ -192,6 +192,27 @@ export async function updateBankAccount(
   }
 }
 
+export async function archiveBankAccountIfSupported(id: string): Promise<boolean> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('No user found');
+
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update({
+      is_archived: true,
+      archived_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error && isMissingArchiveColumnError(error)) {
+    return false;
+  }
+
+  if (error) throw error;
+  return true;
+}
+
 export async function deleteBankAccount(id: string): Promise<void> {
   try {
     const { data: { user } } = await supabase.auth.getUser();

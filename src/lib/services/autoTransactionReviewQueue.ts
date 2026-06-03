@@ -12,6 +12,8 @@ import {
 } from './userScopedQueues';
 
 const STORAGE_KEY = REVIEW_QUEUE_BASE_KEY;
+const SELF_TRANSFER_PAIR_WINDOW_MS = 15 * 60 * 1000;
+const AMOUNT_EPSILON = 0.01;
 
 function emitReviewQueueChanged(): void {
   emitFinanceDataChanged({
@@ -38,6 +40,233 @@ async function getCurrentUserId(): Promise<string | null> {
 
 function isValidReviewItem(item: unknown): item is ReviewItem {
   return Boolean(item && typeof item === 'object' && (item as ReviewItem).id);
+}
+
+function candidateTimestamp(candidate: Pick<SmartCandidate, 'signalId'>): number | null {
+  const match = candidate.signalId?.match(/^sig_(\d+)_/);
+  if (!match) return null;
+  const timestamp = Number.parseInt(match[1], 10);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function hasFingerprintOverlap(
+  existing: Pick<SmartCandidate, 'duplicateFingerprints'>,
+  incoming: Pick<SmartCandidate, 'duplicateFingerprints'>
+): boolean {
+  return existing.duplicateFingerprints.some(existingPrint =>
+    incoming.duplicateFingerprints.some(newPrint =>
+      existingPrint.strategy === newPrint.strategy && existingPrint.value === newPrint.value
+    )
+  );
+}
+
+function isCardPaymentCandidate(candidate: Pick<SmartCandidate, 'autoClass' | 'instrumentHint' | 'reference'>): boolean {
+  return candidate.autoClass === 'credit_card_bill_payment' ||
+    (candidate.instrumentHint === 'credit_card' && Boolean(candidate.reference));
+}
+
+function sameDefinedValue(left?: string | null, right?: string | null): boolean {
+  return Boolean(left && right && left === right);
+}
+
+function isRelatedCardPaymentCandidate(
+  existing: ReviewItem,
+  incoming: Omit<SmartCandidate, 'rawText'>
+): boolean {
+  if (!isCardPaymentCandidate(existing.candidate) && !isCardPaymentCandidate(incoming)) {
+    return false;
+  }
+  if (existing.candidate.amount !== incoming.amount) return false;
+
+  if (sameDefinedValue(existing.candidate.reference, incoming.reference)) {
+    return true;
+  }
+
+  const existingTime = candidateTimestamp(existing.candidate);
+  const incomingTime = candidateTimestamp(incoming);
+  const isNearTime = existingTime !== null && incomingTime !== null &&
+    Math.abs(existingTime - incomingTime) <= 10 * 60 * 1000;
+  if (!isNearTime) return false;
+
+  return sameDefinedValue(existing.candidate.accountLast4, incoming.accountLast4) ||
+    sameDefinedValue(existing.candidate.cardLast4, incoming.cardLast4) ||
+    Boolean(existing.candidate.cardLast4 || incoming.cardLast4);
+}
+
+function isSameAmount(left?: number | null, right?: number | null): boolean {
+  if (left == null || right == null) return false;
+  return Math.abs(Number(left) - Number(right)) <= AMOUNT_EPSILON;
+}
+
+function isDebitLike(candidate: Pick<SmartCandidate, 'direction' | 'autoClass'>): boolean {
+  return candidate.direction === 'debit' ||
+    ['bank_debit', 'upi_payment', 'personal_transfer'].includes(candidate.autoClass);
+}
+
+function isCreditLike(candidate: Pick<SmartCandidate, 'direction' | 'autoClass'>): boolean {
+  return candidate.direction === 'credit' ||
+    ['bank_credit', 'upi_received'].includes(candidate.autoClass);
+}
+
+function isSelfTransferRelated(candidate: Pick<SmartCandidate, 'autoClass'>): boolean {
+  return candidate.autoClass === 'self_transfer';
+}
+
+function isPaymentAppSource(candidate: Pick<SmartCandidate, 'sourceType' | 'redactedPreview'>): boolean {
+  const source = candidate.redactedPreview?.detectedSource || '';
+  return candidate.sourceType === 'notification' ||
+    /gpay|google|phonepe|paytm|super|money\.super|com\.google\.android\.apps\.nbu\.paisa\.user|money\.super\.payments/i.test(source);
+}
+
+function isBankSmsSource(candidate: Pick<SmartCandidate, 'sourceType' | 'redactedPreview'>): boolean {
+  const source = candidate.redactedPreview?.detectedSource || '';
+  return candidate.sourceType === 'sms' ||
+    /hdfc|icici|sbi|axis|kotak|pnb|bank/i.test(source);
+}
+
+function isRelatedSelfTransferCandidate(
+  existing: ReviewItem,
+  incoming: Omit<SmartCandidate, 'rawText'>
+): boolean {
+  if (!isSameAmount(existing.candidate.amount, incoming.amount)) return false;
+
+  const existingTime = candidateTimestamp(existing.candidate);
+  const incomingTime = candidateTimestamp(incoming);
+  if (existingTime === null || incomingTime === null) return false;
+  if (Math.abs(existingTime - incomingTime) > SELF_TRANSFER_PAIR_WINDOW_MS) return false;
+
+  if (sameDefinedValue(existing.candidate.reference, incoming.reference)) return true;
+
+  const hasSelfTransferHint = isSelfTransferRelated(existing.candidate) || isSelfTransferRelated(incoming);
+  const hasOppositeEvidence =
+    (isDebitLike(existing.candidate) && isCreditLike(incoming)) ||
+    (isCreditLike(existing.candidate) && isDebitLike(incoming)) ||
+    hasSelfTransferHint;
+  const hasBankAndPaymentApp =
+    (isBankSmsSource(existing.candidate) && isPaymentAppSource(incoming)) ||
+    (isPaymentAppSource(existing.candidate) && isBankSmsSource(incoming));
+
+  return hasOppositeEvidence && hasBankAndPaymentApp;
+}
+
+function mergeFingerprints(
+  existing: SmartCandidate['duplicateFingerprints'],
+  incoming: SmartCandidate['duplicateFingerprints']
+): SmartCandidate['duplicateFingerprints'] {
+  const seen = new Set<string>();
+  return [...existing, ...incoming].filter(fingerprint => {
+    const key = `${fingerprint.strategy}:${fingerprint.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeReasons(existing: string[], incoming: string[]): string[] {
+  return [...existing, ...incoming].filter((reason, index, all) => all.indexOf(reason) === index);
+}
+
+function mergeCardPaymentCandidate(
+  existing: Omit<SmartCandidate, 'rawText'>,
+  incoming: Omit<SmartCandidate, 'rawText'>
+): Omit<SmartCandidate, 'rawText'> {
+  const cardLast4 = existing.cardLast4 || incoming.cardLast4 || null;
+  const accountLast4 = existing.accountLast4 || incoming.accountLast4 || null;
+  const primaryLast4 = cardLast4 || existing.last4 || incoming.last4 || null;
+
+  return {
+    ...existing,
+    ...incoming,
+    signalId: existing.signalId,
+    sourceType: existing.sourceType || incoming.sourceType,
+    evidenceId: existing.evidenceId || incoming.evidenceId || null,
+    paymentAppAccountMatch: existing.paymentAppAccountMatch || incoming.paymentAppAccountMatch || null,
+    autoClass: 'credit_card_bill_payment',
+    direction: 'neutral',
+    amount: existing.amount ?? incoming.amount,
+    merchantOrPerson: existing.merchantOrPerson || incoming.merchantOrPerson || null,
+    last4: primaryLast4,
+    accountLast4,
+    cardLast4,
+    reference: existing.reference || incoming.reference,
+    instrumentHint: 'credit_card',
+    confidenceScore: Math.max(existing.confidenceScore, incoming.confidenceScore),
+    confidenceLevel: existing.confidenceLevel === 'high' || incoming.confidenceLevel === 'high'
+      ? 'high'
+      : existing.confidenceLevel === 'medium' || incoming.confidenceLevel === 'medium'
+        ? 'medium'
+        : 'low',
+    decision: 'review_required',
+    duplicateFingerprints: mergeFingerprints(existing.duplicateFingerprints, incoming.duplicateFingerprints),
+    redactedPreview: {
+      ...existing.redactedPreview,
+      ...incoming.redactedPreview,
+      autoClass: 'credit_card_bill_payment',
+      maskedLast4: cardLast4 ? `XX${cardLast4}` : existing.redactedPreview.maskedLast4 || incoming.redactedPreview.maskedLast4,
+    },
+  };
+}
+
+function mergeSafeSourceToken(left?: string | null, right?: string | null): string {
+  const tokens = [left, right]
+    .map(value => (value || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48))
+    .filter(Boolean);
+  return [...new Set(tokens)].join('_') || 'paired_sources';
+}
+
+function mergeSelfTransferCandidate(
+  existing: Omit<SmartCandidate, 'rawText'>,
+  incoming: Omit<SmartCandidate, 'rawText'>
+): Omit<SmartCandidate, 'rawText'> {
+  const accountLast4 = existing.accountLast4 || incoming.accountLast4 || existing.last4 || incoming.last4 || null;
+  const confidenceScore = Math.max(existing.confidenceScore, incoming.confidenceScore, 70);
+
+  return {
+    ...existing,
+    ...incoming,
+    signalId: existing.signalId,
+    sourceType: existing.sourceType || incoming.sourceType,
+    evidenceId: existing.evidenceId || incoming.evidenceId || null,
+    paymentAppAccountMatch: existing.paymentAppAccountMatch || incoming.paymentAppAccountMatch || null,
+    autoClass: 'self_transfer',
+    direction: 'neutral',
+    amount: existing.amount ?? incoming.amount,
+    merchantOrPerson: null,
+    last4: accountLast4,
+    accountLast4,
+    cardLast4: existing.cardLast4 || incoming.cardLast4 || null,
+    reference: existing.reference || incoming.reference,
+    instrumentHint: existing.instrumentHint === 'bank_account' || incoming.instrumentHint === 'bank_account'
+      ? 'bank_account'
+      : existing.instrumentHint || incoming.instrumentHint,
+    confidenceScore,
+    confidenceLevel: confidenceScore >= 85 ? 'high' : 'medium',
+    decision: 'review_required',
+    duplicateFingerprints: mergeFingerprints(existing.duplicateFingerprints, incoming.duplicateFingerprints),
+    redactedPreview: {
+      ...existing.redactedPreview,
+      ...incoming.redactedPreview,
+      amount: existing.amount ?? incoming.amount ?? undefined,
+      detectedSource: mergeSafeSourceToken(
+        existing.redactedPreview.detectedSource,
+        incoming.redactedPreview.detectedSource,
+      ),
+      autoClass: 'self_transfer',
+      maskedLast4: accountLast4 ? `XX${accountLast4}` : existing.redactedPreview.maskedLast4 || incoming.redactedPreview.maskedLast4,
+      hashSummary: existing.redactedPreview.hashSummary || incoming.redactedPreview.hashSummary,
+    },
+  };
+}
+
+function omitUnsafeCandidateFields(candidate: SmartCandidate): Omit<SmartCandidate, 'rawText'> {
+  const { ...safeCandidate } = candidate;
+  if ('rawText' in safeCandidate) {
+    delete (safeCandidate as any).rawText;
+  }
+  if ('rawSignalText' in safeCandidate) {
+    delete (safeCandidate as any).rawSignalText;
+  }
+  return safeCandidate;
 }
 
 async function getReviewQueueForUser(userId: string): Promise<ReviewItem[]> {
@@ -110,33 +339,56 @@ export async function enqueueReviewCandidate(
     }
 
     const queue = await getReviewQueueForUser(userId);
-    
-    // 1. Dedupe by duplicateFingerprints
-    const isDuplicate = queue.some(item => 
-      item.candidate.duplicateFingerprints.some(existingPrint => 
-        candidate.duplicateFingerprints.some(newPrint => 
-          existingPrint.strategy === newPrint.strategy && existingPrint.value === newPrint.value
-        )
-      )
-    );
-    
-    if (isDuplicate) {
-      return false; // Silently deduplicated
-    }
+    const safeCandidate = omitUnsafeCandidateFields(candidate);
 
-    // 2. Safely omit rawText (ensure no raw SMS body is stored in queue)
-    const { ...safeCandidate } = candidate;
-    // Remove any hidden rawText properties that could have leaked from custom input
-    if ('rawText' in safeCandidate) {
-      delete (safeCandidate as any).rawText;
-    }
-    if ('rawSignalText' in safeCandidate) {
-      delete (safeCandidate as any).rawSignalText;
-    }
-
-    // 3. Set reasons
+    // 1. Set reasons
     const reasons = customReasons || getReasonsForCandidate(candidate);
 
+    // 2. Dedupe and enrich related card-payment evidence instead of discarding later proof.
+    const duplicateIndex = queue.findIndex(item =>
+      hasFingerprintOverlap(item.candidate, safeCandidate) ||
+      isRelatedCardPaymentCandidate(item, safeCandidate) ||
+      isRelatedSelfTransferCandidate(item, safeCandidate)
+    );
+
+    if (duplicateIndex >= 0) {
+      const duplicateItem = queue[duplicateIndex];
+      if (isRelatedCardPaymentCandidate(duplicateItem, safeCandidate)) {
+        queue[duplicateIndex] = {
+          ...duplicateItem,
+          candidate: mergeCardPaymentCandidate(duplicateItem.candidate, safeCandidate),
+          reasons: mergeReasons(duplicateItem.reasons, reasons),
+        };
+        await saveUserScopedQueue(STORAGE_KEY, userId, queue);
+        emitReviewQueueChanged();
+      } else if (isRelatedSelfTransferCandidate(duplicateItem, safeCandidate)) {
+        const existingTime = candidateTimestamp(duplicateItem.candidate);
+        const incomingTime = candidateTimestamp(safeCandidate);
+        queue[duplicateIndex] = {
+          ...duplicateItem,
+          candidate: mergeSelfTransferCandidate(duplicateItem.candidate, safeCandidate),
+          reasons: mergeReasons(duplicateItem.reasons, [
+            ...reasons,
+            'Paired bank debit and payment-app credit need transfer review',
+          ]),
+        };
+        await saveUserScopedQueue(STORAGE_KEY, userId, queue);
+        emitReviewQueueChanged();
+        console.log('[SelfTransferPairing] Review candidate merged', {
+          pairedEvidenceFound: true,
+          amount: safeCandidate.amount,
+          timeWindowMs: existingTime !== null && incomingTime !== null
+            ? Math.abs(existingTime - incomingTime)
+            : null,
+          routeDecision: 'review_queue',
+          reasonCode: 'self_transfer',
+          queueAction: 'merge',
+        });
+      }
+      return false;
+    }
+
+    // 3. Create the new safe review item.
     const newItem: ReviewItem = {
       id: candidate.signalId || `sig_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       candidate: safeCandidate,

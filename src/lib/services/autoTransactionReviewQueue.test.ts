@@ -113,6 +113,103 @@ describe('Auto Transaction Review Queue Service', () => {
     expect(queue).toHaveLength(1);
   });
 
+  it('merges paired debit and credit-card payment evidence into one enriched review item', async () => {
+    const timestamp = Date.now();
+    const notificationCandidate: SmartCandidate = {
+      ...mockCandidate(`sig_${timestamp}_notify`, '124115794477'),
+      autoClass: 'credit_card_bill_payment',
+      direction: 'neutral',
+      amount: 589,
+      merchantOrPerson: null,
+      last4: '0719',
+      accountLast4: '0719',
+      cardLast4: null,
+      instrumentHint: 'credit_card',
+      duplicateFingerprints: [
+        { strategy: 'reference', value: '124115794477' },
+        { strategy: 'hash', value: 'hash_notify' },
+      ],
+      redactedPreview: {
+        amount: 589,
+        detectedSource: 'com.google.android.apps.nbu.paisa.user',
+        autoClass: 'credit_card_bill_payment',
+        maskedLast4: 'XX0719',
+        hashSummary: 'len=111 hash=notify',
+      },
+    };
+    const smsCandidate: SmartCandidate = {
+      ...mockCandidate(`sig_${timestamp + 1000}_sms`, '124115794477'),
+      autoClass: 'credit_card_bill_payment',
+      direction: 'neutral',
+      amount: 589,
+      merchantOrPerson: 'Google India Digital Serv',
+      last4: '2246',
+      accountLast4: '0719',
+      cardLast4: '2246',
+      instrumentHint: 'credit_card',
+      duplicateFingerprints: [
+        { strategy: 'reference', value: '124115794477' },
+        { strategy: 'hash', value: 'hash_sms' },
+      ],
+      redactedPreview: {
+        amount: 589,
+        detectedSource: 'AD-HDFCBK-S',
+        autoClass: 'credit_card_bill_payment',
+        maskedLast4: 'XX2246',
+        hashSummary: 'len=160 hash=sms',
+      },
+    };
+
+    await expect(enqueueReviewCandidate(notificationCandidate)).resolves.toBe(true);
+    await expect(enqueueReviewCandidate(smsCandidate)).resolves.toBe(false);
+
+    const queue = await getReviewQueue();
+    expect(queue).toHaveLength(1);
+    expect(queue[0].candidate).toEqual(expect.objectContaining({
+      autoClass: 'credit_card_bill_payment',
+      direction: 'neutral',
+      amount: 589,
+      accountLast4: '0719',
+      cardLast4: '2246',
+      last4: '2246',
+      reference: '124115794477',
+      instrumentHint: 'credit_card',
+    }));
+    expect(queue[0].candidate.duplicateFingerprints).toEqual(expect.arrayContaining([
+      { strategy: 'hash', value: 'hash_notify' },
+      { strategy: 'hash', value: 'hash_sms' },
+    ]));
+    expect(JSON.stringify(queue)).not.toContain('gpay-creditcard@okpayaxis');
+  });
+
+  it('suppresses an ordinary debit duplicate when later evidence proves card bill payment', async () => {
+    const timestamp = Date.now();
+    await enqueueReviewCandidate({
+      ...mockCandidate(`sig_${timestamp}_debit`, '124115794477'),
+      autoClass: 'bank_debit',
+      direction: 'debit',
+      amount: 589,
+      accountLast4: '0719',
+    });
+
+    await enqueueReviewCandidate({
+      ...mockCandidate(`sig_${timestamp + 1000}_card`, '124115794477'),
+      autoClass: 'credit_card_bill_payment',
+      direction: 'neutral',
+      amount: 589,
+      last4: '2246',
+      accountLast4: '0719',
+      cardLast4: '2246',
+      instrumentHint: 'credit_card',
+    });
+
+    const queue = await getReviewQueue();
+    expect(queue).toHaveLength(1);
+    expect(queue[0].candidate.autoClass).toBe('credit_card_bill_payment');
+    expect(queue[0].candidate.direction).toBe('neutral');
+    expect(queue[0].candidate.cardLast4).toBe('2246');
+  });
+
   it('enforces maximum 200 items limit', async () => {
     for (let i = 0; i < 205; i++) {
       const candidate = mockCandidate(`sig_${i}`);

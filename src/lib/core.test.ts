@@ -1,14 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createLinkedRefundTransaction,
+  deleteTransaction,
   createTransferTransaction,
   findDuplicateLinkedRefundTransaction,
   parseTransaction,
   syncOfflineTransactions,
   supabase,
+  updateTransaction,
 } from './core';
 import { emitFinanceDataChanged } from './services/dataEvents';
-import { OFFLINE_TX_QUEUE_BASE_KEY, getUserScopedQueueKey } from './services/userScopedQueues';
+import { OFFLINE_TX_QUEUE_BASE_KEY, REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from './services/userScopedQueues';
 
 jest.mock('./services/notifications', () => ({
   showTransactionConfirmation: jest.fn(),
@@ -20,11 +22,30 @@ jest.mock('./services/dataEvents', () => ({
 
 jest.mock('@supabase/supabase-js', () => {
   const mockOrder = jest.fn();
-  const mockEq = jest.fn(() => ({ order: mockOrder }));
+  const mockIn = jest.fn();
+  const mockMaybeSingle = jest.fn();
+  const mockEq: jest.Mock = jest.fn(() => ({
+    eq: mockEq,
+    in: mockIn,
+    maybeSingle: mockMaybeSingle,
+    order: mockOrder,
+  }));
   const mockSingle = jest.fn();
-  const mockSelect = jest.fn(() => ({ eq: mockEq, single: mockSingle }));
+  const mockSelect = jest.fn(() => ({
+    eq: mockEq,
+    in: mockIn,
+    maybeSingle: mockMaybeSingle,
+    single: mockSingle,
+  }));
   const mockInsert = jest.fn(() => ({ select: mockSelect }));
-  const mockFrom = jest.fn(() => ({ insert: mockInsert, select: mockSelect }));
+  const mockDelete = jest.fn(() => ({ eq: mockEq }));
+  const mockUpdate = jest.fn(() => ({ eq: mockEq, select: mockSelect }));
+  const mockFrom = jest.fn(() => ({
+    delete: mockDelete,
+    insert: mockInsert,
+    select: mockSelect,
+    update: mockUpdate,
+  }));
   const mockGetUser = jest.fn();
 
   return {
@@ -38,9 +59,13 @@ jest.mock('@supabase/supabase-js', () => {
         mockInsert,
         mockSelect,
         mockEq,
+        mockIn,
         mockOrder,
         mockSingle,
+        mockMaybeSingle,
         mockGetUser,
+        mockDelete,
+        mockUpdate,
       },
     })),
   };
@@ -290,6 +315,199 @@ describe('linked refund transaction helper', () => {
     });
 
     expect(duplicate?.id).toBe('refund_1');
+  });
+});
+
+describe('review source disposition on transaction delete', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    mockSupabase.__mocks.mockGetUser.mockResolvedValue({
+      data: { user: { id: 'user_1' } },
+    });
+    mockSupabase.__mocks.mockDelete.mockReturnValue({ eq: mockSupabase.__mocks.mockEq });
+  });
+
+  it('tombstones a deleted reviewed income evidence source so it cannot reappear as active review', async () => {
+    mockSupabase.__mocks.mockIn.mockResolvedValueOnce({
+      data: [{
+        id: 'tx_103',
+        type: 'income',
+        amount: 103,
+        note: 'Reviewed income',
+        category: 'Reviewed Income',
+        created_at: '2026-06-03T00:00:00.000Z',
+        primary_evidence_id: 'ev_103',
+        account_match_reason: 'income_review_confirmed',
+      }],
+      error: null,
+    });
+    mockSupabase.__mocks.mockMaybeSingle
+      .mockResolvedValueOnce({ data: { evidence_id: 'ev_103', signal_hash: 'sig_103' }, error: null })
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({ data: null, error: null });
+
+    await deleteTransaction('tx_103');
+
+    expect(mockSupabase.__mocks.mockInsert).toHaveBeenCalledWith(expect.objectContaining({
+      user_id: 'user_1',
+      transaction_id: null,
+      evidence_id: 'ev_103',
+      signal_hash: 'sig_103',
+      decision: 'not_income',
+      income_source_type: null,
+      confidence: 'user_confirmed',
+    }));
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['review'],
+      source: 'transaction:delete_review_source',
+    }));
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['transactions', 'review'],
+      source: 'transaction:delete',
+      transactionId: 'tx_103',
+    }));
+  });
+
+  it('marks a deleted reviewed expense queue source reviewed without creating an income tombstone', async () => {
+    await AsyncStorage.setItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1'), JSON.stringify([{
+      id: 'queue_1',
+      status: 'posted',
+      createdTransactionId: 'tx_expense',
+      user_id: 'user_1',
+      queueOwnerId: 'user_1',
+      candidate: {
+        evidenceId: 'ev_expense',
+      },
+    }]));
+    mockSupabase.__mocks.mockIn.mockResolvedValueOnce({
+      data: [{
+        id: 'tx_expense',
+        type: 'expense',
+        amount: 2,
+        note: 'Reviewed expense',
+        category: 'Reviewed Expense',
+        created_at: '2026-06-03T00:00:00.000Z',
+        primary_evidence_id: 'ev_expense',
+        account_match_reason: 'review_queue_expense_confirmed',
+      }],
+      error: null,
+    });
+
+    await deleteTransaction('tx_expense');
+
+    const rawQueue = await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1'));
+    expect(JSON.parse(rawQueue || '[]')[0]).toEqual(expect.objectContaining({
+      status: 'reviewed',
+      deletedTransactionId: 'tx_expense',
+    }));
+    const incomeDecisionInsert = mockSupabase.__mocks.mockInsert.mock.calls.find(
+      ([payload]: any[]) => payload?.decision === 'not_income'
+    );
+    expect(incomeDecisionInsert).toBeUndefined();
+  });
+
+  it('does not tombstone a normal manual transaction delete', async () => {
+    mockSupabase.__mocks.mockIn.mockResolvedValueOnce({
+      data: [{
+        id: 'manual_tx',
+        type: 'expense',
+        amount: 50,
+        note: 'Tea',
+        category: 'Food',
+        created_at: '2026-06-03T00:00:00.000Z',
+        primary_evidence_id: null,
+        account_match_reason: null,
+      }],
+      error: null,
+    });
+
+    await deleteTransaction('manual_tx');
+
+    expect(mockSupabase.__mocks.mockInsert).not.toHaveBeenCalled();
+    expect(mockEmitFinanceDataChanged).not.toHaveBeenCalledWith(expect.objectContaining({
+      source: 'transaction:delete_review_source',
+    }));
+  });
+});
+
+describe('transaction update cache invalidation', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    mockSupabase.__mocks.mockGetUser.mockResolvedValue({
+      data: { user: { id: 'user_1' } },
+    });
+  });
+
+  it('keeps an ignored expense in history cache but clears stale dashboard totals', async () => {
+    const cachedTransaction = {
+      id: 'tx_20',
+      user_id: 'user_1',
+      amount: 20,
+      type: 'expense',
+      note: 'Bhavsar Yash',
+      category: 'UPI Payments',
+      created_at: '2026-06-03T14:06:10.166449+00:00',
+      sms_source: 'bank',
+      account_match_status: 'unlinked',
+    };
+    const ignoredTransaction = {
+      ...cachedTransaction,
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    };
+    await AsyncStorage.setItem('cache_transactions', JSON.stringify({
+      data: [cachedTransaction],
+      timestamp: Date.now(),
+    }));
+    await AsyncStorage.setItem('cache_dashboard_summary:user_1:2026-06', JSON.stringify({
+      data: {
+        monthKey: '2026-06',
+        monthlyTotals: {
+          totalIncome: 0,
+          grossExpense: 20,
+          totalRefunds: 0,
+          totalInvestment: 0,
+          totalEMI: 0,
+          netExpense: 20,
+          totalExpense: 20,
+          monthlyBalance: -20,
+        },
+        peopleSummary: { totalLent: 0, totalBorrowed: 0, lentCount: 0, borrowedCount: 0 },
+        reviewBreakdown: { totalReviewableCount: 0, incomeReviewCount: 0, transactionReviewCount: 0, historicalCorrectionCount: 0 },
+        createdAt: '2026-06-03T14:06:35.395Z',
+      },
+      timestamp: Date.now(),
+    }));
+
+    const updateChain: any = {};
+    updateChain.eq = jest.fn(() => updateChain);
+    updateChain.select = jest.fn(() => ({ single: mockSupabase.__mocks.mockSingle }));
+    mockSupabase.__mocks.mockUpdate.mockReturnValueOnce(updateChain);
+    mockSupabase.__mocks.mockSingle.mockResolvedValueOnce({
+      data: ignoredTransaction,
+      error: null,
+    });
+
+    await updateTransaction('tx_20', {
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    });
+
+    const rawTransactions = await AsyncStorage.getItem('cache_transactions');
+    const cachedTransactions = JSON.parse(rawTransactions || '{}').data;
+    expect(cachedTransactions).toEqual([expect.objectContaining({
+      id: 'tx_20',
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    })]);
+    expect(await AsyncStorage.getItem('cache_dashboard_summary:user_1:2026-06')).toBeNull();
+    expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
+      areas: ['transactions'],
+      source: 'transaction:update',
+      transactionId: 'tx_20',
+    }));
   });
 });
 

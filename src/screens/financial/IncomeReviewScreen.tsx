@@ -133,7 +133,11 @@ function defaultSourceType(candidate: IncomeReviewCandidate): IncomeReviewIncome
   return 'other';
 }
 
-export default function IncomeReviewScreen() {
+type IncomeReviewScreenProps = {
+  embedded?: boolean;
+};
+
+export default function IncomeReviewScreen({ embedded = false }: IncomeReviewScreenProps) {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [candidates, setCandidates] = useState<IncomeReviewCandidate[]>([]);
   const [storageStatus, setStorageStatus] = useState<IncomeReviewStorageStatus>('ready');
@@ -220,7 +224,33 @@ export default function IncomeReviewScreen() {
         });
       }
       setChangingCandidateId(null);
-      await load(true);
+      if (decision === 'count_as_income' || decision === 'not_income') {
+        const reviewedAt = new Date().toISOString();
+        setCandidates(current => current.map(item => (
+          item.id === candidate.id
+            ? {
+              ...item,
+              currentDecision: {
+                id: candidate.currentDecision?.id || `local:${candidate.id}`,
+                user_id: candidate.currentDecision?.user_id || '',
+                transaction_id: candidate.transactionId || null,
+                evidence_id: candidate.evidenceId || null,
+                signal_hash: candidate.signalHash || null,
+                decision,
+                income_source_type: decision === 'count_as_income'
+                  ? sourceByCandidate[candidate.id] || candidate.currentDecision?.income_source_type || defaultSourceType(candidate)
+                  : null,
+                confidence: 'user_confirmed',
+                reason_code: candidate.sourceHint,
+                reviewed_at: reviewedAt,
+                created_at: candidate.currentDecision?.created_at || reviewedAt,
+                updated_at: reviewedAt,
+              },
+            }
+            : item
+        )));
+      }
+      void load(true);
     } catch (saveError) {
       const code = (saveError as { code?: string } | null)?.code;
       setError(code === '42P01' || code === '42703' || code === 'PGRST204' || code === 'PGRST205'
@@ -446,20 +476,39 @@ export default function IncomeReviewScreen() {
     );
   };
 
-  return (
-    <ScreenWrapper>
-      <AppHeader
-        title="Money Movement Review"
-        showBack
-        rightAction={{ icon: 'refresh', onPress: () => load(true) }}
-      />
+  const content = (
+    <>
+      {!embedded ? (
+        <AppHeader
+          title="Money Movement Review"
+          showBack
+          rightAction={{ icon: 'refresh', onPress: () => load(true) }}
+        />
+      ) : null}
       <ScrollView
-        contentContainerStyle={[styles.scrollContent, { padding: spacing.md }]}
+        scrollEnabled={!embedded}
+        contentContainerStyle={[
+          styles.scrollContent,
+          embedded ? styles.embeddedScrollContent : null,
+          { padding: embedded ? 0 : spacing.md },
+        ]}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={colors.accent} />
+          embedded
+            ? undefined
+            : <RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={colors.accent} />
         }>
         {renderContent()}
       </ScrollView>
+    </>
+  );
+
+  if (embedded) {
+    return <View style={styles.embeddedRoot}>{content}</View>;
+  }
+
+  return (
+    <ScreenWrapper>
+      {content}
     </ScreenWrapper>
   );
 }
@@ -468,6 +517,10 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
   },
+  embeddedScrollContent: {
+    flexGrow: 0,
+  },
+  embeddedRoot: {},
   contentStack: {
     gap: 12,
   },

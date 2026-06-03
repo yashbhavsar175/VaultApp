@@ -46,7 +46,10 @@ class NotificationListener : NotificationListenerService() {
                 return
             }
 
-            Log.d(TAG, "Notification from $packageName: $title - $text")
+            Log.d(
+                TAG,
+                "Notification received package=$packageName titleLength=${title.length} textLength=${text.length} postTime=${sbn.postTime}"
+            )
 
             // Start the headless JS service
             val serviceIntent = Intent(applicationContext, NotificationProcessorService::class.java)

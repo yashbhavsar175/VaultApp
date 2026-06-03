@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ import {
   Loan,
 } from '../../lib/database/financial';
 import {
+  linkLegacyCreditCardAccount,
   recordReviewQueueCardPayment,
   resolveCreditCardMatch,
 } from '../../lib/services/reviewQueueCardPayments';
@@ -61,16 +62,23 @@ import {
   confirmPaymentAppBankAccountMapping,
   recordMappedPaymentAppBalanceEstimateForCurrentUser,
 } from '../../lib/services/paymentAppAccountMappings';
+import { saveIncomeReviewDecision } from '../../lib/services/incomeReview';
 import { addTransaction, getTransactions } from '../../lib/core';
 import { BankAccount, Transaction } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader } from '../../components';
 import { formatCurrency } from '../../utils/format';
 
-export default function ReviewQueueScreen() {
+type ReviewQueueScreenProps = {
+  embedded?: boolean;
+  filter?: 'all' | 'payments' | 'card_payments';
+};
+
+export default function ReviewQueueScreen({ embedded = false, filter = 'all' }: ReviewQueueScreenProps) {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [legacyCreditCardAccounts, setLegacyCreditCardAccounts] = useState<BankAccount[]>([]);
   const [creditCards, setCreditCards] = useState<CreditCard[]>([]);
   const [loans, setLoans] = useState<Loan[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({}); // itemId -> accountId or 'cash'
@@ -115,6 +123,7 @@ export default function ReviewQueueScreen() {
         bank => bank.account_type === 'savings' || bank.account_type === 'current'
       );
       setBankAccounts(allowedAccounts);
+      setLegacyCreditCardAccounts(banks.filter(bank => bank.account_type === 'credit_card'));
       setCreditCards(cards);
       setLoans(loanData);
       setTransactions(txData);
@@ -152,14 +161,34 @@ export default function ReviewQueueScreen() {
     loadQueueAndBanks();
   }, [loadQueueAndBanks]);
 
+  const visibleItems = useMemo(() => {
+    const seen = new Set<string>();
+    return items.filter(item => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+
+      if (filter === 'card_payments') {
+        return item.candidate.autoClass === 'credit_card_bill_payment';
+      }
+
+      if (filter === 'payments') {
+        return item.candidate.direction !== 'credit'
+          && item.candidate.autoClass !== 'credit_card_bill_payment';
+      }
+
+      return true;
+    });
+  }, [filter, items]);
+
   const getPreselectedAccount = useCallback((item: ReviewItem) => {
     const candidate = item.candidate;
     const mappedBankAccountId = candidate.paymentAppAccountMatch?.mappedBankAccountId;
     if (mappedBankAccountId && bankAccounts.some(bank => bank.id === mappedBankAccountId)) {
       return mappedBankAccountId;
     }
-    if (candidate.last4) {
-      const matches = bankAccounts.filter(bank => bank.account_last4 === candidate.last4);
+    const accountLast4 = candidate.accountLast4 || (!candidate.cardLast4 ? candidate.last4 : null);
+    if (accountLast4) {
+      const matches = bankAccounts.filter(bank => bank.account_last4 === accountLast4);
       if (matches.length === 1) return matches[0].id;
     }
     return 'cash';
@@ -223,9 +252,9 @@ export default function ReviewQueueScreen() {
   };
 
   const getPreselectedCreditCard = useCallback((item: ReviewItem) => {
-    const result = resolveCreditCardMatch(item, creditCards);
+    const result = resolveCreditCardMatch(item, creditCards, legacyCreditCardAccounts);
     return result.status === 'matched' ? result.card.id : undefined;
-  }, [creditCards]);
+  }, [creditCards, legacyCreditCardAccounts]);
 
   const getPreselectedLoan = useCallback((item: ReviewItem) => {
     const result = resolveLoanMatch(item, loans);
@@ -270,6 +299,7 @@ export default function ReviewQueueScreen() {
             reference_number: candidate.reference || undefined,
             sms_source: candidate.sourceType === 'notification' ? 'notification' : 'sms',
             sms_sender: candidate.paymentAppAccountMatch?.sourcePackage,
+            primary_evidence_id: candidate.evidenceId || undefined,
             account_match_status: candidate.paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
               ? 'manual_confirmed'
               : undefined,
@@ -281,6 +311,18 @@ export default function ReviewQueueScreen() {
               : undefined,
           });
           await markPosted(item.id, transaction.id);
+          try {
+            await saveIncomeReviewDecision({
+              transaction_id: transaction.id,
+              evidence_id: candidate.evidenceId || null,
+              decision: 'count_as_income',
+              income_source_type: 'other',
+              confidence: 'user_confirmed',
+              reason_code: 'review_queue_income_confirmed',
+            });
+          } catch (decisionError) {
+            console.error('Failed to save reviewed income decision:', decisionError);
+          }
           return { status: 'posted' as const, transactionId: transaction.id };
         })();
 
@@ -358,6 +400,51 @@ export default function ReviewQueueScreen() {
       Toast.show({
         type: 'error',
         text1: 'Failed to record card payment',
+        text2: 'The item stays in your queue so you can retry.',
+      });
+    } finally {
+      cardPaymentPostingRef.current = false;
+      setPostingId(null);
+    }
+  };
+
+  const handleLinkLegacyCreditCard = async (item: ReviewItem) => {
+    if (postingId || cardPaymentPostingRef.current) return;
+    const match = resolveCreditCardMatch(item, creditCards, legacyCreditCardAccounts);
+
+    if (match.status !== 'needs_legacy_link') {
+      Toast.show({
+        type: 'info',
+        text1: 'Needs credit card setup',
+        text2: 'Add a credit card before recording this payment.',
+      });
+      return;
+    }
+
+    cardPaymentPostingRef.current = true;
+    setPostingId(item.id);
+    HapticFeedback.trigger('impactMedium', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+
+    try {
+      const result = await linkLegacyCreditCardAccount(match.legacyAccount, creditCards);
+      setCreditCards(prev => prev.some(card => card.id === result.card.id) ? prev : [result.card, ...prev]);
+      setSelectedCreditCards(prev => ({ ...prev, [item.id]: result.card.id }));
+      if (result.archivedLegacy) {
+        setLegacyCreditCardAccounts(prev => prev.filter(account => account.id !== match.legacyAccount.id));
+      }
+
+      Toast.show({
+        type: 'success',
+        text1: result.reusedExisting ? 'Credit card linked' : 'Credit card setup linked',
+        text2: result.outstandingInference.needsUserConfirmation
+          ? 'Confirm current outstanding before using this card in debt calculations.'
+          : `Card ••${result.card.last_4_digits} can now record bill payments.`,
+      });
+    } catch (e) {
+      console.error('Failed to link legacy credit card setup:', e);
+      Toast.show({
+        type: 'error',
+        text1: 'Could not link card setup',
         text2: 'The item stays in your queue so you can retry.',
       });
     } finally {
@@ -546,7 +633,7 @@ export default function ReviewQueueScreen() {
       case 'bank_debit': return 'Bank Debit';
       case 'bank_credit': return 'Bank Credit';
       case 'credit_card_spend': return 'Credit Card Spend';
-      case 'credit_card_bill_payment': return 'Credit Card Bill Payment';
+      case 'credit_card_bill_payment': return 'Credit card bill payment';
       case 'loan_emi_payment': return 'Loan EMI Payment';
       case 'loan_disbursal': return 'Loan Disbursal';
       case 'upi_payment': return 'UPI Payment';
@@ -601,6 +688,12 @@ export default function ReviewQueueScreen() {
 
     const activeSelection = selectedAccounts[item.id] || getPreselectedAccount(item);
     const activeCardSelection = selectedCreditCards[item.id] || getPreselectedCreditCard(item);
+    const activeCardMatch = isCardBillPayment
+      ? resolveCreditCardMatch(item, creditCards, legacyCreditCardAccounts)
+      : null;
+    const legacyCardLink = activeCardMatch?.status === 'needs_legacy_link' ? activeCardMatch : null;
+    const activeDebitBank = bankAccounts.find(bank => bank.id === activeSelection);
+    const activeCreditCard = creditCards.find(card => card.id === activeCardSelection);
     const activeLoanSelection = selectedLoans[item.id] || getPreselectedLoan(item);
     const activeLoan = loans.find(loan => loan.id === activeLoanSelection);
     const canRecordActiveEMI = activeLoan ? canRecordEMIWithLoan(item, activeLoan) : false;
@@ -616,6 +709,11 @@ export default function ReviewQueueScreen() {
       : null;
     const refundSchemaMissing = !!refundSchemaErrors[item.id];
     const canLinkActiveRefund = !!activeRefundExpense && !refundSchemaMissing;
+    const negativeActionLabel = isCardBillPayment
+      ? 'Not a card payment'
+      : isCredit
+        ? 'Not income'
+        : 'Not expense';
 
     return (
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -662,7 +760,25 @@ export default function ReviewQueueScreen() {
             </View>
           )}
 
-          {candidate.last4 && (
+          {candidate.accountLast4 && (
+            <View style={styles.detailRow}>
+              <Text style={[typography.caption, { color: colors.subtext }]}>Bank account</Text>
+              <Text style={[typography.body, { color: colors.text, fontWeight: '500' }]}>
+                {activeDebitBank?.bank_name || 'Bank'} ••{candidate.accountLast4}
+              </Text>
+            </View>
+          )}
+
+          {(candidate.cardLast4 || (isCardBillPayment && candidate.last4)) && (
+            <View style={styles.detailRow}>
+              <Text style={[typography.caption, { color: colors.subtext }]}>Credit card</Text>
+              <Text style={[typography.body, { color: colors.text, fontWeight: '500' }]}>
+                {(activeCreditCard?.card_name || activeCreditCard?.bank_name || 'Credit Card')} ••{candidate.cardLast4 || candidate.last4}
+              </Text>
+            </View>
+          )}
+
+          {!candidate.accountLast4 && !candidate.cardLast4 && !isCardBillPayment && candidate.last4 && (
             <View style={styles.detailRow}>
               <Text style={[typography.caption, { color: colors.subtext }]}>Instrument Ending</Text>
               <Text style={[typography.body, { color: colors.text, fontWeight: '500' }]}>
@@ -808,10 +924,29 @@ export default function ReviewQueueScreen() {
 
           {isCardBillPayment && (
             <View style={styles.selectorContainer}>
+              <View style={[styles.transferNotice, { borderColor: colors.border, backgroundColor: colors.border + '30', marginBottom: 8 }]}>
+                <MaterialCommunityIcons name="information-outline" size={14} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6, flex: 1 }]}>
+                  This is not counted as an expense. Confirm to save it as a card payment.
+                </Text>
+              </View>
+              <View style={[styles.transferNotice, { borderColor: colors.border, backgroundColor: colors.border + '30', marginBottom: 8 }]}>
+                <MaterialCommunityIcons name="history-clock-outline" size={14} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6, flex: 1 }]}>
+                  Balance updated from bank evidence. Payment still needs review.
+                </Text>
+              </View>
               <Text style={[typography.caption, { color: colors.subtext, marginBottom: 6 }]}>
                 Choose Credit Card:
               </Text>
-              {creditCards.length === 0 ? (
+              {legacyCardLink ? (
+                <View style={[styles.setupPill, { borderColor: colors.border, backgroundColor: colors.border + '30' }]}>
+                  <MaterialCommunityIcons name="link-variant" size={14} color={colors.accent} />
+                  <Text style={[typography.caption, { color: colors.text, fontWeight: '600', marginLeft: 6 }]}>
+                    Link existing card setup: {legacyCardLink.legacyAccount.bank_name} ••{legacyCardLink.last4}
+                  </Text>
+                </View>
+              ) : creditCards.length === 0 ? (
                 <View style={[styles.setupPill, { borderColor: colors.border, backgroundColor: colors.border + '30' }]}>
                   <MaterialCommunityIcons name="credit-card-plus-outline" size={14} color={colors.subtext} />
                   <Text style={[typography.caption, { color: colors.subtext, fontWeight: '600', marginLeft: 6 }]}>
@@ -1099,7 +1234,7 @@ export default function ReviewQueueScreen() {
           >
             <MaterialCommunityIcons name="close-circle-outline" size={18} color={colors.subtext} />
             <Text style={[typography.body, { color: colors.subtext, marginLeft: 6 }]}>
-              {isCredit ? 'Not income' : 'Not expense'}
+              {negativeActionLabel}
             </Text>
           </TouchableOpacity>
 
@@ -1107,30 +1242,32 @@ export default function ReviewQueueScreen() {
             <TouchableOpacity
               style={[
                 styles.actionButton,
-                activeCardSelection ? styles.approveButton : styles.disabledButton,
+                activeCardSelection || legacyCardLink ? styles.approveButton : styles.disabledButton,
                 {
-                  backgroundColor: activeCardSelection ? colors.accent : colors.border + '40',
+                  backgroundColor: activeCardSelection || legacyCardLink ? colors.accent : colors.border + '40',
                   opacity: postingId === item.id ? 0.7 : 1
                 }
               ]}
-              onPress={() => handleRecordCardPayment(item)}
-              disabled={postingId === item.id || !activeCardSelection}
+              onPress={() => activeCardSelection ? handleRecordCardPayment(item) : handleLinkLegacyCreditCard(item)}
+              disabled={postingId === item.id || (!activeCardSelection && !legacyCardLink)}
             >
               {postingId === item.id ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <>
                   <MaterialCommunityIcons
-                    name={activeCardSelection ? 'credit-card-check-outline' : 'lock-outline'}
+                    name={activeCardSelection ? 'credit-card-check-outline' : legacyCardLink ? 'link-variant' : 'lock-outline'}
                     size={18}
-                    color={activeCardSelection ? '#fff' : colors.subtext}
+                    color={activeCardSelection || legacyCardLink ? '#fff' : colors.subtext}
                   />
-                  <Text style={[typography.bodyBold, { color: activeCardSelection ? '#fff' : colors.subtext, marginLeft: 6, fontSize: 12 }]}>
-                    {creditCards.length === 0
-                      ? 'Needs credit card setup'
+                  <Text style={[typography.bodyBold, { color: activeCardSelection || legacyCardLink ? '#fff' : colors.subtext, marginLeft: 6, fontSize: 12 }]}>
+                    {legacyCardLink
+                      ? 'Link existing card setup'
+                      : creditCards.length === 0
+                        ? 'Needs credit card setup'
                       : activeCardSelection
-                        ? 'Record Card Payment'
-                        : 'Unsupported until card selected'}
+                        ? 'Confirm card payment'
+                        : 'Choose credit card'}
                   </Text>
                 </>
               )}
@@ -1316,9 +1453,9 @@ export default function ReviewQueueScreen() {
     </View>
   );
 
-  return (
-    <ScreenWrapper>
-      <AppHeader title="Money Movement Review" showBack={true} />
+  const content = (
+    <>
+      {!embedded ? <AppHeader title="Money Movement Review" showBack={true} /> : null}
       
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -1326,21 +1463,40 @@ export default function ReviewQueueScreen() {
         </View>
       ) : (
         <FlatList
-          data={items}
+          data={visibleItems}
           renderItem={renderItem}
           keyExtractor={item => item.id}
-          contentContainerStyle={[styles.listContent, { padding: spacing.md }]}
+          scrollEnabled={!embedded}
+          contentContainerStyle={[
+            styles.listContent,
+            embedded ? styles.embeddedListContent : null,
+            { padding: embedded ? 0 : spacing.md },
+          ]}
           ListEmptyComponent={renderEmptyState}
           refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={colors.accent}
-              colors={[colors.accent]}
-            />
+            embedded
+              ? undefined
+              : (
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={colors.accent}
+                  colors={[colors.accent]}
+                />
+              )
           }
         />
       )}
+    </>
+  );
+
+  if (embedded) {
+    return <View style={styles.embeddedRoot}>{content}</View>;
+  }
+
+  return (
+    <ScreenWrapper>
+      {content}
     </ScreenWrapper>
   );
 }
@@ -1348,12 +1504,17 @@ export default function ReviewQueueScreen() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
+    minHeight: 220,
     justifyContent: 'center',
     alignItems: 'center',
   },
   listContent: {
     flexGrow: 1,
   },
+  embeddedListContent: {
+    flexGrow: 0,
+  },
+  embeddedRoot: {},
   card: {
     borderWidth: 1,
     borderRadius: 16,

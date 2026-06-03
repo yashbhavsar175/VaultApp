@@ -5,7 +5,10 @@ import {
   BalanceOwnerType,
   BalanceSnapshot,
   BalanceSource,
+  BankAccount,
 } from '../../types';
+import { CACHE_KEYS, updateCache } from './cache';
+import { emitFinanceDataChanged } from './dataEvents';
 
 export type BalanceSourceMetadata = Record<string, unknown>;
 
@@ -245,7 +248,49 @@ export function buildManualBalanceCorrectionSnapshotInput(
 export async function createManualBalanceCorrectionSnapshot(
   input: ManualBalanceCorrectionInput
 ): Promise<BalanceSnapshot> {
-  return createBalanceSnapshot(buildManualBalanceCorrectionSnapshotInput(input));
+  const snapshot = await createBalanceSnapshot(buildManualBalanceCorrectionSnapshotInput(input));
+  await writeThroughManualBalanceCorrection(input, snapshot);
+  emitFinanceDataChanged({ areas: ['accounts', 'balances'], source: 'manual_balance_correction' });
+  return snapshot;
+}
+
+function safeManualCorrectionLogCode(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const code = (error as { code?: unknown; name?: unknown }).code || (error as { name?: unknown }).name;
+    if (typeof code === 'string') return code.replace(/[^a-z0-9_:-]/gi, '').slice(0, 32) || 'unknown';
+  }
+  return 'unknown';
+}
+
+async function writeThroughManualBalanceCorrection(
+  input: ManualBalanceCorrectionInput,
+  snapshot: BalanceSnapshot
+): Promise<void> {
+  if (input.owner_type !== 'bank_account' && input.owner_type !== 'loan') return;
+
+  const userId = await getCurrentUserId();
+  const amount = Number(snapshot.amount);
+  if (!Number.isFinite(amount)) return;
+
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update({ balance: amount })
+    .eq('id', input.owner_id)
+    .eq('user_id', userId);
+
+  if (error) {
+    console.warn('[Balances] Manual correction account write-through failed', {
+      ownerType: input.owner_type,
+      balanceKind: input.balance_kind,
+      code: safeManualCorrectionLogCode(error),
+    });
+    return;
+  }
+
+  await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current => {
+    if (!current) return current;
+    return current.map(account => account.id === input.owner_id ? { ...account, balance: amount } : account);
+  });
 }
 
 async function getCurrentUserId(): Promise<string> {

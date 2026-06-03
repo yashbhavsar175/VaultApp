@@ -153,6 +153,31 @@ describe('account removal safety', () => {
     expect(emitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({ areas: ['accounts'] }));
   });
 
+  it('hard deletes an empty temporary bank account without deleting financial history', async () => {
+    resetTables({
+      bank_accounts: [{
+        id: 'bank_empty',
+        user_id: 'user_1',
+        account_last4: '9090',
+        balance: 0,
+        starting_balance: 0,
+      }],
+      transactions: [{ id: 'tx_other', user_id: 'user_1', amount: 75 }],
+      balance_snapshots: [],
+    });
+
+    const result = await hardDeleteOwnerIfSafe('bank_account', 'bank_empty');
+
+    expect(result.action).toBe('deleted');
+    expect(tables.bank_accounts).toHaveLength(0);
+    expect(tables.transactions).toHaveLength(1);
+    expect(tables.balance_snapshots).toHaveLength(0);
+    expect(supabase.rpc).toHaveBeenCalledWith('hard_delete_financial_owner_if_safe', {
+      p_owner_type: 'bank_account',
+      p_owner_id: 'bank_empty',
+    });
+  });
+
   it('hides a credit card with dependent card transactions instead of deleting history', async () => {
     resetTables({
       credit_cards: [{

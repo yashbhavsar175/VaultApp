@@ -253,7 +253,9 @@ export function mapParsedTransactionToEvidence(
   const sourceHash = safeHash(input.text);
   const reference_number = normalizeReference(parsed.reference || parsed.reference_number);
   const isCard = detectCardContext(input.text);
-  const last4 = safeLast4(parsed.accountLast4 || parsed.last4Digits || parsed.cardLast4);
+  const accountLast4 = safeLast4(parsed.accountLast4 || parsed.last4Digits);
+  const parsedCardLast4 = safeLast4(parsed.cardLast4);
+  const fallbackLast4 = safeLast4(parsed.accountLast4 || parsed.last4Digits || parsed.cardLast4);
   const upiId = parsed.upiId || extractUpiIdFromText(input.text);
 
   return {
@@ -274,8 +276,8 @@ export function mapParsedTransactionToEvidence(
     reference_number,
     merchant_or_person: safeMerchantOrPerson(parsed.merchant),
     bank_name: safeMerchantOrPerson(parsed.bankName),
-    account_last4: isCard ? null : last4,
-    card_last4: isCard ? last4 : safeLast4(parsed.cardLast4),
+    account_last4: isCard && !parsedCardLast4 ? null : accountLast4,
+    card_last4: isCard ? parsedCardLast4 || (!accountLast4 ? fallbackLast4 : null) : parsedCardLast4,
     instrument_hint: inferSmsInstrumentHint(input),
     upi_id_masked: maskUpiId(upiId),
     upi_id_hash: safeUpiHash(upiId),

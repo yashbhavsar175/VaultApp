@@ -61,6 +61,12 @@ export interface CreditCardBalanceView {
   staleWarning?: boolean;
 }
 
+export interface LegacyCreditCardPosition {
+  outstanding: number;
+  availableCredit: number;
+  creditLimit: number;
+}
+
 export interface BalanceHistoryItem {
   id: string;
   balanceKind: BalanceKind;
@@ -151,10 +157,83 @@ type StatementRow = Pick<
 >;
 
 const STALE_BALANCE_MS = 7 * 24 * 60 * 60 * 1000;
+const BALANCE_TIE_WINDOW_MS = 2 * 60 * 1000;
 
 function toNumber(value: unknown, fallback = 0): number {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+export function isAssetBankAccount(account: Pick<BankAccount, 'account_type'>): boolean {
+  return account.account_type === 'savings' || account.account_type === 'current';
+}
+
+export function getBankAccountDisplayBalance(
+  account: Pick<BankAccount, 'balance' | 'starting_balance'>,
+  balanceView?: Pick<BankAccountBalanceView, 'displayBalance'>
+): number {
+  return toNumber(balanceView?.displayBalance ?? account.balance ?? account.starting_balance);
+}
+
+export function getLegacyCreditCardPosition(
+  account: Pick<BankAccount, 'account_type' | 'balance' | 'starting_balance' | 'credit_limit'>,
+  balanceView?: Pick<BankAccountBalanceView, 'displayBalance' | 'balanceKind'> & Partial<Pick<BankAccountBalanceView, 'source'>>
+): LegacyCreditCardPosition {
+  const creditLimit = Math.max(toNumber(account.credit_limit), 0);
+  const displayBalance = Math.max(getBankAccountDisplayBalance(account, balanceView), 0);
+
+  if (account.account_type !== 'credit_card') {
+    return { outstanding: 0, availableCredit: 0, creditLimit };
+  }
+
+  const calculatedOutstandingFallback = !balanceView || (
+    balanceView.balanceKind === 'outstanding' && balanceView.source === 'calculated'
+  );
+  const likelyAvailableCreditFallback = calculatedOutstandingFallback
+    && creditLimit > 0
+    && displayBalance >= creditLimit * 0.8;
+  if (balanceView?.balanceKind === 'available_limit' || likelyAvailableCreditFallback) {
+    const availableCredit = displayBalance;
+    return {
+      outstanding: creditLimit > 0 ? Math.max(creditLimit - availableCredit, 0) : 0,
+      availableCredit,
+      creditLimit,
+    };
+  }
+
+  const outstanding = displayBalance;
+  return {
+    outstanding,
+    availableCredit: creditLimit > 0 ? Math.max(creditLimit - outstanding, 0) : 0,
+    creditLimit,
+  };
+}
+
+export function getBankAccountAssetBalance(
+  account: Pick<BankAccount, 'account_type' | 'balance' | 'starting_balance'>,
+  balanceView?: Pick<BankAccountBalanceView, 'displayBalance'>
+): number {
+  return isAssetBankAccount(account) ? getBankAccountDisplayBalance(account, balanceView) : 0;
+}
+
+export function getBankAccountLiabilityBalance(
+  account: Pick<BankAccount, 'account_type' | 'balance' | 'starting_balance' | 'credit_limit'>,
+  balanceView?: Pick<BankAccountBalanceView, 'displayBalance' | 'balanceKind'> & Partial<Pick<BankAccountBalanceView, 'source'>>
+): number {
+  if (account.account_type === 'loan') {
+    return Math.max(getBankAccountDisplayBalance(account, balanceView), 0);
+  }
+  if (account.account_type === 'credit_card') {
+    return getLegacyCreditCardPosition(account, balanceView).outstanding;
+  }
+  return 0;
+}
+
+export function getTotalAssetBankBalance(
+  accounts: Array<Pick<BankAccount, 'id' | 'account_type' | 'balance' | 'starting_balance'>>,
+  balanceViews: Record<string, Pick<BankAccountBalanceView, 'displayBalance'> | undefined> = {}
+): number {
+  return accounts.reduce((sum, account) => sum + getBankAccountAssetBalance(account, balanceViews[account.id]), 0);
 }
 
 function sourceRank(source: BalanceSource, confidence: BalanceConfidence): number {
@@ -168,6 +247,16 @@ function sourceRank(source: BalanceSource, confidence: BalanceConfidence): numbe
   return 80;
 }
 
+function isManualExact(value: Pick<SnapshotRow, 'source' | 'confidence'> | Pick<LatestBalanceValue, 'source' | 'confidence'>): boolean {
+  return value.source === 'manual' && value.confidence === 'exact';
+}
+
+function isWeakBalanceSignal(
+  value: Pick<SnapshotRow, 'source' | 'confidence'> | Pick<LatestBalanceValue, 'source' | 'confidence'>
+): boolean {
+  return value.confidence !== 'exact' || value.source === 'calculated' || value.source === 'import';
+}
+
 function detectedTime(snapshot: SnapshotRow): number {
   const detected = new Date(snapshot.detected_at).getTime();
   if (Number.isFinite(detected)) return detected;
@@ -175,15 +264,38 @@ function detectedTime(snapshot: SnapshotRow): number {
   return Number.isFinite(created) ? created : 0;
 }
 
+function compareBalanceAuthority(
+  left: Pick<SnapshotRow, 'source' | 'confidence'>,
+  right: Pick<SnapshotRow, 'source' | 'confidence'>,
+  leftTime: number,
+  rightTime: number
+): number {
+  const timeDiff = rightTime - leftTime;
+  const closeInTime = Math.abs(timeDiff) <= BALANCE_TIE_WINDOW_MS;
+  const rankDiff = sourceRank(right.source, right.confidence) - sourceRank(left.source, left.confidence);
+
+  if (left.confidence === 'low' || right.confidence === 'low') {
+    if (rankDiff !== 0) return rankDiff;
+  }
+
+  if (!closeInTime) {
+    if (isManualExact(left) && isWeakBalanceSignal(right)) return -1;
+    if (isManualExact(right) && isWeakBalanceSignal(left)) return 1;
+    return timeDiff;
+  }
+
+  if (rankDiff !== 0) return rankDiff;
+  return 0;
+}
+
 export function selectBestBalanceSnapshot(snapshots: SnapshotRow[]): SnapshotRow | null {
   if (!snapshots.length) return null;
 
   return [...snapshots].sort((left, right) => {
-    const rankDiff = sourceRank(right.source, right.confidence) - sourceRank(left.source, left.confidence);
-    if (rankDiff !== 0) return rankDiff;
-
-    const timeDiff = detectedTime(right) - detectedTime(left);
-    if (timeDiff !== 0) return timeDiff;
+    const leftTime = detectedTime(left);
+    const rightTime = detectedTime(right);
+    const authorityDiff = compareBalanceAuthority(left, right, leftTime, rightTime);
+    if (authorityDiff !== 0) return authorityDiff;
 
     return String(right.id).localeCompare(String(left.id));
   })[0];
@@ -196,7 +308,7 @@ export function getBalanceSourceLabel(source: BalanceSource): string {
     case 'notification':
       return 'Notification';
     case 'manual':
-      return 'Manual';
+      return 'Manual correction';
     case 'calculated':
       return 'Calculated';
     case 'review':
@@ -360,29 +472,41 @@ function balanceValueRank(value: LatestBalanceValue): number {
   return sourceRank(value.source, value.confidence);
 }
 
-function pickBestBalanceValue(
+function balanceValueTime(value: LatestBalanceValue): number {
+  const parsed = value.detectedAt ? new Date(value.detectedAt).getTime() : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareBalanceValues(
+  left: LatestBalanceValue,
+  right: LatestBalanceValue,
+  preferredKinds: BalanceKind[]
+): number {
+  const authorityDiff = compareBalanceAuthority(left, right, balanceValueTime(left), balanceValueTime(right));
+  if (authorityDiff !== 0) return authorityDiff;
+
+  const leftKindRank = preferredKinds.indexOf(left.balanceKind);
+  const rightKindRank = preferredKinds.indexOf(right.balanceKind);
+  if (leftKindRank !== rightKindRank) {
+    if (leftKindRank === -1) return 1;
+    if (rightKindRank === -1) return -1;
+    return leftKindRank - rightKindRank;
+  }
+
+  const rankDiff = balanceValueRank(right) - balanceValueRank(left);
+  if (rankDiff !== 0) return rankDiff;
+
+  return balanceValueTime(right) - balanceValueTime(left);
+}
+
+export function pickBestBalanceValue(
   values: Array<LatestBalanceValue | null | undefined>,
   preferredKinds: BalanceKind[] = []
 ): LatestBalanceValue | null {
   const candidates = values.filter((value): value is LatestBalanceValue => Boolean(value));
   if (!candidates.length) return null;
 
-  return [...candidates].sort((left, right) => {
-    const rankDiff = balanceValueRank(right) - balanceValueRank(left);
-    if (rankDiff !== 0) return rankDiff;
-
-    const leftKindRank = preferredKinds.indexOf(left.balanceKind);
-    const rightKindRank = preferredKinds.indexOf(right.balanceKind);
-    if (leftKindRank !== rightKindRank) {
-      if (leftKindRank === -1) return 1;
-      if (rightKindRank === -1) return -1;
-      return leftKindRank - rightKindRank;
-    }
-
-    const leftTime = left.detectedAt ? new Date(left.detectedAt).getTime() : 0;
-    const rightTime = right.detectedAt ? new Date(right.detectedAt).getTime() : 0;
-    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
-  })[0];
+  return [...candidates].sort((left, right) => compareBalanceValues(left, right, preferredKinds))[0];
 }
 
 function groupSnapshotsByOwnerAndKind(snapshots: SnapshotRow[]): Map<string, Map<BalanceKind, SnapshotRow[]>> {

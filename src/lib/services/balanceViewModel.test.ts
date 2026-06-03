@@ -4,11 +4,19 @@ import {
   buildBankAccountDetailViewForRows,
   buildCreditCardDetailViewForRows,
   buildCreditCardBalanceViewModelsForRows,
+  getBankAccountAssetBalance,
+  getBankAccountLiabilityBalance,
+  getLegacyCreditCardPosition,
+  getTotalAssetBankBalance,
   selectBestBalanceSnapshot,
   summarizePendingDetectedAccounts,
 } from './balanceViewModel';
 import { BalanceSnapshot, BankAccount, CreditCardStatement } from '../../types';
 import { CreditCard } from '../database/financial';
+
+declare const require: any;
+
+const fs = require('fs');
 
 function snapshot(overrides: Partial<BalanceSnapshot>): BalanceSnapshot {
   return {
@@ -82,7 +90,7 @@ describe('balance view model', () => {
     }));
   });
 
-  it('keeps manual exact ahead of an older SMS snapshot by priority', () => {
+  it('uses newer exact SMS over older manual correction', () => {
     const best = selectBestBalanceSnapshot([
       snapshot({
         id: 'sms_newer',
@@ -102,28 +110,28 @@ describe('balance view model', () => {
       }),
     ]);
 
-    expect(best?.id).toBe('manual_older');
+    expect(best?.id).toBe('sms_newer');
   });
 
-  it('uses manual exact bank available balance over a newer exact SMS snapshot', () => {
+  it('uses newer manual correction over an older exact SMS snapshot', () => {
     const views = buildAccountBalanceViewModelsForRows([bankAccount], [
       snapshot({
-        id: 'sms_newer',
+        id: 'sms_older',
         owner_id: 'bank_1',
         balance_kind: 'available_balance',
         amount: 3200,
         source: 'sms',
         confidence: 'exact',
-        detected_at: '2026-05-29T10:00:00.000Z',
+        detected_at: '2026-05-28T10:00:00.000Z',
       }),
       snapshot({
-        id: 'manual_older',
+        id: 'manual_newer',
         owner_id: 'bank_1',
         balance_kind: 'available_balance',
         amount: 3000,
         source: 'manual',
         confidence: 'exact',
-        detected_at: '2026-05-28T10:00:00.000Z',
+        detected_at: '2026-05-29T10:00:00.000Z',
       }),
     ]);
 
@@ -132,9 +140,155 @@ describe('balance view model', () => {
       balanceKind: 'available_balance',
       source: 'manual',
       confidence: 'exact',
-      sourceLabel: 'Manual',
+      sourceLabel: 'Manual correction',
       confidenceLabel: 'Exact',
     }));
+  });
+
+  it('keeps manual correction ahead of a newer estimated balance signal', () => {
+    const views = buildAccountBalanceViewModelsForRows([bankAccount], [
+      snapshot({
+        id: 'manual_exact',
+        owner_id: 'bank_1',
+        balance_kind: 'available_balance',
+        amount: 3000,
+        source: 'manual',
+        confidence: 'exact',
+        detected_at: '2026-05-28T10:00:00.000Z',
+      }),
+      snapshot({
+        id: 'sms_estimated_newer',
+        owner_id: 'bank_1',
+        balance_kind: 'available_balance',
+        amount: 9999,
+        source: 'sms',
+        confidence: 'estimated',
+        detected_at: '2026-05-29T10:00:00.000Z',
+      }),
+    ]);
+
+    expect(views[0]).toEqual(expect.objectContaining({
+      displayBalance: 3000,
+      source: 'manual',
+      confidence: 'exact',
+      sourceLabel: 'Manual correction',
+    }));
+  });
+
+  it('counts only savings and current accounts as asset balance', () => {
+    const currentAccount: BankAccount = {
+      ...bankAccount,
+      id: 'current_1',
+      account_type: 'current',
+      balance: 700,
+      starting_balance: 700,
+    };
+    const cardAccount: BankAccount = {
+      ...bankAccount,
+      id: 'card_account_1',
+      account_type: 'credit_card',
+      balance: 82410,
+      starting_balance: 0,
+      credit_limit: 83000,
+    };
+    const loanAccount: BankAccount = {
+      ...bankAccount,
+      id: 'loan_account_1',
+      account_type: 'loan',
+      balance: 88000,
+      starting_balance: 100000,
+      loan_total: 100000,
+    };
+
+    expect(getBankAccountAssetBalance(bankAccount)).toBe(1200);
+    expect(getBankAccountAssetBalance(currentAccount)).toBe(700);
+    expect(getBankAccountAssetBalance(cardAccount)).toBe(0);
+    expect(getBankAccountAssetBalance(loanAccount)).toBe(0);
+    expect(getTotalAssetBankBalance([
+      bankAccount,
+      currentAccount,
+      cardAccount,
+      loanAccount,
+    ])).toBe(1900);
+  });
+
+  it('treats credit available and loan totals as non-asset metadata', () => {
+    const cardAccount: BankAccount = {
+      ...bankAccount,
+      id: 'card_account_available',
+      account_type: 'credit_card',
+      balance: 0,
+      starting_balance: 0,
+      credit_limit: 83000,
+    };
+    const cardView = buildAccountBalanceViewModelsForRows([cardAccount], [
+      snapshot({
+        id: 'available_limit',
+        owner_type: 'credit_card',
+        owner_id: 'card_account_available',
+        balance_kind: 'available_limit',
+        amount: 82410,
+      }),
+    ])[0];
+    const loanAccount: BankAccount = {
+      ...bankAccount,
+      id: 'loan_account_position',
+      account_type: 'loan',
+      balance: 88000,
+      starting_balance: 100000,
+      loan_total: 150000,
+    };
+
+    expect(getLegacyCreditCardPosition(cardAccount, cardView)).toEqual({
+      creditLimit: 83000,
+      availableCredit: 82410,
+      outstanding: 590,
+    });
+    expect(getBankAccountAssetBalance(cardAccount, cardView)).toBe(0);
+    expect(getBankAccountLiabilityBalance(cardAccount, cardView)).toBe(590);
+    expect(getBankAccountAssetBalance(loanAccount)).toBe(0);
+    expect(getBankAccountLiabilityBalance(loanAccount)).toBe(88000);
+    expect(getTotalAssetBankBalance([cardAccount, loanAccount], {
+      card_account_available: cardView,
+    })).toBe(0);
+  });
+
+  it('infers near-limit legacy credit-card balance as available credit when no snapshot kind exists', () => {
+    const nearLimitCardAccount: BankAccount = {
+      ...bankAccount,
+      id: 'hdfc_2246',
+      account_type: 'credit_card',
+      balance: 82410,
+      starting_balance: 82410,
+      credit_limit: 83000,
+    };
+    const ordinaryOutstandingCardAccount: BankAccount = {
+      ...bankAccount,
+      id: 'ordinary_card',
+      account_type: 'credit_card',
+      balance: 38000,
+      starting_balance: 38000,
+      credit_limit: 50000,
+    };
+    const nearLimitView = buildAccountBalanceViewModelsForRows([nearLimitCardAccount], [])[0];
+
+    expect(getLegacyCreditCardPosition(nearLimitCardAccount)).toEqual({
+      creditLimit: 83000,
+      availableCredit: 82410,
+      outstanding: 590,
+    });
+    expect(getLegacyCreditCardPosition(nearLimitCardAccount, nearLimitView)).toEqual({
+      creditLimit: 83000,
+      availableCredit: 82410,
+      outstanding: 590,
+    });
+    expect(getBankAccountLiabilityBalance(nearLimitCardAccount)).toBe(590);
+    expect(getBankAccountLiabilityBalance(nearLimitCardAccount, nearLimitView)).toBe(590);
+    expect(getLegacyCreditCardPosition(ordinaryOutstandingCardAccount)).toEqual({
+      creditLimit: 50000,
+      availableCredit: 12000,
+      outstanding: 38000,
+    });
   });
 
   it('builds newest-first balance history without raw metadata exposure', () => {
@@ -161,7 +315,7 @@ describe('balance view model', () => {
     expect(view.items[0]).toEqual(expect.objectContaining({
       balanceKind: 'available_balance',
       balanceKindLabel: 'Available',
-      sourceLabel: 'Manual',
+      sourceLabel: 'Manual correction',
       confidenceLabel: 'Exact',
       noteSafe: 'Verified in app',
     }));
@@ -328,7 +482,7 @@ describe('balance view model', () => {
     }));
   });
 
-  it('prefers available balance over current balance when rank is tied', () => {
+  it('uses newer current balance when it is clearly newer than available balance', () => {
     const views = buildAccountBalanceViewModelsForRows([bankAccount], [
       snapshot({
         id: 'available_exact',
@@ -347,6 +501,34 @@ describe('balance view model', () => {
         source: 'sms',
         confidence: 'exact',
         detected_at: '2026-05-29T10:00:00.000Z',
+      }),
+    ]);
+
+    expect(views[0]).toEqual(expect.objectContaining({
+      displayBalance: 2700,
+      balanceKind: 'current_balance',
+    }));
+  });
+
+  it('prefers available balance over current balance when timestamps are close', () => {
+    const views = buildAccountBalanceViewModelsForRows([bankAccount], [
+      snapshot({
+        id: 'available_exact',
+        owner_id: 'bank_1',
+        balance_kind: 'available_balance',
+        amount: 2600,
+        source: 'sms',
+        confidence: 'exact',
+        detected_at: '2026-05-28T10:00:00.000Z',
+      }),
+      snapshot({
+        id: 'current_exact_close',
+        owner_id: 'bank_1',
+        balance_kind: 'current_balance',
+        amount: 2700,
+        source: 'sms',
+        confidence: 'exact',
+        detected_at: '2026-05-28T10:01:00.000Z',
       }),
     ]);
 
@@ -420,7 +602,7 @@ describe('balance view model', () => {
       creditLimit: 50000,
       source: 'manual',
       confidence: 'exact',
-      sourceLabel: 'Manual',
+      sourceLabel: 'Manual correction',
       confidenceLabel: 'Exact',
     }));
   });
@@ -481,7 +663,7 @@ describe('balance view model', () => {
       balanceKind: 'loan_outstanding',
       source: 'manual',
       confidence: 'exact',
-      sourceLabel: 'Manual',
+      sourceLabel: 'Manual correction',
     }));
   });
 
@@ -677,5 +859,21 @@ describe('balance view model', () => {
       debit_card: 1,
       loan: 0,
     });
+  });
+
+  it('keeps financial-position UI copy explicit about card credit and asset balances', () => {
+    const financialScreens = fs.readFileSync('src/screens/financial/FinancialScreens.tsx', 'utf8');
+    const bankConfigScreen = fs.readFileSync('src/screens/financial/BankConfigScreen.tsx', 'utf8');
+    const combined = `${financialScreens}\n${bankConfigScreen}`;
+
+    expect(financialScreens).toContain('Cash & bank balance');
+    expect(financialScreens).toContain('Cash & Bank');
+    expect(combined).toContain('Available credit');
+    expect(combined).toContain('Credit limit');
+    expect(combined).not.toContain('Total Balance');
+    expect(combined).not.toMatch(/credit_card['"][\s\S]{0,120}['"]Balance['"]/);
+    expect(combined).not.toMatch(/Available:\s*\{/);
+    expect(combined).not.toMatch(/Limit:\s*\{/);
+    expect(combined).not.toMatch(/name=["']help["']|name=["']question/);
   });
 });

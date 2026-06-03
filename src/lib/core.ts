@@ -15,6 +15,7 @@ import { sanitizeTransactionRawSmsForPrivacy } from './privacy/rawText';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   OFFLINE_TX_QUEUE_BASE_KEY,
+  REVIEW_QUEUE_BASE_KEY,
   getQueueOwnerId,
   loadUserScopedQueue,
   logUserQueueAction,
@@ -179,6 +180,24 @@ export const signOutFromGoogle = async () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSACTIONS_CACHE_KEY = 'cache_transactions';
+const DASHBOARD_SUMMARY_CACHE_PREFIX = 'cache_dashboard_summary';
+const REVIEWED_INCOME_NOTE = 'Reviewed income';
+const REVIEWED_INCOME_CATEGORY = 'Reviewed Income';
+const REVIEWED_EXPENSE_REASON = 'review_queue_expense_confirmed';
+const INCOME_REVIEW_REASON = 'income_review_confirmed';
+
+async function invalidateDashboardSummaryCache(): Promise<void> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    await Promise.all(
+      keys
+        .filter(key => key === DASHBOARD_SUMMARY_CACHE_PREFIX || key.startsWith(`${DASHBOARD_SUMMARY_CACHE_PREFIX}:`))
+        .map(key => AsyncStorage.removeItem(key))
+    );
+  } catch {
+    // Cache invalidation is best-effort; Supabase remains the source of truth.
+  }
+}
 
 async function updateTransactionsCache(
   updater: (current: Transaction[]) => Transaction[]
@@ -196,8 +215,214 @@ async function updateTransactionsCache(
       data: next,
       timestamp: Date.now(),
     }));
+    await invalidateDashboardSummaryCache();
   } catch {
     // Cache is a best-effort performance layer.
+  }
+}
+
+type DeletedReviewSource = Pick<Transaction,
+  'id' |
+  'type' |
+  'amount' |
+  'note' |
+  'category' |
+  'created_at' |
+  'primary_evidence_id' |
+  'account_match_reason'
+>;
+
+type IncomeReviewTombstoneTarget = {
+  evidenceId: string | null;
+  signalHash: string | null;
+};
+
+function isReviewedIncomeTransaction(tx: DeletedReviewSource): boolean {
+  return tx.type === 'income' && Boolean(
+    tx.primary_evidence_id ||
+    tx.account_match_reason === INCOME_REVIEW_REASON ||
+    (tx.note === REVIEWED_INCOME_NOTE && tx.category === REVIEWED_INCOME_CATEGORY)
+  );
+}
+
+function isReviewedExpenseTransaction(tx: DeletedReviewSource): boolean {
+  return tx.type === 'expense' && Boolean(
+    tx.primary_evidence_id ||
+    tx.account_match_reason === REVIEWED_EXPENSE_REASON
+  );
+}
+
+async function fetchOwnedTransactionsForDelete(
+  userId: string,
+  ids: string[]
+): Promise<DeletedReviewSource[]> {
+  if (ids.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('id,type,amount,note,category,created_at,primary_evidence_id,account_match_reason')
+    .eq('user_id', userId)
+    .in('id', ids);
+
+  if (error) {
+    console.warn('[TransactionDelete] Could not inspect review source before delete', {
+      inspected: false,
+    });
+    return [];
+  }
+
+  return (data || []) as unknown as DeletedReviewSource[];
+}
+
+async function resolveIncomeReviewTombstoneTarget(
+  userId: string,
+  tx: DeletedReviewSource
+): Promise<IncomeReviewTombstoneTarget | null> {
+  if (!isReviewedIncomeTransaction(tx)) return null;
+
+  let evidenceId = tx.primary_evidence_id || null;
+  let signalHash: string | null = null;
+
+  const { data: decision } = await supabase
+    .from('income_review_decisions')
+    .select('evidence_id,signal_hash')
+    .eq('user_id', userId)
+    .eq('transaction_id', tx.id)
+    .maybeSingle();
+
+  if (decision) {
+    evidenceId = (decision as { evidence_id?: string | null }).evidence_id || evidenceId;
+    signalHash = (decision as { signal_hash?: string | null }).signal_hash || null;
+  }
+
+  if (evidenceId && !signalHash) {
+    const { data: evidence } = await supabase
+      .from('transaction_evidence')
+      .select('signal_id')
+      .eq('user_id', userId)
+      .eq('id', evidenceId)
+      .maybeSingle();
+    signalHash = (evidence as { signal_id?: string | null } | null)?.signal_id || null;
+  }
+
+  if (!evidenceId && !signalHash) return null;
+  return { evidenceId, signalHash };
+}
+
+async function writeIncomeReviewDeletionTombstone(
+  userId: string,
+  target: IncomeReviewTombstoneTarget
+): Promise<boolean> {
+  const lookups: Array<[string, string | null]> = [
+    ['evidence_id', target.evidenceId],
+    ['signal_hash', target.signalHash],
+  ];
+
+  let existingId: string | null = null;
+  for (const [column, value] of lookups) {
+    if (!value) continue;
+    const { data } = await supabase
+      .from('income_review_decisions')
+      .select('id')
+      .eq('user_id', userId)
+      .eq(column, value)
+      .maybeSingle();
+    existingId = (data as { id?: string } | null)?.id || null;
+    if (existingId) break;
+  }
+
+  const payload = {
+    transaction_id: null,
+    evidence_id: target.evidenceId,
+    signal_hash: target.signalHash,
+    decision: 'not_income',
+    income_source_type: null,
+    confidence: 'user_confirmed',
+    reviewed_at: new Date().toISOString(),
+  };
+
+  const mutation = existingId
+    ? supabase
+        .from('income_review_decisions')
+        .update(payload)
+        .eq('id', existingId)
+        .eq('user_id', userId)
+    : supabase
+        .from('income_review_decisions')
+        .insert({ ...payload, user_id: userId });
+
+  const { error } = await mutation;
+  if (error) {
+    console.warn('[TransactionDelete] Could not tombstone reviewed income source', {
+      tombstoneWritten: false,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+async function markDeletedReviewQueueSources(
+  userId: string,
+  transactions: DeletedReviewSource[]
+): Promise<boolean> {
+  const reviewSourceIds = new Set(transactions
+    .filter(isReviewedExpenseTransaction)
+    .map(tx => tx.id));
+  const evidenceIds = new Set(transactions
+    .filter(isReviewedExpenseTransaction)
+    .map(tx => tx.primary_evidence_id)
+    .filter((id): id is string => Boolean(id)));
+
+  if (reviewSourceIds.size === 0 && evidenceIds.size === 0) return false;
+
+  const queue = await loadUserScopedQueue<Record<string, any>>(REVIEW_QUEUE_BASE_KEY, userId);
+  let changed = false;
+  const nextQueue = queue.map(item => {
+    const candidate = item.candidate || {};
+    const matchesTransaction = typeof item.createdTransactionId === 'string' &&
+      reviewSourceIds.has(item.createdTransactionId);
+    const matchesEvidence = typeof candidate.evidenceId === 'string' &&
+      evidenceIds.has(candidate.evidenceId);
+
+    if (!matchesTransaction && !matchesEvidence) return item;
+    if (item.status === 'reviewed' || item.status === 'ignored') return item;
+
+    changed = true;
+    return {
+      ...item,
+      status: 'reviewed',
+      deletedTransactionId: matchesTransaction ? item.createdTransactionId : undefined,
+    };
+  });
+
+  if (!changed) return false;
+
+  await saveUserScopedQueue(REVIEW_QUEUE_BASE_KEY, userId, nextQueue);
+  return true;
+}
+
+async function markDeletedReviewSources(
+  userId: string,
+  transactions: DeletedReviewSource[]
+): Promise<void> {
+  if (transactions.length === 0) return;
+
+  let changedReviewState = false;
+  for (const tx of transactions) {
+    const target = await resolveIncomeReviewTombstoneTarget(userId, tx);
+    if (target) {
+      changedReviewState = (await writeIncomeReviewDeletionTombstone(userId, target)) || changedReviewState;
+    }
+  }
+
+  changedReviewState = (await markDeletedReviewQueueSources(userId, transactions)) || changedReviewState;
+
+  if (changedReviewState) {
+    emitFinanceDataChanged({
+      areas: ['review'],
+      source: 'transaction:delete_review_source',
+    });
   }
 }
 
@@ -438,6 +663,8 @@ export async function deleteTransaction(id: string): Promise<void> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
+  const transactionsForReviewDisposition = await fetchOwnedTransactionsForDelete(user.id, [id]);
+
   const { error } = await supabase
     .from('transactions')
     .delete()
@@ -448,9 +675,10 @@ export async function deleteTransaction(id: string): Promise<void> {
     throw new Error(error.message);
   }
 
+  await markDeletedReviewSources(user.id, transactionsForReviewDisposition);
   await updateTransactionsCache(current => current.filter(tx => tx.id !== id));
   emitFinanceDataChanged({
-    areas: ['transactions'],
+    areas: ['transactions', 'review'],
     source: 'transaction:delete',
     transactionId: id,
   });
@@ -461,6 +689,8 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
   if (!user) throw new Error('User not authenticated');
 
   if (ids.length === 0) return;
+
+  const transactionsForReviewDisposition = await fetchOwnedTransactionsForDelete(user.id, ids);
 
   const CHUNK_SIZE = 100;
   const errors: string[] = [];
@@ -483,9 +713,10 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
   }
 
   const idSet = new Set(ids);
+  await markDeletedReviewSources(user.id, transactionsForReviewDisposition);
   await updateTransactionsCache(current => current.filter(tx => !idSet.has(tx.id)));
   emitFinanceDataChanged({
-    areas: ['transactions'],
+    areas: ['transactions', 'review'],
     source: 'transaction:bulkDelete',
   });
 }
@@ -596,6 +827,8 @@ async function syncOfflineDeleteQueue(userId: string): Promise<void> {
       continue;
     }
 
+    const transactionsForReviewDisposition = await fetchOwnedTransactionsForDelete(userId, [transactionId]);
+
     const { error } = await supabase
       .from('transactions')
       .delete()
@@ -609,12 +842,13 @@ async function syncOfflineDeleteQueue(userId: string): Promise<void> {
     }
 
     syncedIds.add(transactionId);
+    await markDeletedReviewSources(userId, transactionsForReviewDisposition);
   }
 
   if (syncedIds.size > 0) {
     await updateTransactionsCache(current => current.filter(tx => !syncedIds.has(tx.id)));
     emitFinanceDataChanged({
-      areas: ['transactions'],
+      areas: ['transactions', 'review'],
       source: 'offline:deleteSync',
     });
   }

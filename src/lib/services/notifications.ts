@@ -9,7 +9,7 @@
  * - Spam/promo filtering
  */
 
-import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
+import notifee, { AndroidImportance, AuthorizationStatus, EventType } from '@notifee/react-native';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
 import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../core';
@@ -49,6 +49,146 @@ export function summarizeParsedSmsForLog(parsed: ParsedTransaction) {
     upiIdPresent: parsed.upiId !== null,
     confidencePresent: Number.isFinite(parsed.confidence),
   };
+}
+
+type FinancialEventRoute = 'stored_transaction' | 'review_queue' | 'balance_only';
+
+interface FinancialEventNotificationInput {
+  route: FinancialEventRoute;
+  sourceKind: 'sms' | 'notification';
+  amount?: number | null;
+  direction?: 'credit' | 'debit' | 'neutral' | 'unknown' | null;
+  accountLast4?: string | null;
+  cardLast4?: string | null;
+  eventId?: string | null;
+}
+
+function safeErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'unknown_error';
+  const code = (error as { code?: unknown; name?: unknown; status?: unknown }).code
+    || (error as { name?: unknown }).name
+    || (error as { status?: unknown }).status;
+  return typeof code === 'string' || typeof code === 'number'
+    ? String(code).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || 'unknown_error'
+    : 'unknown_error';
+}
+
+function suffixId(value?: string | null): string | undefined {
+  const safe = value?.replace(/[^A-Za-z0-9_-]/g, '');
+  if (!safe) return undefined;
+  return safe.slice(-8);
+}
+
+function safeLast4(value?: string | null): string | undefined {
+  const digits = value?.replace(/\D/g, '') || '';
+  return digits.length >= 4 ? digits.slice(-4) : undefined;
+}
+
+function formatSafeAmount(amount?: number | null): string {
+  return typeof amount === 'number' && Number.isFinite(amount)
+    ? `Rs.${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : 'Amount captured';
+}
+
+function routeTitle(route: FinancialEventRoute): string {
+  if (route === 'review_queue') return 'Money movement needs review';
+  if (route === 'balance_only') return 'Balance updated';
+  return 'Transaction saved';
+}
+
+function routeBody(input: FinancialEventNotificationInput): string {
+  const source = input.sourceKind === 'notification' ? 'Notification' : 'SMS';
+  const amount = formatSafeAmount(input.amount);
+  const direction = input.direction && input.direction !== 'unknown'
+    ? input.direction.charAt(0).toUpperCase() + input.direction.slice(1)
+    : 'Money movement';
+  const last4 = safeLast4(input.accountLast4) || safeLast4(input.cardLast4);
+  const suffix = last4 ? `\nAccount ending ${last4}` : '';
+  if (input.route === 'review_queue') {
+    const account = last4 ? ` from account ending ${last4}` : '';
+    return `${amount}${account} needs review`;
+  }
+  return `${direction} ${amount} from ${source}${suffix}`;
+}
+
+async function getNotificationPermissionStatus(): Promise<{
+  label: string;
+  blocked: boolean;
+}> {
+  try {
+    const getter = (notifee as any).getNotificationSettings;
+    if (typeof getter !== 'function') {
+      return { label: 'unknown', blocked: false };
+    }
+
+    const settings = await getter.call(notifee);
+    const status = settings?.authorizationStatus;
+    if (status === AuthorizationStatus.DENIED) return { label: 'denied', blocked: true };
+    if (status === AuthorizationStatus.AUTHORIZED) return { label: 'authorized', blocked: false };
+    if (status === AuthorizationStatus.PROVISIONAL) return { label: 'provisional', blocked: false };
+    return { label: String(status ?? 'unknown'), blocked: false };
+  } catch (error) {
+    console.warn('[SpendSenseNotification] Permission status unavailable', {
+      errorCode: safeErrorCode(error),
+    });
+    return { label: 'unknown_error', blocked: false };
+  }
+}
+
+export async function showFinancialEventNotification(
+  input: FinancialEventNotificationInput
+): Promise<'sent' | 'blocked' | 'failed'> {
+  const permission = await getNotificationPermissionStatus();
+  console.log('[SpendSenseNotification] Display requested', {
+    route: input.route,
+    sourceKind: input.sourceKind,
+    permissionStatus: permission.label,
+    eventIdSuffix: suffixId(input.eventId),
+  });
+
+  if (permission.blocked) {
+    console.log('[SpendSenseNotification] Display blocked', {
+      route: input.route,
+      reasonCode: 'permission_denied',
+    });
+    return 'blocked';
+  }
+
+  try {
+    await createTransactionChannels();
+    console.log('[SpendSenseNotification] Channel ready', {
+      channelId: 'sms_parsed',
+      route: input.route,
+    });
+
+    await notifee.displayNotification({
+      id: input.eventId ? `finance_${input.route}_${suffixId(input.eventId)}` : undefined,
+      title: routeTitle(input.route),
+      body: routeBody(input),
+      android: {
+        channelId: 'sms_parsed',
+        importance: AndroidImportance.DEFAULT,
+        pressAction: { id: 'default' },
+      },
+      data: {
+        action: input.route,
+        sourceKind: input.sourceKind,
+        eventIdSuffix: suffixId(input.eventId) || '',
+      },
+    });
+
+    console.log('[SpendSenseNotification] Display succeeded', {
+      route: input.route,
+      notificationScheduled: true,
+    });
+    return 'sent';
+  } catch (error) {
+    console.warn('[SpendSenseNotification] Display failed', {
+      route: input.route,
+      errorCode: safeErrorCode(error),
+    });
+    return 'failed';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -131,7 +271,7 @@ export async function createTransactionChannels() {
 export async function showTransactionConfirmation(
   transactionId: string,
   type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed',
-  merchant: string,
+  _merchant: string,
   amount: number,
   accountName?: string,
   rawSms?: string,
@@ -139,13 +279,31 @@ export async function showTransactionConfirmation(
   sender?: string
 ): Promise<void> {
   try {
+    const permission = await getNotificationPermissionStatus();
+    console.log('[SpendSenseNotification] Display requested', {
+      route: 'stored_transaction',
+      sourceKind: rawSms?.startsWith('redacted_notification') ? 'notification' : 'sms',
+      permissionStatus: permission.label,
+      eventIdSuffix: suffixId(transactionId),
+    });
+    if (permission.blocked) {
+      console.log('[SpendSenseNotification] Display blocked', {
+        route: 'stored_transaction',
+        reasonCode: 'permission_denied',
+      });
+      return;
+    }
+
     await createTransactionChannels();
+    console.log('[SpendSenseNotification] Channel ready', {
+      channelId: 'sms_parsed',
+      route: 'stored_transaction',
+    });
 
     const typeDisplay = type.charAt(0).toUpperCase() + type.slice(1);
-    const formattedAmount = `Rs.${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-    let bodyText = `${merchant} - ${formattedAmount}`;
-    if (accountName) bodyText += `\n${accountName}`;
+    const formattedAmount = formatSafeAmount(amount);
+    const accountLast4 = safeLast4(accountName);
+    const bodyText = `${typeDisplay} ${formattedAmount}${accountLast4 ? `\nAccount ending ${accountLast4}` : ''}`;
     const notificationRawText = ensureRedactedRawTextRecord(rawSms, {
       kind: 'sms',
       sender,
@@ -157,7 +315,7 @@ export async function showTransactionConfirmation(
 
     await notifee.displayNotification({
       id: `txn_${transactionId}`,
-      title: `${typeDisplay} Added`,
+      title: 'Transaction saved',
       body: bodyText,
       android: {
         channelId: 'sms_parsed',
@@ -179,9 +337,15 @@ export async function showTransactionConfirmation(
       },
     });
 
-    console.log('Transaction confirmation notification shown for', transactionId);
+    console.log('[SpendSenseNotification] Display succeeded', {
+      route: 'stored_transaction',
+      transactionIdSuffix: suffixId(transactionId),
+    });
   } catch (error) {
-    console.error('Error showing transaction confirmation:', error);
+    console.error('[SpendSenseNotification] Display failed', {
+      route: 'stored_transaction',
+      errorCode: safeErrorCode(error),
+    });
   }
 }
 

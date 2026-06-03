@@ -260,7 +260,13 @@ function bankOption(account: BankAccount): ExistingOwnerOption {
     ownerType: 'bank_account',
     ownerId: account.id,
     label: `${sanitizeDetectedDisplayText(account.bank_name)} - ${account.account_last4}`,
-    subtitle: account.account_type === 'current' ? 'Current account' : account.account_type === 'loan' ? 'Loan account' : 'Bank account',
+    subtitle: account.account_type === 'credit_card'
+      ? 'Legacy credit card setup'
+      : account.account_type === 'current'
+        ? 'Current account'
+        : account.account_type === 'loan'
+          ? 'Loan account'
+          : 'Bank account',
     bankName: sanitizeDetectedDisplayText(account.bank_name),
     last4: safeLast4(account.account_last4),
   };
@@ -314,7 +320,13 @@ function findDuplicateOwner(
   if (detection.detection_type === 'credit_card') {
     const last4 = safeLast4(detection.card_last4 || detection.account_last4);
     const duplicate = creditCards.find(card => safeLast4(card.last_4_digits) === last4);
-    return duplicate ? creditCardOption(duplicate) : null;
+    if (duplicate) return creditCardOption(duplicate);
+
+    const legacyDuplicate = accounts.find(account =>
+      account.account_type === 'credit_card' &&
+      safeLast4(account.account_last4) === last4
+    );
+    return legacyDuplicate ? bankOption(legacyDuplicate) : null;
   }
 
   if (detection.detection_type === 'debit_card') {

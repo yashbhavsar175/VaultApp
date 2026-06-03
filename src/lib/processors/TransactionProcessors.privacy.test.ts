@@ -2,7 +2,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { processNotification, processSms } from './TransactionProcessors';
 import { supabase } from '../core';
-import { showTransactionConfirmation } from '../services/notifications';
+import {
+  showFinancialEventNotification,
+  showTransactionConfirmation,
+} from '../services/notifications';
 import {
   recordBalanceSignalForUser,
   recordEstimatedBankBalanceMovementForUser,
@@ -26,6 +29,7 @@ jest.mock('../core', () => ({
 
 jest.mock('../services/notifications', () => ({
   isSpamMessage: jest.fn(() => false),
+  showFinancialEventNotification: jest.fn(),
   showSmsFailedNotification: jest.fn(),
   showTransactionConfirmation: jest.fn(),
 }));
@@ -65,6 +69,7 @@ jest.mock('../services/paymentAppAccountMappings', () => ({
 type InsertedTransaction = Record<string, any>;
 
 const mockSupabase = supabase as any;
+const mockShowFinancialEventNotification = showFinancialEventNotification as jest.Mock;
 const mockShowTransactionConfirmation = showTransactionConfirmation as jest.Mock;
 const mockRecordBalanceSignalForUser = recordBalanceSignalForUser as jest.Mock;
 const mockRecordEstimatedBankBalanceMovementForUser = recordEstimatedBankBalanceMovementForUser as jest.Mock;
@@ -74,6 +79,7 @@ const mockRecordNotificationEvidence = recordNotificationTransactionEvidence as 
 const mockResolvePaymentAppBankAccount = resolvePaymentAppBankAccountForUser as jest.Mock;
 const insertedTransactions: InsertedTransaction[] = [];
 let matchedBankAccounts = [{ id: 'bank_1' }];
+let profileFullName: string | null = null;
 
 function setupSupabaseMock() {
   let nextId = 1;
@@ -98,6 +104,12 @@ function setupSupabaseMock() {
       gte: jest.fn(() => builder),
       order: jest.fn(() => builder),
       update: jest.fn(() => builder),
+      single: jest.fn(async () => {
+        if (table === 'profiles') {
+          return { data: { full_name: profileFullName }, error: null };
+        }
+        return { data: null, error: null };
+      }),
       limit: jest.fn(async () => {
         if (table === 'bank_accounts') {
           return { data: matchedBankAccounts, error: null };
@@ -138,6 +150,7 @@ describe('TransactionProcessors raw_sms privacy', () => {
     jest.clearAllMocks();
     insertedTransactions.length = 0;
     matchedBankAccounts = [{ id: 'bank_1' }];
+    profileFullName = null;
     await AsyncStorage.clear();
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true });
     mockRecordBalanceSignalForUser.mockResolvedValue({
@@ -314,6 +327,92 @@ describe('TransactionProcessors raw_sms privacy', () => {
     }));
   });
 
+  it('routes HDFC sent debit to the profile name as self-transfer review instead of expense', async () => {
+    profileFullName = 'Yash Bhavsar';
+    const body = 'Sent Rs.20.00 From HDFC Bank A/C *0719 To BHAVSAR YASH On 03/06/26 Ref 615411041468';
+
+    await processSms({ sender: 'AD-HDFCBK-S', body, timestamp: Date.now() });
+
+    expect(insertedTransactions).toHaveLength(0);
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
+    expect(queue).toHaveLength(1);
+    expect(queue[0].candidate).toEqual(expect.objectContaining({
+      autoClass: 'self_transfer',
+      direction: 'neutral',
+      amount: 20,
+      accountLast4: '0719',
+      reference: '615411041468',
+    }));
+    expect(mockShowTransactionConfirmation).not.toHaveBeenCalled();
+    expect(mockShowFinancialEventNotification).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'review_queue',
+      sourceKind: 'sms',
+      amount: 20,
+      direction: 'neutral',
+      accountLast4: '0719',
+    }));
+    const serializedQueue = JSON.stringify(queue);
+    expect(serializedQueue).not.toContain(body);
+    expect(serializedQueue).not.toContain('BHAVSAR YASH');
+  });
+
+  it('merges HDFC self debit and near-time GPay paid-you notification into one self-transfer review item', async () => {
+    profileFullName = 'Yash Bhavsar';
+    const timestamp = Date.now();
+    const smsText = 'Sent Rs.20.00 From HDFC Bank A/C *0719 To BHAVSAR YASH On 03/06/26 Ref 615413129779';
+    const gpayTitle = 'BHAVSAR YASH paid you ₹20.00';
+    const gpayText = 'Paid via SuperMoney UPI';
+
+    await processSms({
+      sender: 'AD-HDFCBK-S',
+      body: smsText,
+      timestamp,
+    });
+    await processNotification({
+      notification: JSON.stringify({
+        app: 'com.google.android.apps.nbu.paisa.user',
+        title: gpayTitle,
+        text: gpayText,
+        time: timestamp + 60_000,
+      }),
+    });
+
+    expect(insertedTransactions).toHaveLength(0);
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
+    expect(queue).toHaveLength(1);
+    expect(queue[0].candidate).toEqual(expect.objectContaining({
+      autoClass: 'self_transfer',
+      direction: 'neutral',
+      amount: 20,
+      accountLast4: '0719',
+      reference: '615413129779',
+    }));
+    expect(queue[0].reasons).toEqual(expect.arrayContaining([
+      'Self transfer needs confirmation',
+      'Paired bank debit and payment-app credit need transfer review',
+    ]));
+    expect(mockShowTransactionConfirmation).not.toHaveBeenCalled();
+    expect(mockShowFinancialEventNotification).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'review_queue',
+      sourceKind: 'sms',
+      amount: 20,
+      direction: 'neutral',
+      accountLast4: '0719',
+    }));
+    expect(mockRecordSmsEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      transactionId: null,
+    }));
+    expect(mockRecordNotificationEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      transactionId: null,
+    }));
+
+    const serializedQueue = JSON.stringify(queue);
+    expect(serializedQueue).not.toContain(smsText);
+    expect(serializedQueue).not.toContain(gpayTitle);
+    expect(serializedQueue).not.toContain(gpayText);
+    expect(serializedQueue).not.toContain('BHAVSAR YASH');
+  });
+
   it('does not fail transaction processing if balance signal recording fails', async () => {
     mockRecordBalanceSignalForUser.mockRejectedValueOnce(new Error('snapshot write failed'));
     const body = 'Rs.31 debited from your HDFC Bank account XX1234 to TASK26D SHOP via UPI. UPI Ref 313131313131.';
@@ -416,6 +515,17 @@ describe('TransactionProcessors raw_sms privacy', () => {
     const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
     expect(queue).toHaveLength(1);
     expect(queue[0].status).toBe('pending');
+    if (_label === 'self transfer') {
+      expect(mockShowFinancialEventNotification).toHaveBeenCalledWith(expect.objectContaining({
+        route: 'review_queue',
+        amount: 11000,
+        direction: 'neutral',
+      }));
+    } else {
+      expect(mockShowFinancialEventNotification).not.toHaveBeenCalledWith(expect.objectContaining({
+        route: 'review_queue',
+      }));
+    }
     expect(JSON.stringify(queue[0])).not.toContain(body);
     if (_label === 'family debit') {
       expect(JSON.stringify(queue[0])).not.toContain('brother');
@@ -450,6 +560,53 @@ describe('TransactionProcessors raw_sms privacy', () => {
     expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
       areas: ['review'],
       source: 'sms:review',
+    }));
+    expect(mockShowFinancialEventNotification).not.toHaveBeenCalledWith(expect.objectContaining({
+      route: 'review_queue',
+    }));
+  });
+
+  it('merges paired HDFC card-payment SMS and Gmail alert into one card-payment review item', async () => {
+    const timestamp = Date.now();
+    const gmailText = 'Rs.589.00 debited from account ending 0719 towards VPA gpay-creditcard@okpayaxis Google India Digital Services Pvt Ltd. UPI transaction reference no. 124115794477';
+    const smsText = 'Sent Rs.589.00 from HDFC Bank A/C *0719 to Google India Digital Serv Ref 124115794477. PAYMENT OF Rs.589.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 2246. Available limit is Rs.82999.86';
+
+    await processNotification({
+      notification: JSON.stringify({
+        app: 'com.google.android.apps.nbu.paisa.user',
+        title: 'HDFC InstaAlerts',
+        text: gmailText,
+        time: timestamp,
+      }),
+    });
+    await processSms({
+      sender: 'AD-HDFCBK-S',
+      body: smsText,
+      timestamp: timestamp + 1000,
+    });
+
+    expect(insertedTransactions).toHaveLength(0);
+    const queue = JSON.parse(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1')) || '[]');
+    expect(queue).toHaveLength(1);
+    expect(queue[0].candidate).toEqual(expect.objectContaining({
+      autoClass: 'credit_card_bill_payment',
+      direction: 'neutral',
+      amount: 589,
+      accountLast4: '0719',
+      cardLast4: '2246',
+      last4: '2246',
+      reference: '124115794477',
+      instrumentHint: 'credit_card',
+    }));
+    const serializedQueue = JSON.stringify(queue);
+    expect(serializedQueue).not.toContain(gmailText);
+    expect(serializedQueue).not.toContain(smsText);
+    expect(serializedQueue).not.toContain('gpay-creditcard@okpayaxis');
+    expect(mockRecordNotificationEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      transactionId: null,
+    }));
+    expect(mockRecordSmsEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      transactionId: null,
     }));
   });
 
@@ -517,6 +674,62 @@ describe('TransactionProcessors raw_sms privacy', () => {
       direction: 'credit',
       sourceType: 'notification',
       reason: 'app_mapping',
+    }));
+    expect(mockShowFinancialEventNotification).not.toHaveBeenCalledWith(expect.objectContaining({
+      route: 'review_queue',
+    }));
+  });
+
+  it('logs review route decisions without raw notification text or full UPI', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const text = 'Rs.103.00 received from PRIVATE PERSON at yash.private@oksbi. Deposited in your slice bank.';
+
+    try {
+      await processNotification({
+        notification: JSON.stringify({
+          app: 'money.super.payments',
+          text,
+          time: Date.now(),
+        }),
+      });
+
+      const routeLogs = logSpy.mock.calls.filter(([message]) =>
+        typeof message === 'string' && message.includes('[AutoTransactionDebug] Route decision')
+      );
+      expect(routeLogs.length).toBeGreaterThan(0);
+      const serializedLogs = JSON.stringify(routeLogs);
+      expect(serializedLogs).toContain('review_queue');
+      expect(serializedLogs).toContain('notification');
+      expect(serializedLogs).not.toContain('PRIVATE PERSON');
+      expect(serializedLogs).not.toContain('yash.private@oksbi');
+      expect(serializedLogs).not.toContain(text);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('requests a safe balance-updated notification only after a balance signal is recorded', async () => {
+    mockRecordBalanceSignalForUser.mockResolvedValueOnce({
+      parsed: {
+        isBalanceSignal: true,
+        redactedSource: { hash: 'abcdef12' },
+      },
+      snapshots: [{ id: 'balance_only_1' }],
+      detectedCandidates: [],
+      debitCards: [],
+      creditCardStatements: [],
+    });
+
+    await processSms({
+      sender: 'HDFCBK',
+      body: 'Available balance in your HDFC Bank account XX1234 is Rs.12000.',
+      timestamp: Date.now(),
+    });
+
+    expect(insertedTransactions).toHaveLength(0);
+    expect(mockShowFinancialEventNotification).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'balance_only',
+      sourceKind: 'sms',
     }));
   });
 

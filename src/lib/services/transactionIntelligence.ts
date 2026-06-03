@@ -63,6 +63,8 @@ export type SmartCandidate = {
   amount: number | null;
   merchantOrPerson: string | null;
   last4: string | null;
+  accountLast4?: string | null;
+  cardLast4?: string | null;
   reference: string | null;
   instrumentHint: 'credit_card' | 'bank_account' | 'loan_account' | 'wallet' | 'unknown';
   confidenceScore: number;
@@ -113,6 +115,35 @@ function extractAmount(text: string): number | null {
   return null;
 }
 
+function normalizeLast4(value?: string | null): string | null {
+  const digits = value?.replace(/\D/g, '') || '';
+  return digits.length >= 4 ? digits.slice(-4) : null;
+}
+
+function extractLast4WithPatterns(text: string, patterns: RegExp[]): string | null {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const last4 = normalizeLast4(match?.[1]);
+    if (last4) return last4;
+  }
+  return null;
+}
+
+function extractAccountLast4(text: string): string | null {
+  return extractLast4WithPatterns(text, [
+    /\ba\/?c(?:count)?(?:\s*(?:no\.?|number))?\s*(?:ending\s*(?:with\s*)?)?[-:xX* ]*(\d{4,5})\b/i,
+    /\baccount\s+(?:ending|ended|no\.?|number|xx|x{2,})\s*(?:with\s*)?[-:xX* ]*(\d{4,5})\b/i,
+  ]);
+}
+
+function extractCardLast4(text: string): string | null {
+  return extractLast4WithPatterns(text, [
+    /\b(?:credit\s*)?card\b[^.]{0,48}?\b(?:ending|ended)\s*(?:with\s*)?[-:xX* ]*(\d{4})\b/i,
+    /\b(?:credit\s*)?card\s*(?:no\.?|number)?\s*(?:xx|x{2,}|[*]+)\s*(\d{4})\b/i,
+    /\bcc\b[^.]{0,24}?\b(?:ending|ended|xx|x{2,}|[*]+)\s*(?:with\s*)?[-:xX* ]*(\d{4})\b/i,
+  ]);
+}
+
 function extractLast4(text: string): string | null {
   const match = text.match(/(?:card|a\/c|account|ac|xx|xxxx|ending)\s*(?:with|no\.?|number)?\s*[-:xX*]*\s*(\d{3,5})\b/i) || 
                 text.match(/[xX*]{4,}(\d{4})\b/);
@@ -121,7 +152,8 @@ function extractLast4(text: string): string | null {
 }
 
 function extractReference(text: string): string | null {
-  const match = text.match(/(?:UPI(?:[\s-]*Ref)?|UTR|RRN|Ref(?:erence)?(?: no| id)?|TXN ID)\s*[-:]?\s*([A-Za-z0-9]{8,20})\b/i);
+  const match = text.match(/(?:UPI[\s-]*(?:Ref(?:erence)?|ID)|UTR|RRN|Ref(?:erence)?(?:\s*(?:no\.?|id))?|TXN ID|transaction\s+reference\s+no\.?)\s*[-:]?\s*([A-Za-z0-9]{8,20})\b/i) ||
+    text.match(/\bUPI\s*[-:]\s*([0-9]{8,20})\b/i);
   if (match && match[1]) {
     const val = match[1];
     if (/^1800\d{6,8}$/.test(val) || /^\d{10,11}$/.test(val)) {
@@ -130,6 +162,13 @@ function extractReference(text: string): string | null {
     return val;
   }
   return null;
+}
+
+function sanitizeMerchantOrPerson(value: string | null): string | null {
+  if (!value) return null;
+  if (/[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/.test(value)) return null;
+  if (/\b(?:otp|one\s*time\s*password|verification\s*code|security\s*code)\b/i.test(value)) return null;
+  return value;
 }
 
 function extractMerchantOrPerson(text: string): string | null {
@@ -149,9 +188,15 @@ function extractMerchantOrPerson(text: string): string | null {
   return null;
 }
 
+function hasCreditCardBillPaymentProof(text: string): boolean {
+  return /\bpayment\b.*\b(?:received|made|done|successful|completed)\b.*\b(?:credit\s*card|creditcard|card\s*bill)\b/i.test(text) ||
+    /\b(?:credit\s*card|creditcard|card\s*bill|cc)\b.*\b(?:bill\s*)?payment\b/i.test(text) ||
+    /\b(?:gpay|googlepay|paytm|phonepe|cred)?[-_.]?(?:creditcard|cardbill|cc)[-_.]?[A-Za-z0-9._-]*@[A-Za-z0-9.-]+/i.test(text);
+}
+
 function detectInstrument(text: string): SmartCandidate['instrumentHint'] {
   const lower = text.toLowerCase();
-  if (/credit card|supercard|sbi card/i.test(lower)) return 'credit_card';
+  if (/credit card|creditcard|supercard|sbi card|cardbill|gpay-creditcard/i.test(lower)) return 'credit_card';
   if (/loan/i.test(lower)) return 'loan_account';
   if (/wallet|amazon pay balance/i.test(lower)) return 'wallet';
   if (/a\/c|account|bank/i.test(lower)) return 'bank_account';
@@ -202,7 +247,7 @@ function classify(text: string, amount: number | null, instrumentHint: SmartCand
       return { autoClass: 'personal_transfer', direction: /debited|paid|sent/i.test(lower) ? 'debit' : 'credit' };
   }
 
-  if (/payment.*received towards.*credit card|credit card bill.*paid/i.test(lower)) {
+  if (hasCreditCardBillPaymentProof(text)) {
       return { autoClass: 'credit_card_bill_payment', direction: 'neutral' };
   }
 
@@ -227,6 +272,9 @@ function classify(text: string, amount: number | null, instrumentHint: SmartCand
   }
 
   if (/upi/i.test(lower)) {
+      if (/\bpaid\s+(?:to\s+)?you\b|you'?ve\s+got|received\s+from/i.test(lower)) {
+          return { autoClass: 'upi_received', direction: 'credit' };
+      }
       if (/received|credited/i.test(lower)) {
           return { autoClass: 'upi_received', direction: 'credit' };
       }
@@ -369,12 +417,17 @@ export function processSignal(signal: RawTransactionSignal): SmartCandidate {
                         /\b(supercard|super\.money)\b/i.test(signal.rawText);
   
   const amount = extractAmount(signal.rawText);
-  const last4 = extractLast4(signal.rawText);
+  const accountLast4 = extractAccountLast4(signal.rawText);
+  const cardLast4 = extractCardLast4(signal.rawText);
+  const fallbackLast4 = normalizeLast4(extractLast4(signal.rawText));
   const reference = extractReference(signal.rawText);
-  const merchantOrPerson = extractMerchantOrPerson(signal.rawText);
+  const merchantOrPerson = sanitizeMerchantOrPerson(extractMerchantOrPerson(signal.rawText));
   const instrumentHint = detectInstrument(signal.rawText);
 
   const { autoClass, direction } = classify(signal.rawText, amount, instrumentHint);
+  const last4 = (autoClass === 'credit_card_bill_payment' || instrumentHint === 'credit_card')
+    ? cardLast4 || fallbackLast4
+    : accountLast4 || cardLast4 || fallbackLast4;
 
   const hasAction = /debited|credited|paid|received|spent|deducted|withdrawn|transferred|deposited/i.test(signal.rawText);
   
@@ -394,6 +447,8 @@ export function processSignal(signal: RawTransactionSignal): SmartCandidate {
     amount,
     merchantOrPerson,
     last4,
+    accountLast4,
+    cardLast4,
     reference,
     instrumentHint,
     confidenceScore: score,

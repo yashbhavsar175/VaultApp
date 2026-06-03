@@ -72,4 +72,22 @@ describe('ReviewQueueScreen self-transfer routing gate', () => {
     expect(source).toContain('updateReviewCandidatePaymentAppMatch');
     expect(source).not.toContain('raw notification');
   });
+
+  it('shows credit-card bill payment as a neutral specialized review action', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'ReviewQueueScreen.tsx'), 'utf8');
+
+    expect(source).toContain("case 'credit_card_bill_payment': return 'Credit card bill payment'");
+    expect(source).toContain('This is not counted as an expense');
+    expect(source).toContain('Confirm to save it as a card payment');
+    expect(source).toContain('Balance updated from bank evidence. Payment still needs review.');
+    expect(source).toContain('Bank account');
+    expect(source).toContain('Credit card');
+    expect(source).toContain('Confirm card payment');
+    expect(source).toContain('Not a card payment');
+    expect(source).toContain('Link existing card setup');
+    expect(source).toContain('Confirm current outstanding before using this card in debt calculations.');
+    expect(source).toContain('Needs credit card setup');
+    expect(source).not.toContain('Record Card Payment');
+    expect(source).not.toContain('Unsupported until card selected');
+  });
 });

@@ -97,6 +97,12 @@ describe('Review Queue reviewed expenses', () => {
     expect(isReviewedDebitCandidate(item())).toBe(true);
   });
 
+  it('allows an older debit review item that is missing autoClass metadata', () => {
+    const legacyItem = item({ direction: 'debit' } as any);
+    delete (legacyItem.candidate as any).autoClass;
+    expect(isReviewedDebitCandidate(legacyItem)).toBe(true);
+  });
+
   it('creates one privacy-safe reviewed expense and marks the review item posted', async () => {
     const reviewItem = item();
 

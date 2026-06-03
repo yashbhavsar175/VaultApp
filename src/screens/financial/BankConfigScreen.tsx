@@ -16,7 +16,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card, AppConfirmModal } from '../../components';
 import BalanceCorrectionModal, { BalanceCorrectionKindOption } from '../../components/BalanceCorrectionModal';
 import BalanceHistoryModal from '../../components/BalanceHistoryModal';
-import { getBankAccounts, addBankAccount, updateBankAccount } from '../../lib/database/financial';
+import { CreditCard, getBankAccounts, addBankAccount, updateBankAccount } from '../../lib/database/financial';
 import { getAllBankNames } from '../../lib/services/smsParser';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
@@ -36,17 +36,20 @@ import {
   BankAccountBalanceView,
   BankAccountDetailView,
   CreditCardBalanceView,
+  buildCreditCardBalanceViewModelsForRows,
   getAccountBalanceViewModels,
   getBalanceFreshnessLabel,
   getBalanceKindLabel,
   getBalanceConfidenceLabel,
   getBalanceSourceLabel,
+  getBankAccountDisplayBalance,
   getBankAccountDetailView,
+  getLegacyCreditCardPosition,
   getCreditCardBalanceViewModels,
   getPendingDetectedBalanceSummary,
   PendingDetectedBalanceSummary,
 } from '../../lib/services/balanceViewModel';
-import { BalanceKind, BalanceOwnerType, BankAccount } from '../../types';
+import { BalanceKind, BalanceOwnerType, BalanceSnapshot, BankAccount } from '../../types';
 
 type AccountType = BankAccount['account_type'];
 type ManualCorrectionOwnerType = Extract<BalanceOwnerType, 'bank_account' | 'credit_card' | 'loan'>;
@@ -75,6 +78,13 @@ interface RemovalTarget {
   label: string;
 }
 
+interface RemovalActionPresentation {
+  label: string;
+  icon: string;
+  color: string;
+  accessibilityLabel: string;
+}
+
 const emptyPendingDetectedSummary: PendingDetectedBalanceSummary = {
   total: 0,
   bank_account: 0,
@@ -84,6 +94,32 @@ const emptyPendingDetectedSummary: PendingDetectedBalanceSummary = {
 };
 
 const ACCOUNT_ACTION_SIZE = 44;
+
+function removalImpactKey(ownerType: RemovableOwnerType, ownerId: string): string {
+  return `${ownerType}:${ownerId}`;
+}
+
+function removalActionForImpact(
+  ownerType: RemovableOwnerType,
+  impact?: AccountRemovalImpact | null
+): RemovalActionPresentation {
+  const ownerLabel = ownerType === 'credit_card' ? 'credit card' : 'account';
+  if (impact?.canHardDelete) {
+    return {
+      label: 'Remove permanently',
+      icon: 'delete-outline',
+      color: '#ef4444',
+      accessibilityLabel: `Remove ${ownerLabel} permanently`,
+    };
+  }
+
+  return {
+    label: 'Hide',
+    icon: 'archive-outline',
+    color: '#f59e0b',
+    accessibilityLabel: `Hide ${ownerLabel}`,
+  };
+}
 
 function formatBalanceUpdatedAt(lastUpdated: string | null): string {
   if (!lastUpdated) return 'No update yet';
@@ -102,20 +138,26 @@ function formatBalanceUpdatedAt(lastUpdated: string | null): string {
 function buildRemovalMessage(label: string, impact: AccountRemovalImpact): string {
   const historyCount = Object.values(impact.counts).reduce((sum, count) => sum + count, 0);
   const action = impact.canHardDelete
-      ? 'This item has no linked history or stored balance, so it can be permanently removed.'
+      ? 'This permanently removes only this empty account/card row.'
     : impact.willArchive
       ? 'This hides it from active lists. It does not delete transactions or change balances.'
       : 'This item has history or a stored balance and cannot be removed until archive support is added for this type.';
+  const blocker = impact.canHardDelete
+    ? null
+    : 'Permanent delete is unavailable because this item has history or nonzero balance.';
   const warnings = impact.warnings.length > 0 ? `\n\n${impact.warnings.join('\n')}` : '';
 
   return [
     impact.willArchive ? `Hide ${label} from active lists?` : `Remove ${label}?`,
     action,
+    blocker,
     `Safety dependencies found: ${historyCount}.`,
-    'If this account/card has history, it will be hidden instead of permanently deleted.',
+    impact.canHardDelete
+      ? 'No transactions, snapshots, statements, mappings, or history rows will be deleted.'
+      : 'If this account/card has history, it will be hidden instead of permanently deleted.',
     'This will not delete transactions.',
     'This will not change your balances.',
-  ].join('\n\n') + warnings;
+  ].filter(Boolean).join('\n\n') + warnings;
 }
 
 const bankCorrectionKinds: BalanceCorrectionKindOption[] = [
@@ -180,6 +222,7 @@ export default function BankConfigScreen() {
     bankAccounts: [],
     creditCards: [],
   });
+  const [removalImpacts, setRemovalImpacts] = useState<Record<string, AccountRemovalImpact | null>>({});
   const [showArchived, setShowArchived] = useState(false);
   const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>({});
   const [pendingDetectedSummary, setPendingDetectedSummary] = useState<PendingDetectedBalanceSummary>(emptyPendingDetectedSummary);
@@ -218,18 +261,25 @@ export default function BankConfigScreen() {
 
   // Deep equality tracking for cache updates
   const lastDataStringRef = useRef<string | null>(null);
+  const accountsRequestRef = useRef(0);
+  const balanceViewsRequestRef = useRef(0);
+  const archivedOwnersRequestRef = useRef(0);
+  const removalImpactsRequestRef = useRef(0);
 
   const loadBalanceViews = useCallback(async () => {
+    const requestId = ++balanceViewsRequestRef.current;
     try {
       const [accountViews, cardViews, pendingSummary] = await Promise.all([
         getAccountBalanceViewModels(),
         getCreditCardBalanceViewModels(),
         getPendingDetectedBalanceSummary(),
-    ]);
+      ]);
+      if (requestId !== balanceViewsRequestRef.current) return;
       setBalanceViews(Object.fromEntries(accountViews.map(view => [view.accountId, view])));
       setCreditCardViews(cardViews);
       setPendingDetectedSummary(pendingSummary);
     } catch (error) {
+      if (requestId !== balanceViewsRequestRef.current) return;
       console.warn('[Balances] Failed to load account balance view metadata', {
         message: error instanceof Error ? error.message : 'unknown_error',
       });
@@ -237,15 +287,55 @@ export default function BankConfigScreen() {
   }, []);
 
   const loadArchivedOwners = useCallback(async () => {
+    const requestId = ++archivedOwnersRequestRef.current;
     try {
-      setArchivedOwners(await getArchivedOwners());
+      const owners = await getArchivedOwners();
+      if (requestId !== archivedOwnersRequestRef.current) return;
+      setArchivedOwners(owners);
     } catch (error) {
+      if (requestId !== archivedOwnersRequestRef.current) return;
       console.warn('[Accounts] Failed to load archived owners', {
         message: error instanceof Error ? error.message : 'unknown_error',
       });
       setArchivedOwners({ bankAccounts: [], creditCards: [] });
     }
   }, []);
+
+  const loadRemovalImpacts = useCallback(async (
+    targets: Array<Pick<RemovalTarget, 'ownerType' | 'ownerId'>>
+  ) => {
+    const requestId = ++removalImpactsRequestRef.current;
+    if (targets.length === 0) {
+      setRemovalImpacts({});
+      return;
+    }
+
+    const entries = await Promise.all(targets.map(async target => {
+      const key = removalImpactKey(target.ownerType, target.ownerId);
+      try {
+        const impact = await getAccountRemovalImpact(target.ownerType, target.ownerId);
+        return [key, impact] as const;
+      } catch {
+        return [key, null] as const;
+      }
+    }));
+
+    if (requestId !== removalImpactsRequestRef.current) return;
+    setRemovalImpacts(Object.fromEntries(entries));
+  }, []);
+
+  useEffect(() => {
+    void loadRemovalImpacts([
+      ...accounts.map(account => ({
+        ownerType: 'bank_account' as const,
+        ownerId: account.id,
+      })),
+      ...creditCardViews.map(card => ({
+        ownerType: 'credit_card' as const,
+        ownerId: card.creditCardId,
+      })),
+    ]);
+  }, [accounts, creditCardViews, loadRemovalImpacts]);
 
   useEffect(() => {
     if (bankSearchQuery.length > 0) {
@@ -260,12 +350,14 @@ export default function BankConfigScreen() {
   }, [bankSearchQuery]);
 
   const loadAccountsSilently = useCallback(async () => {
+    const requestId = ++accountsRequestRef.current;
     try {
       const [data] = await Promise.all([
         getBankAccounts(),
         loadBalanceViews(),
         loadArchivedOwners(),
       ]);
+      if (requestId !== accountsRequestRef.current) return;
       const dataStr = JSON.stringify(data);
       
       if (lastDataStringRef.current !== dataStr) {
@@ -276,6 +368,7 @@ export default function BankConfigScreen() {
       // Save to cache for next instant load
       setCache(CACHE_KEYS.BANK_ACCOUNTS, data);
     } catch (error) {
+      if (requestId !== accountsRequestRef.current) return;
       console.error('Error loading accounts silently:', error);
     }
   }, [loadArchivedOwners, loadBalanceViews]);
@@ -290,6 +383,130 @@ export default function BankConfigScreen() {
     cardsAndAccountsReloadQueueRef.current = reload.catch(() => undefined);
     return reload;
   }, [loadAccountsSilently]);
+
+  const cardViewToArchivedCard = useCallback((card: CreditCardBalanceView): CreditCard => ({
+    id: card.creditCardId,
+    user_id: '',
+    bank_name: card.bankName,
+    card_name: card.cardName || undefined,
+    last_4_digits: card.cardLast4,
+    credit_limit: card.creditLimit,
+    current_outstanding: card.outstanding,
+    due_date: 1,
+    billing_cycle_date: 1,
+    is_archived: true,
+    archived_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }), []);
+
+  const applySuccessfulOwnerRemoval = useCallback((target: RemovalTarget, action: 'deleted' | 'archived') => {
+    accountsRequestRef.current += 1;
+    balanceViewsRequestRef.current += 1;
+    archivedOwnersRequestRef.current += 1;
+    removalImpactsRequestRef.current += 1;
+
+    if (target.ownerType === 'bank_account') {
+      const removedAccount = accounts.find(account => account.id === target.ownerId) || null;
+      setAccounts(prev => prev.filter(account => account.id !== target.ownerId));
+      setRemovalImpacts(prev => {
+        const next = { ...prev };
+        delete next[removalImpactKey(target.ownerType, target.ownerId)];
+        return next;
+      });
+      setBalanceViews(prev => {
+        const next = { ...prev };
+        delete next[target.ownerId];
+        return next;
+      });
+      if (action === 'archived' && removedAccount) {
+        setArchivedOwners(prev => ({
+          ...prev,
+          bankAccounts: [
+            ...prev.bankAccounts.filter(account => account.id !== target.ownerId),
+            { ...removedAccount!, is_archived: true, archived_at: new Date().toISOString() },
+          ],
+        }));
+      } else {
+        setArchivedOwners(prev => ({
+          ...prev,
+          bankAccounts: prev.bankAccounts.filter(account => account.id !== target.ownerId),
+        }));
+      }
+      return;
+    }
+
+    if (target.ownerType === 'credit_card') {
+      const removedCard = creditCardViews.find(card => card.creditCardId === target.ownerId) || null;
+      setCreditCardViews(prev => prev.filter(card => card.creditCardId !== target.ownerId));
+      setRemovalImpacts(prev => {
+        const next = { ...prev };
+        delete next[removalImpactKey(target.ownerType, target.ownerId)];
+        return next;
+      });
+      if (action === 'archived' && removedCard) {
+        setArchivedOwners(prev => ({
+          ...prev,
+          creditCards: [
+            ...prev.creditCards.filter(card => card.id !== target.ownerId),
+            cardViewToArchivedCard(removedCard!),
+          ],
+        }));
+      } else {
+        setArchivedOwners(prev => ({
+          ...prev,
+          creditCards: prev.creditCards.filter(card => card.id !== target.ownerId),
+        }));
+      }
+    }
+  }, [accounts, cardViewToArchivedCard, creditCardViews]);
+
+  const applySuccessfulOwnerRestore = useCallback((target: RemovalTarget) => {
+    accountsRequestRef.current += 1;
+    balanceViewsRequestRef.current += 1;
+    archivedOwnersRequestRef.current += 1;
+    removalImpactsRequestRef.current += 1;
+
+    if (target.ownerType === 'bank_account') {
+      const restoredAccount = archivedOwners.bankAccounts.find(account => account.id === target.ownerId) || null;
+      setArchivedOwners(prev => ({
+        ...prev,
+        bankAccounts: prev.bankAccounts.filter(account => account.id !== target.ownerId),
+      }));
+      if (restoredAccount) {
+        setAccounts(prev => [
+          ...prev.filter(account => account.id !== target.ownerId),
+          { ...restoredAccount!, is_archived: false, archived_at: null },
+        ]);
+        setRemovalImpacts(prev => ({
+          ...prev,
+          [removalImpactKey(target.ownerType, target.ownerId)]: null,
+        }));
+      }
+      return;
+    }
+
+    if (target.ownerType === 'credit_card') {
+      const restoredCard = archivedOwners.creditCards.find(card => card.id === target.ownerId) || null;
+      setArchivedOwners(prev => ({
+        ...prev,
+        creditCards: prev.creditCards.filter(card => card.id !== target.ownerId),
+      }));
+      if (restoredCard) {
+        const [view] = buildCreditCardBalanceViewModelsForRows([
+          { ...restoredCard!, is_archived: false, archived_at: null },
+        ], []);
+        setCreditCardViews(prev => [
+          ...prev.filter(card => card.creditCardId !== target.ownerId),
+          view,
+        ]);
+        setRemovalImpacts(prev => ({
+          ...prev,
+          [removalImpactKey(target.ownerType, target.ownerId)]: null,
+        }));
+      }
+    }
+  }, [archivedOwners.bankAccounts, archivedOwners.creditCards]);
 
   // Load data with cache support
   const loadAccounts = useCallback(async () => {
@@ -481,9 +698,9 @@ export default function BankConfigScreen() {
       const canRemove = impact.canHardDelete || impact.willArchive;
       setConfirmDialog({
         visible: true,
-        title: canRemove ? (impact.willArchive ? 'Hide Account/Card' : 'Remove Account/Card') : 'Cannot Remove Yet',
+        title: canRemove ? (impact.willArchive ? 'Hide Account/Card' : 'Remove Permanently') : 'Cannot Remove Yet',
         message: buildRemovalMessage(target.label, impact),
-        confirmText: canRemove ? (impact.willArchive ? 'Hide' : 'Remove') : 'OK',
+        confirmText: canRemove ? (impact.willArchive ? 'Hide' : 'Remove permanently') : 'OK',
         isDestructive: canRemove && impact.canHardDelete,
         onConfirm: async () => {
           setConfirmDialog(null);
@@ -491,7 +708,8 @@ export default function BankConfigScreen() {
 
           try {
             const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);
-            await reloadCardsAndAccounts();
+            applySuccessfulOwnerRemoval(target, result.action);
+            void reloadCardsAndAccounts();
             Toast.show({
               type: 'success',
               text1: result.action === 'archived' ? 'Hidden' : 'Removed',
@@ -529,7 +747,8 @@ export default function BankConfigScreen() {
   const handleRestoreArchivedOwner = async (target: RemovalTarget) => {
     try {
       await restoreArchivedOwner(target.ownerType, target.ownerId);
-      await reloadCardsAndAccounts();
+      applySuccessfulOwnerRestore(target);
+      void reloadCardsAndAccounts();
       Toast.show({
         type: 'success',
         text1: 'Restored',
@@ -545,8 +764,43 @@ export default function BankConfigScreen() {
     }
   };
 
-  const handleCorrectionSaved = async () => {
-    await loadBalanceViews();
+  const handleCorrectionSaved = async (snapshot: BalanceSnapshot) => {
+    const ownerId = snapshot.owner_id;
+    const amount = Number(snapshot.amount);
+    if (ownerId && Number.isFinite(amount)) {
+      balanceViewsRequestRef.current += 1;
+      setBalanceViews(prev => {
+        const existing = prev[ownerId];
+        const account = accounts.find(item => item.id === ownerId);
+        return {
+          ...prev,
+          [ownerId]: {
+            accountId: ownerId,
+            bankName: existing?.bankName || account?.bank_name || correctionTarget?.detectedBankName || 'Account',
+            accountLast4: existing?.accountLast4 || account?.account_last4 || correctionTarget?.accountLast4 || '',
+            accountType: existing?.accountType || account?.account_type || (snapshot.owner_type === 'loan' ? 'loan' : 'savings'),
+            displayBalance: amount,
+            balanceKind: snapshot.balance_kind,
+            source: 'manual',
+            confidence: 'exact',
+            lastUpdated: snapshot.detected_at,
+            isEstimated: false,
+            sourceLabel: getBalanceSourceLabel('manual'),
+            confidenceLabel: getBalanceConfidenceLabel('exact'),
+            staleWarning: false,
+          },
+        };
+      });
+      if (snapshot.owner_type === 'bank_account' || snapshot.owner_type === 'loan') {
+        setAccounts(prev => {
+          const next = prev.map(account => account.id === ownerId ? { ...account, balance: amount } : account);
+          void setCache(CACHE_KEYS.BANK_ACCOUNTS, next);
+          return next;
+        });
+      }
+    }
+
+    loadBalanceViews();
     Toast.show({
       type: 'success',
       text1: 'Balance updated',
@@ -697,12 +951,19 @@ export default function BankConfigScreen() {
               const isCredit = account.account_type === 'credit_card';
               const iconName = isCredit ? 'credit-card' : 'bank';
               const iconColor = isCredit ? '#f59e0b' : '#10b981';
-              const displayBalance = balanceView?.displayBalance ?? account.balance ?? account.starting_balance ?? 0;
+              const creditPosition = getLegacyCreditCardPosition(account, balanceView);
+              const displayBalance = isCredit
+                ? creditPosition.outstanding
+                : getBankAccountDisplayBalance(account, balanceView);
               const sourceLabel = balanceView?.sourceLabel ?? getBalanceSourceLabel('calculated');
               const confidenceLabel = balanceView?.confidenceLabel ?? getBalanceConfidenceLabel('estimated');
               const freshnessLabel = formatBalanceUpdatedAt(balanceView?.lastUpdated ?? null);
               const freshnessColor = balanceView?.staleWarning ? '#f59e0b' : colors.subtext;
               const upiDisplay = formatUpiIdsForDisplay(account.upi_ids);
+              const removalAction = removalActionForImpact(
+                'bank_account',
+                removalImpacts[removalImpactKey('bank_account', account.id)]
+              );
 
               return (
                 <Card key={account.id} style={{ marginBottom: spacing.lg, padding: spacing.lg }}>
@@ -745,13 +1006,19 @@ export default function BankConfigScreen() {
                       
                       {account.account_type === 'credit_card' && account.credit_limit && (
                         <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
-                          Limit: {formatCurrencyDisplay(account.credit_limit)}
+                          Credit limit: {formatCurrencyDisplay(account.credit_limit)} · Available credit: {formatCurrencyDisplay(creditPosition.availableCredit)}
+                        </Text>
+                      )}
+                      {account.account_type === 'loan' && account.loan_total > 0 && (
+                        <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
+                          Original loan: {formatCurrencyDisplay(account.loan_total)}
+                          {account.monthly_emi_amount ? ` · EMI: ${formatCurrencyDisplay(account.monthly_emi_amount)}` : ''}
                         </Text>
                       )}
 
                       <View style={{ marginTop: spacing.md }}>
                         <Text style={[typography.caption, { color: colors.subtext, fontSize: 11 }]}>
-                          {account.account_type === 'loan' ? 'Outstanding' : isCredit ? 'Balance' : 'Latest Balance'}
+                          {account.account_type === 'loan' ? 'Outstanding' : isCredit ? 'Outstanding' : 'Latest Balance'}
                         </Text>
                         <Text
                           numberOfLines={1}
@@ -771,6 +1038,7 @@ export default function BankConfigScreen() {
 
                   <View style={{
                     flexDirection: 'row',
+                    flexWrap: 'wrap',
                     alignItems: 'center',
                     gap: spacing.sm,
                     marginTop: spacing.md,
@@ -832,17 +1100,24 @@ export default function BankConfigScreen() {
                       </TouchableOpacity>
                       <TouchableOpacity
                         onPress={() => handleDelete(account)}
-                        accessibilityLabel="Hide or remove account"
+                        accessibilityLabel={removalAction.accessibilityLabel}
                         accessibilityRole="button"
                         style={{
-                          width: ACCOUNT_ACTION_SIZE,
+                          width: removalAction.label === 'Remove permanently' ? '100%' : ACCOUNT_ACTION_SIZE,
                           minHeight: ACCOUNT_ACTION_SIZE,
-                          backgroundColor: '#f59e0b' + '12',
+                          backgroundColor: removalAction.color + '12',
                           borderRadius: 12,
                           alignItems: 'center',
                           justifyContent: 'center',
+                          paddingHorizontal: spacing.sm,
+                          flexDirection: 'row',
                         }}>
-                        <MaterialCommunityIcons name="archive-outline" size={18} color="#f59e0b" />
+                        <MaterialCommunityIcons name={removalAction.icon} size={18} color={removalAction.color} />
+                        {removalAction.label === 'Remove permanently' && (
+                          <Text numberOfLines={1} style={[typography.caption, { color: removalAction.color, marginLeft: spacing.xs, fontWeight: '700' }]}>
+                            Remove permanently
+                          </Text>
+                        )}
                       </TouchableOpacity>
                   </View>
                 </Card>
@@ -864,6 +1139,10 @@ export default function BankConfigScreen() {
                   const title = card.cardName || card.bankName;
                   const freshnessLabel = formatBalanceUpdatedAt(card.lastUpdated ?? null);
                   const freshnessColor = card.staleWarning ? '#f59e0b' : colors.subtext;
+                  const removalAction = removalActionForImpact(
+                    'credit_card',
+                    removalImpacts[removalImpactKey('credit_card', card.creditCardId)]
+                  );
 
                   return (
                     <Card key={card.creditCardId} style={{ marginBottom: spacing.lg, padding: spacing.lg }}>
@@ -891,7 +1170,7 @@ export default function BankConfigScreen() {
                             Credit card · {card.bankName} ••{card.cardLast4}
                           </Text>
                           <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontSize: 11 }]}>
-                            Limit: {formatCurrencyDisplay(card.creditLimit)} · Available: {formatCurrencyDisplay(card.availableLimit)}
+                            Credit limit: {formatCurrencyDisplay(card.creditLimit)} · Available credit: {formatCurrencyDisplay(card.availableLimit)}
                           </Text>
 
                           <View style={{ marginTop: spacing.md }}>
@@ -929,21 +1208,21 @@ export default function BankConfigScreen() {
                             ownerId: card.creditCardId,
                             label: `${title} ••${card.cardLast4}`,
                           })}
-                          accessibilityLabel="Hide or remove credit card"
+                          accessibilityLabel={removalAction.accessibilityLabel}
                           accessibilityRole="button"
                           style={{
                             minHeight: ACCOUNT_ACTION_SIZE,
                             flex: 1,
-                          backgroundColor: '#f59e0b' + '12',
+                            backgroundColor: removalAction.color + '12',
                             borderRadius: 12,
                             paddingHorizontal: spacing.sm,
                             flexDirection: 'row',
                             alignItems: 'center',
                             justifyContent: 'center',
                           }}>
-                          <MaterialCommunityIcons name="archive-outline" size={18} color="#f59e0b" />
-                          <Text numberOfLines={1} style={[typography.caption, { color: '#f59e0b', marginLeft: spacing.xs, fontWeight: '700' }]}>
-                            Hide
+                          <MaterialCommunityIcons name={removalAction.icon} size={18} color={removalAction.color} />
+                          <Text numberOfLines={1} style={[typography.caption, { color: removalAction.color, marginLeft: spacing.xs, fontWeight: '700' }]}>
+                            {removalAction.label}
                           </Text>
                         </TouchableOpacity>
                       </View>
@@ -1325,8 +1604,10 @@ export default function BankConfigScreen() {
           visible={Boolean(historyAccount)}
           title={historyAccount.bank_name}
           subtitle={`${historyAccount.account_type === 'current' ? 'Current' : historyAccount.account_type === 'loan' ? 'Loan' : historyAccount.account_type === 'credit_card' ? 'Credit Card' : 'Savings'} •••• ${historyAccount.account_last4}`}
-          balanceLabel={historyAccount.account_type === 'loan' ? 'Outstanding' : historyAccount.account_type === 'credit_card' ? 'Balance' : 'Current displayed balance'}
-          balanceAmount={historyDetail?.displayBalance ?? balanceViews[historyAccount.id]?.displayBalance ?? historyAccount.balance ?? historyAccount.starting_balance ?? 0}
+          balanceLabel={historyAccount.account_type === 'loan' || historyAccount.account_type === 'credit_card' ? 'Outstanding' : 'Current displayed balance'}
+          balanceAmount={historyAccount.account_type === 'credit_card'
+            ? getLegacyCreditCardPosition(historyAccount, historyDetail ?? balanceViews[historyAccount.id]).outstanding
+            : historyDetail?.displayBalance ?? balanceViews[historyAccount.id]?.displayBalance ?? historyAccount.balance ?? historyAccount.starting_balance ?? 0}
           balanceKindLabel={historyDetail ? getBalanceKindLabel(historyDetail.balanceKind) : getBalanceKindLabel(balanceViews[historyAccount.id]?.balanceKind || 'current_balance')}
           sourceLabel={historyDetail?.sourceLabel ?? balanceViews[historyAccount.id]?.sourceLabel ?? getBalanceSourceLabel('calculated')}
           confidenceLabel={historyDetail?.confidenceLabel ?? balanceViews[historyAccount.id]?.confidenceLabel ?? getBalanceConfidenceLabel('estimated')}

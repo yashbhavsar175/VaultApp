@@ -3,9 +3,9 @@ import { Text, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 import Dashboard from './Dashboard';
 import { Transaction } from '../types';
-import { getTransactions } from '../lib/core';
+import { getTransactions, supabase } from '../lib/core';
 import { getPeopleLedger } from '../lib/database/userdata';
-import { getCached } from '../lib/services/cache';
+import { getCached, setCache } from '../lib/services/cache';
 import { getIncomeReviewCandidates, getIncomeReviewDecisions } from '../lib/services/incomeReview';
 import { getReviewQueue } from '../lib/services/autoTransactionReviewQueue';
 
@@ -72,6 +72,11 @@ jest.mock('../context/ThemeContext', () => ({
 
 jest.mock('../lib/core', () => ({
   getTransactions: jest.fn(),
+  supabase: {
+    auth: {
+      getUser: jest.fn(),
+    },
+  },
 }));
 
 jest.mock('../lib/database/userdata', () => ({
@@ -82,9 +87,11 @@ jest.mock('../lib/services/cache', () => ({
   CACHE_KEYS: {
     PEOPLE_LEDGER: 'cache_people_ledger',
     TRANSACTIONS: 'cache_transactions',
+    DASHBOARD_SUMMARY: 'cache_dashboard_summary',
   },
   getCached: jest.fn(),
   setCache: jest.fn(),
+  scopedCacheKey: (base: string, scope: string | number) => `${base}:${scope}`,
 }));
 
 jest.mock('../lib/services/dataEvents', () => ({
@@ -114,8 +121,10 @@ jest.mock('../utils/runWhenIdle', () => ({
 }));
 
 const mockedGetTransactions = getTransactions as jest.Mock;
+const mockedGetUser = supabase.auth.getUser as jest.Mock;
 const mockedGetPeopleLedger = getPeopleLedger as jest.Mock;
 const mockedGetCached = getCached as jest.Mock;
+const mockedSetCache = setCache as jest.Mock;
 const mockedGetIncomeReviewCandidates = getIncomeReviewCandidates as jest.Mock;
 const mockedGetIncomeReviewDecisions = getIncomeReviewDecisions as jest.Mock;
 const mockedGetReviewQueue = getReviewQueue as jest.Mock;
@@ -196,6 +205,7 @@ async function renderDashboard(
   } = {}
 ) {
   mockedGetCached.mockResolvedValue(null);
+  mockedGetUser.mockResolvedValue({ data: { user: { id: 'user_1' } } });
   mockedGetTransactions.mockResolvedValue(transactions);
   mockedGetPeopleLedger.mockResolvedValue([]);
   mockedGetIncomeReviewDecisions.mockResolvedValue([]);
@@ -230,6 +240,351 @@ describe('Dashboard review prompt', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFinanceDataChangedListener = null;
+    mockedGetUser.mockResolvedValue({ data: { user: { id: 'user_1' } } });
+  });
+
+  it('renders a user-month cached dashboard summary before remote refresh resolves', async () => {
+    const currentMonth = new Date();
+    const monthKey = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`;
+    mockedGetCached.mockImplementation(async (key: string) => {
+      if (key === `cache_dashboard_summary:user_1:${monthKey}`) {
+        return {
+          isStale: false,
+          data: {
+            monthKey,
+            createdAt: '2026-06-03T00:00:00.000Z',
+            monthlyTotals: {
+              totalIncome: 103,
+              grossExpense: 0,
+              totalRefunds: 0,
+              netExpense: 0,
+              totalExpense: 0,
+              totalInvestment: 0,
+              totalEMI: 0,
+              monthlyBalance: 103,
+            },
+            peopleSummary: {
+              totalLent: 0,
+              totalBorrowed: 0,
+              lentCount: 0,
+              borrowedCount: 0,
+            },
+            reviewBreakdown: {
+              totalReviewableCount: 1,
+              incomeReviewCount: 1,
+              transactionReviewCount: 0,
+              historicalCorrectionCount: 0,
+            },
+          },
+        };
+      }
+      return null;
+    });
+    mockedGetTransactions.mockReturnValue(new Promise(() => undefined));
+    mockedGetPeopleLedger.mockReturnValue(new Promise(() => undefined));
+    mockedGetIncomeReviewDecisions.mockResolvedValue([]);
+    mockedGetIncomeReviewCandidates.mockResolvedValue([]);
+    mockedGetReviewQueue.mockResolvedValue([]);
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<Dashboard />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const text = allText(renderer);
+    expect(text).toContain('₹103');
+    expect(text).toContain('Money movements need review');
+    expect(mockedGetCached).toHaveBeenCalledWith(`cache_dashboard_summary:user_1:${monthKey}`);
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('does not flash zero when stale empty transaction cache exists before live refresh', async () => {
+    const currentMonth = new Date();
+    const monthKey = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`;
+    mockedGetCached.mockImplementation(async (key: string) => {
+      if (key === `cache_dashboard_summary:user_1:${monthKey}`) {
+        return {
+          isStale: false,
+          data: {
+            monthKey,
+            createdAt: '2026-06-03T00:00:00.000Z',
+            monthlyTotals: {
+              totalIncome: 103,
+              grossExpense: 0,
+              totalRefunds: 0,
+              netExpense: 0,
+              totalExpense: 0,
+              totalInvestment: 0,
+              totalEMI: 0,
+              monthlyBalance: 103,
+            },
+            peopleSummary: {
+              totalLent: 0,
+              totalBorrowed: 0,
+              lentCount: 0,
+              borrowedCount: 0,
+            },
+            reviewBreakdown: {
+              totalReviewableCount: 0,
+              incomeReviewCount: 0,
+              transactionReviewCount: 0,
+              historicalCorrectionCount: 0,
+            },
+          },
+        };
+      }
+      if (key === 'cache_transactions') {
+        return { isStale: true, data: [] };
+      }
+      if (key === 'cache_people_ledger') {
+        return null;
+      }
+      return null;
+    });
+    mockedGetTransactions.mockReturnValue(new Promise(() => undefined));
+    mockedGetPeopleLedger.mockReturnValue(new Promise(() => undefined));
+    mockedGetIncomeReviewDecisions.mockResolvedValue([]);
+    mockedGetIncomeReviewCandidates.mockResolvedValue([]);
+    mockedGetReviewQueue.mockResolvedValue([]);
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<Dashboard />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(allText(renderer)).toContain('₹103');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('keeps cached monthly totals when people cache resolves before transactions', async () => {
+    const currentMonth = new Date();
+    const monthKey = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`;
+    mockedGetCached.mockImplementation(async (key: string) => {
+      if (key === `cache_dashboard_summary:user_1:${monthKey}`) {
+        return {
+          isStale: false,
+          data: {
+            monthKey,
+            createdAt: '2026-06-03T00:00:00.000Z',
+            monthlyTotals: {
+              totalIncome: 103,
+              grossExpense: 0,
+              totalRefunds: 0,
+              netExpense: 0,
+              totalExpense: 0,
+              totalInvestment: 0,
+              totalEMI: 0,
+              monthlyBalance: 103,
+            },
+            peopleSummary: {
+              totalLent: 0,
+              totalBorrowed: 0,
+              lentCount: 0,
+              borrowedCount: 0,
+            },
+            reviewBreakdown: {
+              totalReviewableCount: 0,
+              incomeReviewCount: 0,
+              transactionReviewCount: 0,
+              historicalCorrectionCount: 0,
+            },
+          },
+        };
+      }
+      if (key === 'cache_transactions') {
+        return { isStale: true, data: [] };
+      }
+      if (key === 'cache_people_ledger') {
+        return {
+          isStale: false,
+          data: [{
+            id: 'ledger_1',
+            type: 'lent',
+            remaining_amount: 10,
+            is_settled: false,
+            person_name: 'Person',
+          }],
+        };
+      }
+      return null;
+    });
+    mockedGetTransactions.mockReturnValue(new Promise(() => undefined));
+    mockedGetPeopleLedger.mockReturnValue(new Promise(() => undefined));
+    mockedGetIncomeReviewDecisions.mockResolvedValue([]);
+    mockedGetIncomeReviewCandidates.mockResolvedValue([]);
+    mockedGetReviewQueue.mockResolvedValue([]);
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<Dashboard />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(allText(renderer)).toContain('₹103');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('keeps cached monthly totals when transaction cache resolves before income review decisions', async () => {
+    const currentMonth = new Date();
+    const monthKey = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`;
+    mockedGetCached.mockImplementation(async (key: string) => {
+      if (key === `cache_dashboard_summary:user_1:${monthKey}`) {
+        return {
+          isStale: false,
+          data: {
+            monthKey,
+            createdAt: '2026-06-03T00:00:00.000Z',
+            monthlyTotals: {
+              totalIncome: 103,
+              grossExpense: 0,
+              totalRefunds: 0,
+              netExpense: 0,
+              totalExpense: 0,
+              totalInvestment: 0,
+              totalEMI: 0,
+              monthlyBalance: 103,
+            },
+            peopleSummary: {
+              totalLent: 0,
+              totalBorrowed: 0,
+              lentCount: 0,
+              borrowedCount: 0,
+            },
+            reviewBreakdown: {
+              totalReviewableCount: 0,
+              incomeReviewCount: 0,
+              transactionReviewCount: 0,
+              historicalCorrectionCount: 0,
+            },
+          },
+        };
+      }
+      if (key === 'cache_transactions') {
+        return {
+          isStale: false,
+          data: [tx({
+            id: 'reviewed_income_waiting_for_decision',
+            amount: 103,
+            type: 'income',
+            sms_source: 'bank',
+            note: 'Cash deposit',
+          })],
+        };
+      }
+      if (key === 'cache_people_ledger') {
+        return null;
+      }
+      return null;
+    });
+    mockedGetTransactions.mockReturnValue(new Promise(() => undefined));
+    mockedGetPeopleLedger.mockReturnValue(new Promise(() => undefined));
+    mockedGetIncomeReviewDecisions.mockReturnValue(new Promise(() => undefined));
+    mockedGetIncomeReviewCandidates.mockResolvedValue([]);
+    mockedGetReviewQueue.mockResolvedValue([]);
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<Dashboard />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(allText(renderer)).toContain('₹103');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('writes refreshed dashboard summary into a user-month scoped cache', async () => {
+    const renderer = await renderDashboard([
+      tx({
+        id: 'manual_income',
+        amount: 2500,
+        type: 'income',
+        note: 'Manual income',
+        category: 'Income',
+      }),
+    ]);
+    const dashboardCacheWrite = mockedSetCache.mock.calls.find(([key]) => (
+      typeof key === 'string' && key.startsWith('cache_dashboard_summary:user_1:')
+    ));
+
+    expect(dashboardCacheWrite).toBeTruthy();
+    expect(dashboardCacheWrite?.[1]).toEqual(expect.objectContaining({
+      monthlyTotals: expect.objectContaining({
+        totalIncome: 2500,
+        monthlyBalance: 2500,
+      }),
+      reviewBreakdown: expect.objectContaining({
+        totalReviewableCount: 0,
+      }),
+    }));
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('refreshes totals when only review status changes from ignored to counted', async () => {
+    const ignoredExpense = tx({
+      id: 'reviewed_expense_toggle',
+      amount: 2,
+      type: 'expense',
+      category: 'Reviewed Expense',
+      note: 'Reviewed expense',
+      sms_source: 'sms',
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    });
+    const countedExpense = {
+      ...ignoredExpense,
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'review_detail_expense_confirmed',
+    };
+    const renderer = await renderDashboard([ignoredExpense]);
+
+    expect(allText(renderer)).not.toContain('₹2');
+    mockedGetTransactions.mockResolvedValue([countedExpense]);
+
+    await ReactTestRenderer.act(async () => {
+      mockFinanceDataChangedListener?.({
+        areas: ['transactions'],
+        source: 'transaction:update',
+        at: Date.now(),
+      });
+      await new Promise<void>(resolve => {
+        setTimeout(() => resolve(), 650);
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(allText(renderer)).toContain('₹2');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
   });
 
   it('keeps historical excluded rows out of the actionable CTA count', async () => {
@@ -261,14 +616,17 @@ describe('Dashboard review prompt', () => {
     });
   });
 
-  it('counts and routes credit-only review prompts to Income Review', async () => {
+  it('counts and routes credit-only review prompts to unified Money Movement Review', async () => {
     const renderer = await renderDashboard([], {
       incomeCandidates: [incomeCandidate()],
     });
 
     expect(allText(renderer)).toContain('1 item needs review');
     pressByText(renderer, 'Review now');
-    expect(mockNavigate).toHaveBeenCalledWith('Settings', { screen: 'IncomeReview' });
+    expect(mockNavigate).toHaveBeenCalledWith('Settings', {
+      screen: 'MoneyMovementReview',
+      params: { initialSection: 'credits' },
+    });
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();
@@ -284,7 +642,10 @@ describe('Dashboard review prompt', () => {
     expect(allText(renderer)).toContain('1 item needs review');
 
     pressByText(renderer, 'Review now');
-    expect(mockNavigate).toHaveBeenCalledWith('ReviewQueue');
+    expect(mockNavigate).toHaveBeenCalledWith('Settings', {
+      screen: 'MoneyMovementReview',
+      params: { initialSection: 'payments' },
+    });
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();
@@ -317,7 +678,7 @@ describe('Dashboard review prompt', () => {
     });
   });
 
-  it('renders honest mixed-source copy and exposes both review routes', async () => {
+  it('renders honest mixed-source copy and opens unified review for all movements', async () => {
     const renderer = await renderDashboard([], {
       incomeCandidates: [incomeCandidate()],
       queueItems: [queueItem()],
@@ -325,16 +686,17 @@ describe('Dashboard review prompt', () => {
     const text = allText(renderer);
 
     expect(text).toContain('1 credit and 1 movement need review');
-    expect(text).toContain('Review credits');
-    expect(text).toContain('Review payments');
+    expect(text).toContain('Review now');
+    expect(text).not.toContain('Review credits');
+    expect(text).not.toContain('Review payments');
     expect(text).not.toContain('private.person@oksbi');
     expect(text).not.toContain('9876543210');
 
-    pressByText(renderer, 'Review credits');
-    expect(mockNavigate).toHaveBeenCalledWith('Settings', { screen: 'IncomeReview' });
-    mockNavigate.mockClear();
-    pressByText(renderer, 'Review payments');
-    expect(mockNavigate).toHaveBeenCalledWith('ReviewQueue');
+    pressByText(renderer, 'Review now');
+    expect(mockNavigate).toHaveBeenCalledWith('Settings', {
+      screen: 'MoneyMovementReview',
+      params: { initialSection: 'all' },
+    });
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();

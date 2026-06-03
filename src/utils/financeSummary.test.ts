@@ -90,14 +90,31 @@ describe('computeMonthlyTransactionTotals', () => {
     expect(totals.monthlyBalance).toBe(0);
   });
 
-  it('keeps generic auto-detected credits and debits out until they have proof or review', () => {
+  it('keeps generic auto-detected credits out but counts direct-posted debits as expenses', () => {
     const totals = computeMonthlyTransactionTotals([
       tx({ id: 'generic_credit', amount: 1000, type: 'income', note: 'UPI credit', sms_source: 'upi' }),
-      tx({ id: 'generic_debit', amount: 300, type: 'expense', note: 'UPI payment', sms_source: 'upi' }),
+      tx({ id: 'generic_debit', amount: 300, type: 'expense', category: 'UPI Payments', note: 'Bhavsar Yash', sms_source: 'bank', account_match_status: 'unlinked' }),
     ], new Date('2026-05-20T00:00:00.000Z'));
 
     expect(totals.totalIncome).toBe(0);
-    expect(totals.grossExpense).toBe(0);
+    expect(totals.grossExpense).toBe(300);
+    expect(totals.monthlyBalance).toBe(-300);
+  });
+
+  it('does not count loan disbursal wording as earned income by default', () => {
+    const totals = computeMonthlyTransactionTotals([
+      tx({
+        id: 'loan_disbursal',
+        amount: 50000,
+        type: 'income',
+        category: 'Loan',
+        note: 'Loan amount credited to your account',
+        sms_source: 'sms',
+      }),
+    ], new Date('2026-05-20T00:00:00.000Z'));
+
+    expect(totals.totalIncome).toBe(0);
+    expect(totals.monthlyBalance).toBe(0);
   });
 
   it('includes salary, gig payout, merchant expense, and explicitly reviewed income', () => {
@@ -148,6 +165,22 @@ describe('computeMonthlyTransactionTotals', () => {
       ...reviewed,
       account_match_status: 'ignored',
     }], new Date('2026-05-20T00:00:00.000Z')).grossExpense).toBe(0);
+  });
+
+  it('counts a user-restored reviewed expense without requiring placeholder note or category', () => {
+    const restored = tx({
+      id: 'restored_expense',
+      amount: 20,
+      type: 'expense',
+      category: 'UPI Payments',
+      note: 'Bhavsar Yash',
+      sms_source: 'sms',
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'review_detail_expense_confirmed',
+    });
+
+    expect(computeMonthlyTransactionTotals([restored], new Date('2026-05-20T00:00:00.000Z')).grossExpense)
+      .toBe(20);
   });
 });
 

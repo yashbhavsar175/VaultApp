@@ -77,13 +77,11 @@ interface ComputeMonthlyTransactionTotalsOptions {
 
 const AUTO_DETECTED_SOURCES = new Set(['bank', 'notification', 'sms', 'upi']);
 const MOVEMENT_PATTERN =
-  /\b(?:atm|borrowed|cash deposit|bank deposit|cash withdrawal|debt repayment|family|friend|brother|sister|mom|mother|dad|father|papa|mummy|personal transfer|refunds?|reimburse(?:ment|d)?|repay(?:ment|aid)?|self transfer|own account|account transfer|transfer|withdrawn?)\b/i;
+  /\b(?:atm|borrowed|cash deposit|bank deposit|cash withdrawal|debt repayment|family|friend|brother|sister|mom|mother|dad|father|papa|mummy|personal transfer|refunds?|reimburse(?:ment|d)?|repay(?:ment|aid)?|self transfer|own account|account transfer|transfer|withdrawn?)\b|\b(?:sent to|received from)\b/i;
 const EARNED_INCOME_PATTERN =
   /\b(?:salary|payroll|wages?|freelance|business)\b|\b(?:porter|swiggy|zomato|rapido|zepto|delivery)\b.*\b(?:earning|earnings|payout|settlement)\b|\b(?:earning|earnings|payout|settlement)\b.*\b(?:porter|swiggy|zomato|rapido|zepto|delivery)\b/i;
 const NON_EXPENSE_CATEGORY_PATTERN =
   /\b(?:cash\s*&?\s*atm|credit card bills?|debt repayment|personal transfer|transfers?|withdrawal)\b/i;
-const MERCHANT_EXPENSE_PATTERN =
-  /\b(?:bills?|cafe|dining|education|entertainment|fees?|food|fuel|gas|groceries|grocery|healthcare|housing|merchant|petrol|purchase|rent|restaurant|shopping|shop|store|subscriptions?|transport|travel|utilities|utility|vendor)\b/i;
 const CASH_DEPOSIT_PATTERN = /\bcash deposit\b/i;
 const BANK_DEPOSIT_PATTERN = /\bbank deposit\b/i;
 const CASH_WITHDRAWAL_PATTERN = /\b(?:atm|cash\s*&?\s*atm|cash withdrawal|withdrawn?|withdrawal)\b/i;
@@ -94,6 +92,10 @@ const BORROWED_REPAYMENT_PATTERN = /\b(?:borrowed|debt repayment|repay(?:ment|ai
 const REFUND_REIMBURSEMENT_PATTERN = /\b(?:refunds?|reimburse(?:ment|d)?)\b/i;
 const REVIEWED_EXPENSE_CATEGORY = 'Reviewed Expense';
 const REVIEWED_EXPENSE_NOTE = 'Reviewed expense';
+const EXPLICIT_EXPENSE_REVIEW_REASONS = new Set([
+  'review_detail_expense_confirmed',
+  'review_queue_expense_confirmed',
+]);
 
 function summaryText(transaction: Transaction): string {
   return [transaction.category, transaction.note]
@@ -138,6 +140,12 @@ export function isDashboardExpense(transaction: Transaction): boolean {
     return false;
   }
   if (
+    transaction.account_match_status === 'manual_confirmed' &&
+    EXPLICIT_EXPENSE_REVIEW_REASONS.has(transaction.account_match_reason || '')
+  ) {
+    return true;
+  }
+  if (
     transaction.category === REVIEWED_EXPENSE_CATEGORY &&
     transaction.note === REVIEWED_EXPENSE_NOTE
   ) {
@@ -148,7 +156,7 @@ export function isDashboardExpense(transaction: Transaction): boolean {
   if (MOVEMENT_PATTERN.test(text) || NON_EXPENSE_CATEGORY_PATTERN.test(text)) return false;
   if (!isAutomaticallyDetected(transaction)) return true;
 
-  return MERCHANT_EXPENSE_PATTERN.test(text);
+  return true;
 }
 
 function reviewReasonForText(text: string, fallback: DashboardReviewReason): Pick<DashboardReviewMovement, 'reason' | 'label'> {

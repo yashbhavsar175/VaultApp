@@ -43,6 +43,7 @@ function isSameAmount(left?: number | null, right?: number | null): boolean {
 }
 
 function isSupportedOrdinaryDebitClass(item: ReviewItem): boolean {
+  if (!item.candidate.autoClass && item.candidate.direction === 'debit') return true;
   return [
     'bank_debit',
     'upi_payment',

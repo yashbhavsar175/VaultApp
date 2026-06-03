@@ -327,6 +327,15 @@ describe('transaction reconciliation proposal service', () => {
       matchedOwnerLabel: 'HDFC Bank ••1234',
       reasonCode: 'same_reference_bank_evidence',
       createdAt: NOW,
+      evidenceSummary: expect.objectContaining({
+        sourceTypes: expect.arrayContaining(['notification', 'sms']),
+        direction: 'debit',
+        amountPresent: true,
+        referencePresent: true,
+        bankProofCount: 1,
+        accountLast4s: ['1234'],
+        cardLast4s: [],
+      }),
     }));
     expect(proposals[0].evidenceIds.sort()).toEqual(['ev_app_1', 'ev_bank_1']);
     expect(calls.every(call => call.op === 'select')).toBe(true);
@@ -615,6 +624,14 @@ describe('transaction reconciliation proposal service', () => {
     expect(serialized).not.toContain('Main Road');
     expect(serialized).not.toContain('yash@oksbi');
     expect(serialized).not.toContain('123456789012');
+    expect(proposal.evidenceSummary).toEqual(expect.objectContaining({
+      sourceTypes: ['notification'],
+      amountPresent: true,
+      bankProofCount: 0,
+      accountLast4s: [],
+      cardLast4s: [],
+      paymentAppHint: true,
+    }));
     for (const token of proposal.explanationTokens) {
       expect(token).toMatch(/^[a-z0-9_]+$/);
     }

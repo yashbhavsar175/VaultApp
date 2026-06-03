@@ -42,11 +42,13 @@ jest.mock('@notifee/react-native', () => ({
     onForegroundEvent: jest.fn(() => jest.fn()),
     onBackgroundEvent: jest.fn(),
     requestPermission: jest.fn(),
+    getNotificationSettings: jest.fn(() => Promise.resolve({ authorizationStatus: 1 })),
     createChannel: jest.fn(),
     displayNotification: jest.fn(),
   },
   EventType: {},
-  AndroidImportance: {},
+  AndroidImportance: { DEFAULT: 3, HIGH: 4 },
+  AuthorizationStatus: { DENIED: 0, AUTHORIZED: 1, PROVISIONAL: 2 },
 }));
 
 jest.mock('react-native-android-notification-listener', () => ({

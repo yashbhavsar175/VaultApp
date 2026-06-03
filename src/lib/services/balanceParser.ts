@@ -207,8 +207,10 @@ function extractAccountLast4(text: string): string | null {
 
 function extractCardLast4(text: string): string | null {
   return extractLast4WithPatterns(text, [
-    /\b(?:credit\s*)?card(?:\s*(?:no\.?|number))?\s*(?:ending|ended|xx|x{2,}|[*]+)?\s*(\d{4})\b/i,
-    /\bcc\s*(?:ending|xx|x{2,}|[*]+)?\s*(\d{4})\b/i,
+    /\b(?:credit\s*)?card\b[^.]{0,48}?\b(?:ending|ended)\s*(?:with\s*)?(?:x{1,}|[*]+)?\s*(\d{4})\b/i,
+    /\b(?:credit\s*)?card(?:\s*(?:no\.?|number))?\s*(?:xx|x{2,}|[*]+)\s*(\d{4})\b/i,
+    /\b(?:credit\s*)?card\s+(\d{4})\b/i,
+    /\bcc\b[^.]{0,32}?\b(?:ending|ended|xx|x{2,}|[*]+)\s*(?:with\s*)?(?:x{1,}|[*]+)?\s*(\d{4})\b/i,
   ]);
 }
 
@@ -351,7 +353,7 @@ function parseCreditCardBalances(
     addReason(reasons, 'statement_date_found');
   }
 
-  if (/\b(?:payment\s+received|refund|reversal)\b/i.test(text) && hasCreditCardContext(text)) {
+  if (/\b(?:payment(?:\s+of\s+(?:rs\.?|inr|₹)?\s*[0-9,.]+)?\s+received|refund|reversal)\b/i.test(text) && hasCreditCardContext(text)) {
     addReason(reasons, 'card_payment_or_refund_detected');
   }
 

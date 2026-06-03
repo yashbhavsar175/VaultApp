@@ -3,6 +3,7 @@ import { Text, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 import TransactionDetail from './TransactionDetail';
 import { Transaction, TransactionEvidence } from '../../types';
+import { updateTransaction } from '../../lib/core';
 import { getBankAccounts } from '../../lib/database/financial';
 import { getEvidenceForTransaction } from '../../lib/services/transactionEvidence';
 import { saveReviewClassificationPreferenceForTransaction } from '../../lib/services/reviewClassificationPreferences';
@@ -43,7 +44,10 @@ jest.mock('../../components', () => ({
     const RN = require('react-native');
     return <RN.Text>{title}</RN.Text>;
   },
-  EditTransactionModal: () => null,
+  EditTransactionModal: ({ visible }: { visible: boolean }) => {
+    const RN = require('react-native');
+    return visible ? <RN.Text>Edit transaction modal open</RN.Text> : null;
+  },
   AppConfirmModal: () => null,
 }));
 
@@ -114,6 +118,7 @@ jest.mock('../../lib/privacy/rawText', () => ({
 const mockedGetBankAccounts = getBankAccounts as jest.Mock;
 const mockedGetEvidenceForTransaction = getEvidenceForTransaction as jest.Mock;
 const mockedSavePreference = saveReviewClassificationPreferenceForTransaction as jest.Mock;
+const mockedUpdateTransaction = updateTransaction as jest.Mock;
 
 function childText(children: unknown): string {
   if (Array.isArray(children)) return children.map(childText).join('');
@@ -126,6 +131,21 @@ function renderedText(renderer: ReactTestRenderer.ReactTestRenderer): string {
     .findAllByType(Text)
     .map(node => childText(node.props.children))
     .join(' ');
+}
+
+function renderedIconNames(renderer: ReactTestRenderer.ReactTestRenderer): string[] {
+  return renderer.root
+    .findAll(node => String(node.type) === 'Icon')
+    .map(node => node.props.name)
+    .filter(Boolean);
+}
+
+function findButtonByText(renderer: ReactTestRenderer.ReactTestRenderer, label: string) {
+  return renderer.root
+    .findAllByType(TouchableOpacity)
+    .find(node => node.findAllByType(Text).some(textNode =>
+      childText(textNode.props.children).includes(label)
+    ));
 }
 
 function transaction(overrides: Partial<Transaction> = {}): Transaction {
@@ -298,21 +318,60 @@ describe('TransactionDetail Source Trace', () => {
 
     expect(text).toContain('Review decision');
     expect(text).toContain('Status Counted as expense');
+    expect(text).toContain('Confidence User confirmed');
     expect(text).toContain('If this happens again');
-    expect(text).toContain('Always ask me');
+    expect(text).toContain('Always ask next time');
     expect(text).toContain('Count as expense next time');
-    expect(text).toContain('Do not count as expense');
+    expect(text).toContain('Suggest not expense next time');
     expect(text).toContain('Suggest this category next time');
     expect(text).toContain('Matched Account Bank Of Baroda ••5191');
     expect(text).toContain('Ref / UTR 651916430927');
     expect(text).not.toContain('?');
+
+    const glyphMap = require('react-native-vector-icons/glyphmaps/MaterialCommunityIcons.json');
+    expect(renderedIconNames(renderer).every(name => glyphMap[name])).toBe(true);
+    expect(renderedIconNames(renderer)).not.toContain('tag-edit-outline');
+    expect(renderedIconNames(renderer)).not.toContain('comment-question-outline');
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();
     });
   });
 
-  it('saves a future suggestion without silently posting another transaction', async () => {
+  it('keeps review decision confidence stable after exact evidence loads', async () => {
+    const renderer = await renderDetail(transaction({
+      id: 'tx_manual_with_exact_evidence',
+      type: 'expense',
+      note: 'Bhavsar Yash',
+      category: 'UPI Payments',
+      account_match_status: 'manual_confirmed',
+      account_match_confidence: null,
+      account_match_reason: 'review_detail_expense_confirmed',
+      primary_evidence_id: 'ev_exact',
+    }), [
+      evidence({
+        id: 'ev_exact',
+        transaction_id: 'tx_manual_with_exact_evidence',
+        confidence_level: 'exact',
+      }),
+    ]);
+    const text = renderedText(renderer);
+
+    expect(text).toContain('Match confidence Exact');
+    expect(text).toContain('Confidence User confirmed');
+    expect(text).not.toContain('Confidence Exact');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it.each([
+    ['Always ask next time', 'always_ask', 'Saved: always ask next time'],
+    ['Count as expense next time', 'count_as_expense', 'Saved: suggest expense next time'],
+    ['Suggest not expense next time', 'not_expense', 'Saved: suggest not expense next time'],
+    ['Suggest this category next time', 'suggest_category', 'Saved: suggest this category next time'],
+  ] as const)('saves %s without silently posting another transaction', async (label, action, statusText) => {
     mockedSavePreference.mockResolvedValueOnce({});
     const tx = transaction({
       id: 'tx_reviewed_preference',
@@ -322,18 +381,34 @@ describe('TransactionDetail Source Trace', () => {
       account_match_status: 'manual_confirmed',
     });
     const renderer = await renderDetail(tx, []);
-    const button = renderer.root
-      .findAllByType(TouchableOpacity)
-      .find(node => node.findAllByType(Text).some(textNode =>
-        childText(textNode.props.children).includes('Count as expense next time')
-      ));
+    const button = findButtonByText(renderer, label);
 
     await ReactTestRenderer.act(async () => {
       await button?.props.onPress();
     });
 
-    expect(mockedSavePreference).toHaveBeenCalledWith(tx, 'count_as_expense');
-    expect(renderedText(renderer)).toContain('Suggest expense next time');
+    expect(mockedSavePreference).toHaveBeenCalledWith(tx, action);
+    expect(mockedUpdateTransaction).not.toHaveBeenCalled();
+    expect(renderedText(renderer)).toContain(statusText);
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('opens the edit flow from Change category', async () => {
+    const renderer = await renderDetail(transaction({
+      id: 'tx_change_category',
+      type: 'expense',
+      account_match_status: 'manual_confirmed',
+    }), []);
+    const button = findButtonByText(renderer, 'Change category');
+
+    await ReactTestRenderer.act(async () => {
+      await button?.props.onPress();
+    });
+
+    expect(renderedText(renderer)).toContain('Edit transaction modal open');
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();
@@ -353,6 +428,83 @@ describe('TransactionDetail Source Trace', () => {
 
     expect(text).toContain('Status Not counted');
     expect(text).toContain('Mark as expense');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('marks an ignored expense as counted from Transaction Detail', async () => {
+    const ignoredTransaction = transaction({
+      id: 'tx_restore_expense',
+      type: 'expense',
+      note: 'Bhavsar Yash',
+      category: 'UPI Payments',
+      account_match_confidence: null,
+      primary_evidence_id: 'ev_restore',
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    });
+    mockedUpdateTransaction.mockResolvedValueOnce({
+      ...ignoredTransaction,
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'review_detail_expense_confirmed',
+      account_match_confidence: 'exact',
+    });
+    const renderer = await renderDetail(ignoredTransaction, [
+      evidence({
+        id: 'ev_restore',
+        transaction_id: 'tx_restore_expense',
+        confidence_level: 'exact',
+      }),
+    ]);
+    const button = findButtonByText(renderer, 'Mark as expense');
+
+    await ReactTestRenderer.act(async () => {
+      await button?.props.onPress();
+    });
+
+    expect(mockedUpdateTransaction).toHaveBeenCalledWith('tx_restore_expense', {
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'review_detail_expense_confirmed',
+      account_match_confidence: 'exact',
+    });
+    expect(renderedText(renderer)).toContain('Status Counted as expense');
+    expect(renderedText(renderer)).toContain('Note Bhavsar Yash');
+    expect(renderedText(renderer)).toContain('Category UPI Payments');
+    expect(renderedText(renderer)).not.toContain('Note Reviewed expense');
+
+    await ReactTestRenderer.act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('marks a counted expense as not counted from Transaction Detail', async () => {
+    const countedTransaction = transaction({
+      id: 'tx_ignore_expense',
+      type: 'expense',
+      note: 'Reviewed expense',
+      category: 'Reviewed Expense',
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'review_queue_expense_confirmed',
+    });
+    mockedUpdateTransaction.mockResolvedValueOnce({
+      ...countedTransaction,
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    });
+    const renderer = await renderDetail(countedTransaction, []);
+    const button = findButtonByText(renderer, 'Mark not expense');
+
+    await ReactTestRenderer.act(async () => {
+      await button?.props.onPress();
+    });
+
+    expect(mockedUpdateTransaction).toHaveBeenCalledWith('tx_ignore_expense', {
+      account_match_status: 'ignored',
+      account_match_reason: 'review_detail_not_expense',
+    });
+    expect(renderedText(renderer)).toContain('Status Not counted');
 
     await ReactTestRenderer.act(() => {
       renderer.unmount();

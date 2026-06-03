@@ -37,6 +37,7 @@ export const CACHE_KEYS = {
   UNIQUE_CATEGORIES: 'cache_unique_categories',
   USER_PROFILE: 'cache_user_profile',
   LEDGER_PAYMENTS: 'cache_ledger_payments',
+  DASHBOARD_SUMMARY: 'cache_dashboard_summary',
 } as const;
 
 const CACHE_PREFIX = 'cache_';

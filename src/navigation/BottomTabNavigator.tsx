@@ -20,13 +20,16 @@ type TabIconProps = {
 };
 
 const HIDDEN_DASHBOARD_TAB_SCREENS = ['Transactions', 'TransactionDetail', 'Banks', 'Analytics', 'DetectedAccountsScreen'];
-const HIDDEN_SETTINGS_TAB_SCREENS = ['Banks', 'BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'ReconciliationProposals', 'DebtFreedomCoach', 'IncomeReview', 'Places', 'PorterTest'];
+const HIDDEN_SETTINGS_TAB_SCREENS = ['Banks', 'BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'ReconciliationProposals', 'DebtFreedomCoach', 'MoneyMovementReview', 'IncomeReview', 'Places', 'PorterTest'];
 const SETTINGS_TAB_ROUTE = 'Settings';
 const SETTINGS_ROOT_ROUTE = 'SettingsHome';
 
 type SettingsTabRoute = {
+  key?: string;
   state?: {
     key?: string;
+    index?: number;
+    routes?: Array<{ name?: string }>;
   };
 };
 
@@ -58,19 +61,42 @@ function SettingsTabIcon({ color, size }: TabIconProps) {
   return <MaterialCommunityIcons name="cog" color={color} size={size} />;
 }
 
+function isSettingsTabFocused(navigation: any): boolean {
+  const state = navigation.getState?.();
+  const activeRoute = state?.routes?.[state.index ?? 0];
+  return activeRoute?.name === SETTINGS_TAB_ROUTE;
+}
+
+function getSettingsNestedRouteName(route: SettingsTabRoute): string {
+  const nestedRoutes = route.state?.routes;
+  if (!nestedRoutes?.length) return SETTINGS_ROOT_ROUTE;
+  return nestedRoutes[route.state?.index ?? nestedRoutes.length - 1]?.name || SETTINGS_ROOT_ROUTE;
+}
+
 function resetSettingsTabToRoot(navigation: any, route: SettingsTabRoute) {
+  const isFocused = isSettingsTabFocused(navigation);
+  const nestedRouteName = getSettingsNestedRouteName(route);
+
+  if (isFocused && nestedRouteName === SETTINGS_ROOT_ROUTE) {
+    return false;
+  }
+
   const settingsStackKey = route.state?.key;
 
   if (settingsStackKey) {
-    navigation.dispatch({
-      ...CommonActions.reset({
-        index: 0,
-        routes: [{ name: SETTINGS_ROOT_ROUTE }],
-      }),
-      target: settingsStackKey,
-    });
-    navigation.dispatch(CommonActions.navigate({ name: SETTINGS_TAB_ROUTE }));
-    return;
+    if (nestedRouteName !== SETTINGS_ROOT_ROUTE) {
+      navigation.dispatch({
+        ...CommonActions.reset({
+          index: 0,
+          routes: [{ name: SETTINGS_ROOT_ROUTE }],
+        }),
+        target: settingsStackKey,
+      });
+    }
+    if (!isFocused) {
+      navigation.dispatch(CommonActions.navigate({ name: SETTINGS_TAB_ROUTE }));
+    }
+    return true;
   }
 
   navigation.dispatch(
@@ -79,6 +105,7 @@ function resetSettingsTabToRoot(navigation: any, route: SettingsTabRoute) {
       params: { screen: SETTINGS_ROOT_ROUTE },
     }),
   );
+  return true;
 }
 
 export default function BottomTabNavigator() {
@@ -150,8 +177,10 @@ export default function BottomTabNavigator() {
           component={SettingsStack}
           listeners={({ navigation, route }) => ({
             tabPress: event => {
-              event.preventDefault();
-              resetSettingsTabToRoot(navigation, route as SettingsTabRoute);
+              const handled = resetSettingsTabToRoot(navigation, route as SettingsTabRoute);
+              if (handled) {
+                event.preventDefault();
+              }
             },
           })}
           options={({ route }) => {

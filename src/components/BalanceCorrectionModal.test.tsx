@@ -143,4 +143,35 @@ describe('BalanceCorrectionModal', () => {
       text.props.children === 'Could not update balance. Try again.'
     )).toBe(true);
   });
+
+  it('passes the saved snapshot to the parent before closing', async () => {
+    const snapshot = {
+      id: 'snapshot_manual_1',
+      owner_id: 'bank_1',
+      owner_type: 'bank_account',
+      balance_kind: 'available_balance',
+      amount: 1234,
+      source: 'manual',
+      confidence: 'exact',
+      detected_at: '2026-06-03T10:00:00.000Z',
+    };
+    mockedCreateManualSnapshot.mockResolvedValueOnce(snapshot);
+    const onClose = jest.fn();
+    const onSaved = jest.fn();
+    let renderer: ReactTestRenderer.ReactTestRenderer;
+
+    ReactTestRenderer.act(() => {
+      renderer = renderModal({ onClose, onSaved });
+    });
+
+    await ReactTestRenderer.act(async () => {
+      renderer!.root.findAllByType(TextInput)[0].props.onChangeText('1234');
+    });
+    await ReactTestRenderer.act(async () => {
+      await findSaveButton(renderer!.root).props.onPress();
+    });
+
+    expect(onSaved).toHaveBeenCalledWith(snapshot);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

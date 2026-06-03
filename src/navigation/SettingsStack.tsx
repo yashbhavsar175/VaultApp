@@ -1,10 +1,12 @@
 import React from 'react';
 import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
 import Settings from '../screens/user/Settings';
-import { BanksScreen, BankConfigScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
+import { BanksScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
 import ReconciliationProposalsScreen from '../screens/transactions/ReconciliationProposalsScreen';
 import DebtFreedomScreen from '../screens/financial/DebtFreedomScreen';
 import IncomeReviewScreen from '../screens/financial/IncomeReviewScreen';
+import MoneyMovementReviewScreen from '../screens/financial/MoneyMovementReviewScreen';
+import { AccountsAndCardsRouteRedirect } from './RouteRedirects';
 
 const PorterTestScreen = __DEV__
   ? require('../screens/porter/PorterTestScreen').default
@@ -18,6 +20,7 @@ export type SettingsStackParamList = {
   SMSTestScreen: undefined;
   ReconciliationProposals: undefined;
   DebtFreedomCoach: undefined;
+  MoneyMovementReview: { initialSection?: 'all' | 'credits' | 'payments' | 'card_payments' | 'recently_reviewed' } | undefined;
   IncomeReview: undefined;
   Places: undefined;
   PorterTest: undefined;
@@ -40,11 +43,12 @@ export default function SettingsStack() {
       }}>
       <Stack.Screen name="SettingsHome" component={Settings} />
       <Stack.Screen name="Banks" component={BanksScreen} />
-      <Stack.Screen name="BankConfigScreen" component={BankConfigScreen} />
+      <Stack.Screen name="BankConfigScreen" component={AccountsAndCardsRouteRedirect} />
       <Stack.Screen name="DetectedAccountsScreen" component={DetectedAccountsScreen} />
       <Stack.Screen name="SMSTestScreen" component={SMSTestScreen} />
       <Stack.Screen name="ReconciliationProposals" component={ReconciliationProposalsScreen} />
       <Stack.Screen name="DebtFreedomCoach" component={DebtFreedomScreen} />
+      <Stack.Screen name="MoneyMovementReview" component={MoneyMovementReviewScreen} />
       <Stack.Screen name="IncomeReview" component={IncomeReviewScreen} />
       <Stack.Screen name="Places" component={PlacesScreen} />
       {__DEV__ && PorterTestScreen ? <Stack.Screen name="PorterTest" component={PorterTestScreen} /> : null}
