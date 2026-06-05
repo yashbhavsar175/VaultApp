@@ -102,6 +102,60 @@ describe('payment app account mappings', () => {
     }));
   });
 
+  it('system-matches a unique owned bank account from the app bank hint without marking it user-confirmed', async () => {
+    tables.bank_accounts.push({
+      id: 'bank_slice_1',
+      user_id: 'user_1',
+      bank_name: 'Slice',
+      account_last4: '5235',
+      account_type: 'savings',
+    });
+
+    const result = await resolvePaymentAppBankAccountForUser({
+      userId: 'user_1',
+      sourcePackage: 'money.super.payments',
+      text: 'Rs.103 received. Deposited in your slice bank.',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      bankHint: 'slice',
+      mappingStatus: 'system_matched',
+      mappedBankAccountId: 'bank_slice_1',
+      mappedBankAccountLast4: '5235',
+      mappedBankName: 'Slice',
+    }));
+  });
+
+  it('keeps ambiguous app bank hints in review', async () => {
+    tables.bank_accounts.push(
+      {
+        id: 'bank_slice_1',
+        user_id: 'user_1',
+        bank_name: 'Slice',
+        account_last4: '5235',
+        account_type: 'savings',
+      },
+      {
+        id: 'bank_slice_2',
+        user_id: 'user_1',
+        bank_name: 'Slice',
+        account_last4: '1111',
+        account_type: 'current',
+      }
+    );
+
+    const result = await resolvePaymentAppBankAccountForUser({
+      userId: 'user_1',
+      sourcePackage: 'money.super.payments',
+      text: 'Rs.103 received. Deposited in your slice bank.',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      bankHint: 'slice',
+      mappingStatus: 'needs_review',
+    }));
+  });
+
   it('resolves only the current users confirmed mapping to an owned bank account', async () => {
     tables.account_app_mappings.push(
       {

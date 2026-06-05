@@ -3,10 +3,19 @@ import { getBankAccounts } from '../database/financial';
 import { getPeopleLedger, getPlaces } from '../database/userdata';
 import { getTransactions, supabase } from '../core';
 import { CACHE_KEYS, clearCache, getCached, prefetchAllData, setCache } from './cache';
-import { OFFLINE_TX_QUEUE_BASE_KEY, REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from './userScopedQueues';
+import { OFFLINE_TX_QUEUE_BASE_KEY, getUserScopedQueueKey } from './userScopedQueues';
 
 jest.mock('../database/financial', () => ({
   getBankAccounts: jest.fn(),
+}));
+
+jest.mock('./balanceViewModel', () => ({
+  getAccountBalanceViewModels: jest.fn().mockResolvedValue([]),
+  getCreditCardBalanceViewModels: jest.fn().mockResolvedValue([]),
+}));
+
+jest.mock('./incomeReview', () => ({
+  getIncomeReviewDecisions: jest.fn().mockResolvedValue([]),
 }));
 
 jest.mock('../database/userdata', () => ({
@@ -37,9 +46,6 @@ describe('cache privacy sanitization', () => {
     await AsyncStorage.setItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'), JSON.stringify([
       { user_id: 'user_a', queueOwnerId: 'user_a', amount: 123, note: 'current user queued note' },
     ]));
-    await AsyncStorage.setItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_a'), JSON.stringify([
-      { user_id: 'user_a', queueOwnerId: 'user_a', id: 'review_a', status: 'pending' },
-    ]));
     await AsyncStorage.setItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'), JSON.stringify([
       { user_id: 'user_b', queueOwnerId: 'user_b', amount: 456, note: 'other user queued note' },
     ]));
@@ -47,7 +53,6 @@ describe('cache privacy sanitization', () => {
     await clearCache();
 
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
-    expect(await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'))).not.toBeNull();
   });
 

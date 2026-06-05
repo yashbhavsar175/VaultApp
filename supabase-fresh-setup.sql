@@ -258,6 +258,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   from_account_id uuid REFERENCES bank_accounts(id),
   to_account_id uuid REFERENCES bank_accounts(id),
   is_transfer_pending boolean DEFAULT false,
+  is_seed boolean DEFAULT false,
   refund_of_transaction_id uuid,
   merchant text,
   account_match_status text DEFAULT 'unlinked',
@@ -283,6 +284,7 @@ ALTER TABLE transactions
   ADD COLUMN IF NOT EXISTS from_account_id uuid REFERENCES bank_accounts(id),
   ADD COLUMN IF NOT EXISTS to_account_id uuid REFERENCES bank_accounts(id),
   ADD COLUMN IF NOT EXISTS is_transfer_pending boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS is_seed boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS refund_of_transaction_id uuid,
   ADD COLUMN IF NOT EXISTS merchant text,
   ADD COLUMN IF NOT EXISTS account_match_status text DEFAULT 'unlinked',
@@ -298,6 +300,7 @@ ALTER TABLE transactions
 
 ALTER TABLE transactions
   ALTER COLUMN is_transfer_pending SET DEFAULT false,
+  ALTER COLUMN is_seed SET DEFAULT false,
   ALTER COLUMN category SET DEFAULT 'general';
 
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
@@ -419,6 +422,9 @@ CREATE INDEX IF NOT EXISTS idx_transactions_account_match_status
 CREATE INDEX IF NOT EXISTS idx_transactions_primary_evidence
   ON transactions(user_id, primary_evidence_id)
   WHERE primary_evidence_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_user_seed
+  ON transactions(user_id, is_seed)
+  WHERE is_seed = true;
 
 CREATE OR REPLACE FUNCTION validate_refund_transaction_link()
 RETURNS trigger AS $$

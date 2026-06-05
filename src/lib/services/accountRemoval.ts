@@ -268,7 +268,7 @@ export async function canHardDeleteOwner(
   return (await getAccountRemovalImpact(ownerType, ownerId)).canHardDelete;
 }
 
-export async function archiveOwner(
+export async function forceDeleteOwnerCascade(
   ownerType: RemovableOwnerType,
   ownerId: string
 ): Promise<AccountRemovalResult> {
@@ -276,87 +276,7 @@ export async function archiveOwner(
   const owner = await getOwnerInfo(ownerType, ownerId, userId);
   const impact = await buildImpact(owner, userId);
 
-  if (!impact.willArchive) {
-    throw new Error('This item cannot be archived safely');
-  }
-
-  const now = new Date().toISOString();
-  const table = ownerType === 'bank_account'
-    ? 'bank_accounts'
-    : ownerType === 'credit_card'
-      ? 'credit_cards'
-      : 'debit_cards';
-  const payload = ownerType === 'debit_card'
-    ? { status: 'inactive', updated_at: now }
-    : { is_archived: true, archived_at: now };
-
-  const { error } = await supabase
-    .from(table)
-    .update(payload)
-    .eq('id', ownerId)
-    .eq('user_id', userId);
-
-  if (error) throw error;
-  emitFinanceDataChanged({ areas: ['accounts'], source: 'account_archive:archive' });
-  return { action: 'archived', impact };
-}
-
-export async function restoreArchivedOwner(
-  ownerType: RemovableOwnerType,
-  ownerId: string
-): Promise<void> {
-  const userId = await getCurrentUserId();
-  assertRemovableOwnerType(ownerType);
-
-  const now = new Date().toISOString();
-  const table = ownerType === 'bank_account'
-    ? 'bank_accounts'
-    : ownerType === 'credit_card'
-      ? 'credit_cards'
-      : 'debit_cards';
-  const payload = ownerType === 'debit_card'
-    ? { status: 'active', updated_at: now }
-    : { is_archived: false, archived_at: null };
-
-  const { error } = await supabase
-    .from(table)
-    .update(payload)
-    .eq('id', ownerId)
-    .eq('user_id', userId);
-
-  if (error) throw error;
-  emitFinanceDataChanged({ areas: ['accounts'], source: 'account_archive:restore' });
-}
-
-export async function getArchivedOwners(): Promise<ArchivedFinancialOwners> {
-  const [bankAccounts, creditCards] = await Promise.all([
-    getBankAccounts({ archivedOnly: true }),
-    getCreditCards({ archivedOnly: true }),
-  ]);
-  return { bankAccounts, creditCards };
-}
-
-export async function isOwnerArchivable(
-  ownerType: RemovableOwnerType,
-  ownerId: string
-): Promise<boolean> {
-  const userId = await getCurrentUserId();
-  const owner = await getOwnerInfo(ownerType, ownerId, userId);
-  return owner.canArchive;
-}
-
-export async function hardDeleteOwnerIfSafe(
-  ownerType: RemovableOwnerType,
-  ownerId: string
-): Promise<AccountRemovalResult> {
-  const userId = await getCurrentUserId();
-  const owner = await getOwnerInfo(ownerType, ownerId, userId);
-  const impact = await buildImpact(owner, userId);
-  if (!impact.canHardDelete) {
-    throw new Error('This item has history and cannot be permanently deleted');
-  }
-
-  const { error } = await supabase.rpc('hard_delete_financial_owner_if_safe', {
+  const { error } = await supabase.rpc('force_delete_financial_owner_cascade', {
     p_owner_type: ownerType,
     p_owner_id: ownerId,
   });
@@ -370,12 +290,5 @@ export async function removeOrArchiveOwner(
   ownerType: RemovableOwnerType,
   ownerId: string
 ): Promise<AccountRemovalResult> {
-  const impact = await getAccountRemovalImpact(ownerType, ownerId);
-  if (impact.canHardDelete) {
-    return hardDeleteOwnerIfSafe(ownerType, ownerId);
-  }
-  if (impact.willArchive) {
-    return archiveOwner(ownerType, ownerId);
-  }
-  throw new Error('This item has history and cannot be removed until archive support is added');
+  return forceDeleteOwnerCascade(ownerType, ownerId);
 }

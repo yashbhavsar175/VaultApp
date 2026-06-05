@@ -11,6 +11,7 @@
 
 import { Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Toast from 'react-native-toast-message';
 import { getBankAccounts } from '../database/financial';
 import { getPlaces, getPeopleLedger } from '../database/userdata';
 import { getTransactions } from '../core';
@@ -19,7 +20,6 @@ import { sanitizeTransactionRawSmsListForPrivacy } from '../privacy/rawText';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   OFFLINE_TX_QUEUE_BASE_KEY,
-  REVIEW_QUEUE_BASE_KEY,
   clearFinancialQueuesForUser,
   quarantineLegacyQueue,
 } from './userScopedQueues';
@@ -38,6 +38,8 @@ export const CACHE_KEYS = {
   USER_PROFILE: 'cache_user_profile',
   LEDGER_PAYMENTS: 'cache_ledger_payments',
   DASHBOARD_SUMMARY: 'cache_dashboard_summary',
+  BALANCE_VIEWS: 'cache_balance_views',
+  INCOME_REVIEW_DECISIONS: 'cache_income_review_decisions',
 } as const;
 
 const CACHE_PREFIX = 'cache_';
@@ -187,7 +189,7 @@ export async function clearCache(): Promise<void> {
     await Promise.all([
       quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
       quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),
-      quarantineLegacyQueue(REVIEW_QUEUE_BASE_KEY),
+
     ]);
 
     const keys = await AsyncStorage.getAllKeys();
@@ -217,11 +219,56 @@ export async function prefetchAllData(): Promise<void> {
     prefetchPlaces(),
     prefetchTransactions(),    // ← Added: core financial data
     prefetchPeopleLedger(),    // ← Added: people ledger for Dashboard summary
+    prefetchBalanceViews(),    // ← Added: balance views for instant screen loading
+    prefetchIncomeReviewDecisions(),
   ]);
 
   const elapsed = Date.now() - start;
   const succeeded = results.filter(r => r.status === 'fulfilled').length;
   console.log(`🚀 [Prefetch] Done in ${elapsed}ms — ${succeeded}/${results.length} succeeded`);
+}
+
+async function prefetchBalanceViews() {
+  try {
+    const {
+      getAccountBalanceViewModels,
+      getCreditCardBalanceViewModels,
+      getPendingDetectedBalanceSummary,
+    } = require('./balanceViewModel');
+    
+    const [accountViews, cardViews, pendingSummary] = await Promise.all([
+      getAccountBalanceViewModels(),
+      getCreditCardBalanceViewModels(),
+      getPendingDetectedBalanceSummary(),
+    ]);
+
+    if (!Array.isArray(accountViews) || !Array.isArray(cardViews) || !pendingSummary) {
+      throw new Error('Invalid balance view payload');
+    }
+    
+    await setCache(CACHE_KEYS.BALANCE_VIEWS, { accountViews, cardViews, pendingSummary });
+    console.log('🚀 [Prefetch] ✅ Balance Views cached');
+  } catch (e) {
+    Toast.show({
+      type: 'error',
+      text1: 'Balance refresh failed',
+      text2: 'Showing cached balances until the next refresh.',
+    });
+    throw e;
+  }
+}
+
+async function prefetchIncomeReviewDecisions() {
+  try {
+    const { getIncomeReviewDecisions } = require('./incomeReview');
+    const decisions = await getIncomeReviewDecisions();
+    await setCache(CACHE_KEYS.INCOME_REVIEW_DECISIONS, decisions);
+    console.log('🚀 [Prefetch] ✅ Income Review Decisions cached');
+  } catch (e) {
+    console.warn('🚀 [Prefetch] ❌ Income Review Decisions failed', {
+      error: summarizeErrorForLog(e),
+    });
+  }
 }
 
 async function prefetchProfile() {

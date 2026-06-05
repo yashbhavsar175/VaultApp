@@ -635,6 +635,107 @@ export default function Settings() {
     );
   };
 
+  const seedDummyTransactions = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not logged in');
+
+      Toast.show({ type: 'info', text1: 'Seeding...', text2: 'Adding 120 tagged test transactions' });
+
+      const categories = ['Food', 'Transport', 'Shopping', 'Salary', 'Freelance', 'Rent', 'Grocery', 'Fuel', 'Entertainment', 'Bills'];
+      const types = ['income', 'expense'];
+      const notes = [
+        'Swiggy order', 'Uber ride', 'Amazon purchase', 'Monthly salary', 'Freelance project',
+        'House rent', 'BigBasket', 'Petrol', 'Netflix', 'Electricity bill',
+        'Zomato', 'Ola auto', 'Flipkart', 'Bonus', 'Client payment',
+        'Water bill', 'Zepto', 'CNG fill', 'Hotstar', 'WiFi bill',
+      ];
+
+      const entries = [];
+      for (let i = 0; i < 120; i++) {
+        const type = types[Math.floor(Math.random() * types.length)];
+        const daysAgo = Math.floor(Math.random() * 60);
+        const date = new Date();
+        date.setDate(date.getDate() - daysAgo);
+        entries.push({
+          user_id: user.id,
+          amount: Math.floor(Math.random() * 5000) + 50,
+          type,
+          category: categories[Math.floor(Math.random() * categories.length)],
+          note: notes[Math.floor(Math.random() * notes.length)],
+          created_at: date.toISOString(),
+          is_seed: true,
+        });
+      }
+
+      const { error } = await supabase.from('transactions').insert(entries);
+      if (error) throw error;
+
+      Toast.show({ type: 'success', text1: 'Done', text2: '120 tagged test entries added' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Seed failed', text2: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const handleSeedDummyTransactions = () => {
+    Alert.alert(
+      'Insert test transactions?',
+      'Insert 120 test transactions? This cannot be undone in production. Rows will be tagged as seed data for cleanup.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Insert', style: 'destructive', onPress: seedDummyTransactions },
+      ]
+    );
+  };
+
+  const handleClearSeededTransactions = () => {
+    Alert.alert(
+      'Clear seed transactions?',
+      'Only transactions tagged as seed data for the current user will be deleted.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { data: { user } } = await supabase.auth.getUser();
+              if (!user) throw new Error('Not logged in');
+
+              const { data, error } = await supabase
+                .from('transactions')
+                .delete()
+                .eq('user_id', user.id)
+                .eq('is_seed', true)
+                .select('id');
+              if (error) throw error;
+
+              const cachedTransactions = await getCached<any[]>(CACHE_KEYS.TRANSACTIONS);
+              if (cachedTransactions?.data) {
+                await setCache(
+                  CACHE_KEYS.TRANSACTIONS,
+                  cachedTransactions.data.filter(tx => !tx?.is_seed)
+                );
+              }
+
+              Toast.show({
+                type: 'success',
+                text1: 'Seed data cleared',
+                text2: `${data?.length || 0} tagged rows removed`,
+              });
+            } catch (error) {
+              Toast.show({
+                type: 'error',
+                text1: 'Clear failed',
+                text2: error instanceof Error ? error.message : String(error),
+              });
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const loadBugReports = async () => {
     try {
       const logsStr = await AsyncStorage.getItem('debug_bug_reports');
@@ -978,25 +1079,6 @@ export default function Settings() {
               </View>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
-
-            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
-
-            <TouchableOpacity
-              style={[styles.accountRow, { paddingVertical: spacing.sm }]}
-              onPress={() => (navigation as any).navigate('ReconciliationProposals')}
-            >
-              <MaterialCommunityIcons name="source-branch-sync" size={22} color="#8b5cf6" />
-              <View style={{ flex: 1, marginLeft: spacing.md }}>
-                <Text style={[typography.bodyBold, { color: colors.text }]}>
-                  Reconciliation Proposals
-                </Text>
-                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Review payment match suggestions safely
-                </Text>
-              </View>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
-            </TouchableOpacity>
-
             <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
 
             <TouchableOpacity
@@ -1015,23 +1097,6 @@ export default function Settings() {
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
 
-            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
-
-            <TouchableOpacity
-              style={[styles.accountRow, { paddingVertical: spacing.sm }]}
-              onPress={() => (navigation as any).navigate('MoneyMovementReview')}
-            >
-              <MaterialCommunityIcons name="text-box-search-outline" size={22} color="#06b6d4" />
-              <View style={{ flex: 1, marginLeft: spacing.md }}>
-                <Text style={[typography.bodyBold, { color: colors.text }]}>
-                  Money Movement Review
-                </Text>
-                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Review credits, payments, and money movements
-                </Text>
-              </View>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
-            </TouchableOpacity>
           </Card>
         </View>
 
@@ -1101,47 +1166,7 @@ export default function Settings() {
 
               <TouchableOpacity
                 style={styles.accountRow}
-                onPress={async () => {
-                  try {
-                    const { data: { user } } = await supabase.auth.getUser();
-                    if (!user) throw new Error('Not logged in');
-
-                    Toast.show({ type: 'info', text1: 'Seeding...', text2: 'Adding 120 dummy transactions' });
-
-                    const categories = ['Food', 'Transport', 'Shopping', 'Salary', 'Freelance', 'Rent', 'Grocery', 'Fuel', 'Entertainment', 'Bills'];
-                    const types = ['income', 'expense'];
-                    const notes = [
-                      'Swiggy order', 'Uber ride', 'Amazon purchase', 'Monthly salary', 'Freelance project',
-                      'House rent', 'BigBasket', 'Petrol', 'Netflix', 'Electricity bill',
-                      'Zomato', 'Ola auto', 'Flipkart', 'Bonus', 'Client payment',
-                      'Water bill', 'Zepto', 'CNG fill', 'Hotstar', 'WiFi bill',
-                    ];
-
-                    const entries = [];
-                    for (let i = 0; i < 120; i++) {
-                      const type = types[Math.floor(Math.random() * types.length)];
-                      const daysAgo = Math.floor(Math.random() * 60);
-                      const date = new Date();
-                      date.setDate(date.getDate() - daysAgo);
-                      entries.push({
-                        user_id: user.id,
-                        amount: Math.floor(Math.random() * 5000) + 50,
-                        type,
-                        category: categories[Math.floor(Math.random() * categories.length)],
-                        note: notes[Math.floor(Math.random() * notes.length)],
-                        created_at: date.toISOString(),
-                      });
-                    }
-
-                    // Single bulk insert — no intermediate partial loads!
-                    const { error } = await supabase.from('transactions').insert(entries);
-                    if (error) throw error;
-
-                    Toast.show({ type: 'success', text1: 'Done!', text2: '120 dummy entries added' });
-                  } catch (error) {
-                    Toast.show({ type: 'error', text1: 'Error', text2: String(error) });
-                  }
-                }}>
+                onPress={handleSeedDummyTransactions}>
                 <MaterialCommunityIcons name="database-plus" size={22} color="#f59e0b" />
                 <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
                   Seed 120 Dummy Entries
@@ -1153,29 +1178,15 @@ export default function Settings() {
 
               <TouchableOpacity
                 style={styles.accountRow}
-                onPress={async () => {
-                  try {
-                    const { processSignal } = require('../../lib/services/transactionIntelligence');
-                    const { enqueueReviewCandidate } = require('../../lib/services/autoTransactionReviewQueue');
-                    const sample = processSignal({
-                      rawText: "Rs.750 spent on Swiggy using HDFC Bank credit card ending 9999.",
-                      senderOrPackage: "HDFCBK",
-                      sourceType: "sms",
-                      timestamp: Date.now()
-                    });
-                    sample.decision = 'review_required'; // force for testing
-                    await enqueueReviewCandidate(sample);
-                    Toast.show({ type: 'success', text1: 'Seeded 1 review candidate' });
-                  } catch (e) {
-                    Toast.show({ type: 'error', text1: 'Seed failed', text2: String(e) });
-                  }
-                }}>
-                <MaterialCommunityIcons name="seed-outline" size={22} color="#f59e0b" />
+                onPress={handleClearSeededTransactions}>
+                <MaterialCommunityIcons name="database-remove" size={22} color={colors.error} />
                 <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>
-                  Seed Review Queue
+                  Clear Seeded Test Entries
                 </Text>
                 <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
               </TouchableOpacity>
+
+
 
               <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 4 }} />
 

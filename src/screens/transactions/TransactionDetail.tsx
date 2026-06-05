@@ -22,10 +22,8 @@ import { getBankAccounts } from '../../lib/database/financial';
 import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
 import { isRedactedRawTextRecord, sanitizeTransactionRawSmsForPrivacy } from '../../lib/privacy/rawText';
 import { getEvidenceForTransaction } from '../../lib/services/transactionEvidence';
-import {
-  ReviewClassificationPreferenceAction,
-  saveReviewClassificationPreferenceForTransaction,
-} from '../../lib/services/reviewClassificationPreferences';
+
+import { getTransactionDisplayName } from '../../utils/transactionPresentation';
 
 type TransactionDetailRouteProp = RouteProp<
   { TransactionDetail: { transactionId: string } },
@@ -52,6 +50,11 @@ interface TraceRow {
   icon: string;
   label: string;
   value: string;
+}
+
+interface MatchStatusBadge {
+  label: string;
+  color: string;
 }
 
 type ConfidenceDisplaySource = 'transaction' | 'evidence' | 'manual_confirmed_decision' | 'ignored_decision' | 'needs_review_fallback';
@@ -206,10 +209,27 @@ function formatInstrument(value?: string | null): string {
   }
 }
 
-function formatMatchStatus(transaction: Transaction, evidence?: TransactionEvidence | null): string | null {
+function formatMatchStatusBadge(
+  transaction: Transaction,
+  evidence: TransactionEvidence | null | undefined,
+  hasAccountLabel: boolean,
+  colors: ThemeColors
+): MatchStatusBadge {
   const status = transaction.account_match_status || evidence?.match_status || null;
-  if (!status) return null;
-  return toTitleCase(status);
+
+  if (hasAccountLabel || status === 'linked' || status === 'manual_confirmed') {
+    return { label: 'Matched', color: colors.success };
+  }
+
+  if (status === 'ambiguous' || status === 'review_required') {
+    return { label: 'Needs review', color: colors.warning };
+  }
+
+  if (status === 'ignored') {
+    return { label: 'Ignored', color: colors.subtext };
+  }
+
+  return { label: 'Unlinked', color: colors.warning };
 }
 
 function formatMatchConfidence(transaction: Transaction, evidence?: TransactionEvidence | null): string | null {
@@ -222,18 +242,31 @@ function formatReviewDecisionConfidence(
   transaction: Transaction,
   evidence?: TransactionEvidence | null
 ): string {
+  if (isAutoPairedSelfTransfer(transaction)) return 'Auto matched';
   if (transaction.account_match_status === 'manual_confirmed') return 'User confirmed';
   if (transaction.account_match_status === 'ignored') return 'User corrected';
   return formatMatchConfidence(transaction, evidence) || 'Needs review';
 }
 
+function isAutoPairedSelfTransfer(transaction: Transaction): boolean {
+  return transaction.type === 'transfer' && (
+    transaction.account_match_reason === 'auto_paired_app_mapping' ||
+    transaction.account_match_reason === 'auto_paired_app_bank_hint' ||
+    transaction.account_match_reason === 'user_confirmed_app_mapping'
+  );
+}
+
+function formatReviewDecisionSource(transaction: Transaction, sourceType: string): string {
+  if (isAutoPairedSelfTransfer(transaction)) return 'Automatic';
+  return formatSourceType(sourceType);
+}
+
 function dashboardStatus(transaction: Transaction): string {
-  if (transaction.account_match_status === 'review_required') return 'Not counted: needs review';
   if (transaction.account_match_status === 'ignored') return 'Not counted';
   if (transaction.is_transfer_pending) return 'Not counted: waiting for matching transfer';
   if (transaction.type === 'income') return 'Counted as income';
   if (transaction.type === 'expense') return 'Counted as expense';
-  if (transaction.type === 'transfer') return 'Not counted: personal transfer';
+  if (transaction.type === 'transfer') return 'Not counted: self transfer';
   if (transaction.type === 'refund') return 'Counted as refund adjustment';
   return `Counted as ${getTransactionTypeLabel(transaction.type).toLowerCase()}`;
 }
@@ -280,6 +313,15 @@ function formatSender(sender?: string | null): string | null {
   return safeSender;
 }
 
+function accountLabelForId(
+  accounts: BankAccount[],
+  accountId?: string | null,
+  fallbackLast4?: string | null
+): string | null {
+  const account = accountId ? accounts.find(bankAccount => bankAccount.id === accountId) : null;
+  return formatOwnerLabel(account?.bank_name, account?.account_last4 || fallbackLast4);
+}
+
 function getSourceAppLabel(evidence?: TransactionEvidence | null, transaction?: Transaction | null): string | null {
   const explicit = safeDisplayText(evidence?.source_app, 64);
   if (explicit) return explicit;
@@ -302,6 +344,15 @@ function getEntrySourceTrace(
   const sourceApp = getSourceAppLabel(evidence, transaction);
   const senderName = getKnownSenderName(transaction.sms_sender);
   const evidenceBank = safeDisplayText(evidence?.bank_name, 64);
+
+  if (isAutoPairedSelfTransfer(transaction)) {
+    return {
+      icon: 'bank-transfer',
+      title: 'Automatic transfer match',
+      subtitle: accountLabel ? `Matched source account: ${accountLabel}` : 'Paired bank debit with payment-app credit',
+      color: colors.info,
+    };
+  }
 
   if (!source || source === 'manual') {
     return {
@@ -350,10 +401,11 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [transaction, setTransaction] = useState<Transaction | null>(null);
   const [bankName, setBankName] = useState<string | null>(null);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [transactionEvidence, setTransactionEvidence] = useState<TransactionEvidence[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
-  const [savedPreferenceAction, setSavedPreferenceAction] = useState<ReviewClassificationPreferenceAction | null>(null);
+
   const [confirmDialog, setConfirmDialog] = useState<{
     visible: boolean;
     title: string;
@@ -374,6 +426,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
     const cachedBanks = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
     const bank = cachedBanks?.data.find(account => account.id === tx.account_id);
+    if (cachedBanks?.data && isMountedRef.current) {
+      setBankAccounts(cachedBanks.data);
+    }
     if (bank && isMountedRef.current) {
       setBankName(formatOwnerLabel(bank.bank_name, bank.account_last4));
     }
@@ -384,6 +439,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
     try {
       setTransactionEvidence([]);
+      setBankAccounts([]);
       const cachedTransactions = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
       const cachedTransaction = cachedTransactions?.data.find(tx => tx.id === transactionId);
 
@@ -417,10 +473,13 @@ export default function TransactionDetail({ route, navigation }: Props) {
           : [safeTransaction]
       );
 
-      // Fetch bank account name if account_id exists
-      if (safeTransaction.account_id) {
+      // Fetch account labels if this row references any account.
+      if (safeTransaction.account_id || safeTransaction.from_account_id || safeTransaction.to_account_id) {
         const bankAccounts = await getBankAccounts();
         await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
+        if (isMountedRef.current) {
+          setBankAccounts(bankAccounts);
+        }
         const bankData = bankAccounts.find(account => account.id === safeTransaction.account_id);
 
         if (bankData && isMountedRef.current) {
@@ -552,24 +611,40 @@ export default function TransactionDetail({ route, navigation }: Props) {
     }
   };
 
-  const handleSaveFuturePreference = async (action: ReviewClassificationPreferenceAction) => {
+  const handleIncomeCountedState = async (countAsIncome: boolean) => {
     if (!transaction) return;
+    const selectedEvidence = selectPrimaryEvidence(transaction, transactionEvidence);
 
     try {
-      await saveReviewClassificationPreferenceForTransaction(transaction, action);
-      setSavedPreferenceAction(action);
+      const updatedTransaction = await updateTransaction(transaction.id, countAsIncome
+        ? {
+          account_match_status: 'manual_confirmed',
+          account_match_reason: 'review_detail_income_confirmed',
+          ...(transaction.account_match_confidence
+            ? { account_match_confidence: transaction.account_match_confidence }
+            : selectedEvidence?.confidence_level
+              ? { account_match_confidence: selectedEvidence.confidence_level }
+              : { account_match_confidence: 'high' }), // Explicitly confirmed
+        }
+        : {
+          account_match_status: 'ignored',
+          account_match_reason: 'review_detail_not_income',
+        }
+      );
+      setTransaction(updatedTransaction);
       Toast.show({
         type: 'success',
-        text1: 'Preference saved',
-        text2: 'Future matches will show this suggestion for review.',
+        text1: countAsIncome ? 'Counted as income' : 'Marked as not income',
       });
     } catch {
       Toast.show({
         type: 'error',
-        text1: 'Failed to save preference',
+        text1: 'Failed to update review decision',
       });
     }
   };
+
+
 
   if (loading) {
     return (
@@ -604,6 +679,12 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const evidenceAccountLabel = formatOwnerLabel(primaryEvidence?.bank_name, evidenceLast4);
   const accountLabel = evidenceAccountLabel || bankName || formatOwnerLabel(null, transaction.account_last4);
   const sourceTrace = getEntrySourceTrace(transaction, primaryEvidence, accountLabel, colors);
+  const transferFromLabel = transaction.type === 'transfer'
+    ? accountLabelForId(bankAccounts, transaction.from_account_id || transaction.account_id, transaction.account_last4)
+    : null;
+  const transferToLabel = transaction.type === 'transfer'
+    ? accountLabelForId(bankAccounts, transaction.to_account_id, null)
+    : null;
   const sourcePackage = safePackageName(primaryEvidence?.source_package);
   const senderLabel = formatSender(primaryEvidence?.sender || transaction.sms_sender);
   const rawMessage = transaction.raw_sms?.trim();
@@ -615,8 +696,10 @@ export default function TransactionDetail({ route, navigation }: Props) {
     ? formatAmount(Number(transaction.balance))
     : null;
   const savedAt = new Date(transaction.created_at).toLocaleString();
-  const sourceType = primaryEvidence?.source_type || transaction.sms_source || 'manual';
-  const matchStatus = formatMatchStatus(transaction, primaryEvidence);
+  const sourceType = isAutoPairedSelfTransfer(transaction)
+    ? 'automatic'
+    : primaryEvidence?.source_type || transaction.sms_source || 'manual';
+  const matchStatusBadge = formatMatchStatusBadge(transaction, primaryEvidence, Boolean(accountLabel), colors);
   const matchConfidence = formatMatchConfidence(transaction, primaryEvidence);
   const reviewDecisionConfidence = formatReviewDecisionConfidence(transaction, primaryEvidence);
   const reviewDecisionConfidenceSource = confidenceDisplaySource(transaction, primaryEvidence);
@@ -637,8 +720,9 @@ export default function TransactionDetail({ route, navigation }: Props) {
     sourceApp ? { icon: 'cellphone', label: 'Source app', value: sourceApp } : null,
     sourcePackage ? { icon: 'package-variant-closed', label: 'Package', value: sourcePackage } : null,
     senderLabel ? { icon: 'account-voice', label: 'Sender', value: senderLabel } : null,
-    accountLabel ? { icon: 'bank', label: 'Matched Account', value: accountLabel } : null,
-    matchStatus ? { icon: 'link-variant', label: 'Match status', value: matchStatus } : null,
+    accountLabel ? { icon: 'bank', label: 'Account', value: accountLabel } : null,
+    transferFromLabel ? { icon: 'bank-transfer-out', label: 'From account', value: transferFromLabel } : null,
+    transferToLabel ? { icon: 'bank-transfer-in', label: 'To account', value: transferToLabel } : null,
     matchConfidence ? { icon: 'speedometer', label: 'Match confidence', value: matchConfidence } : null,
     matchReason ? { icon: 'text-box-check-outline', label: 'Match reason', value: matchReason } : null,
     { icon: 'swap-vertical', label: 'Direction', value: formatDirection(transaction, primaryEvidence) },
@@ -665,15 +749,6 @@ export default function TransactionDetail({ route, navigation }: Props) {
     transaction.account_match_reason ||
     isAutomaticTransaction
   );
-  const preferenceStatus = savedPreferenceAction === 'count_as_expense'
-    ? 'Saved: suggest expense next time'
-    : savedPreferenceAction === 'not_expense'
-      ? 'Saved: suggest not expense next time'
-      : savedPreferenceAction === 'suggest_category'
-        ? 'Saved: suggest this category next time'
-        : savedPreferenceAction === 'always_ask'
-          ? 'Saved: always ask next time'
-          : null;
 
   return (
     <ScreenWrapper scrollable>
@@ -706,8 +781,8 @@ export default function TransactionDetail({ route, navigation }: Props) {
         <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
           <DetailRow
             icon="text"
-            label="Note"
-            value={transaction.note}
+            label="Name / Note"
+            value={getTransactionDisplayName(transaction)}
             colors={colors}
             typography={typography}
             spacing={spacing}
@@ -765,7 +840,22 @@ export default function TransactionDetail({ route, navigation }: Props) {
                 <MaterialCommunityIcons name={sourceTrace.icon} size={22} color={sourceTrace.color} />
               </View>
               <View style={[styles.sourceText, { marginLeft: spacing.sm }]}>
-                <Text style={[typography.bodyBold, { color: colors.text }]}>{sourceTrace.title}</Text>
+                <View style={styles.sourceTitleRow}>
+                  <Text style={[typography.bodyBold, { color: colors.text, flex: 1 }]}>{sourceTrace.title}</Text>
+                  <View
+                    style={[
+                      styles.matchStatusBadge,
+                      {
+                        backgroundColor: matchStatusBadge.color + '18',
+                        borderColor: matchStatusBadge.color + '50',
+                      },
+                    ]}
+                  >
+                    <Text style={[typography.caption, { color: matchStatusBadge.color, fontWeight: '700' }]}>
+                      {matchStatusBadge.label}
+                    </Text>
+                  </View>
+                </View>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>
                   {sourceTrace.subtitle}
                 </Text>
@@ -807,7 +897,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
             <DetailRow
               icon="radar"
               label="Source"
-              value={formatSourceType(sourceType)}
+              value={formatReviewDecisionSource(transaction, sourceType)}
               colors={colors}
               typography={typography}
               spacing={spacing}
@@ -837,6 +927,21 @@ export default function TransactionDetail({ route, navigation }: Props) {
                   </Text>
                 </TouchableOpacity>
               )}
+              {transaction.type === 'income' && (
+                <TouchableOpacity
+                  style={[styles.controlButton, { borderColor: colors.border }]}
+                  onPress={() => handleIncomeCountedState(transaction.account_match_status !== 'manual_confirmed')}
+                >
+                  <MaterialCommunityIcons
+                    name={transaction.account_match_status === 'manual_confirmed' ? 'cash-remove' : 'cash-check'}
+                    size={18}
+                    color={colors.accent}
+                  />
+                  <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                    {transaction.account_match_status === 'manual_confirmed' ? 'Mark not income' : 'Mark as income'}
+                  </Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={[styles.controlButton, { borderColor: colors.border }]}
                 onPress={() => setIsEditModalVisible(true)}
@@ -850,40 +955,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
           </Card>
         )}
 
-        {shouldShowReviewDecision && transaction.type === 'expense' && (
-          <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
-            <View style={[styles.sectionHeader, { marginBottom: spacing.sm }]}>
-              <MaterialCommunityIcons name="lightbulb-on-outline" size={22} color={colors.text} />
-              <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.sm }]}>
-                If this happens again
-              </Text>
-            </View>
-            {preferenceStatus && (
-              <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.sm }]}>
-                {preferenceStatus}
-              </Text>
-            )}
-            <View style={styles.preferenceActions}>
-              {([
-                ['always_ask', 'bell-ring-outline', 'Always ask next time'],
-                ['count_as_expense', 'cash-check', 'Count as expense next time'],
-                ['not_expense', 'cash-remove', 'Suggest not expense next time'],
-                ['suggest_category', 'tag-heart-outline', 'Suggest this category next time'],
-              ] as const).map(([action, icon, label]) => (
-                <TouchableOpacity
-                  key={action}
-                  style={[styles.preferenceButton, { borderColor: colors.border }]}
-                  onPress={() => handleSaveFuturePreference(action)}
-                >
-                  <MaterialCommunityIcons name={icon} size={18} color={colors.accent} />
-                  <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, flex: 1 }]}>
-                    {label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </Card>
-        )}
+
 
         {/* Delete Button */}
         <AppButton
@@ -981,6 +1053,17 @@ const styles = StyleSheet.create({
   },
   sourceText: {
     flex: 1,
+  },
+  sourceTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  matchStatusBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
   decisionActions: {
     flexDirection: 'row',

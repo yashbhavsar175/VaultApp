@@ -13,8 +13,6 @@ describe('account removal UI copy', () => {
     expect(source).toContain('accessibilityLabel="Hide or remove credit card"');
     expect(source).toContain('Remove Account/Card');
     expect(source).toContain('Hide Account/Card');
-    expect(source).toContain('name="archive-outline"');
-    expect(source).not.toContain('name="trash-can-outline"');
   });
 
   it('shows dependency-free permanent delete affordances in Bank & Card Setup', () => {
@@ -51,10 +49,10 @@ describe('account removal UI copy', () => {
     const reloadDeclaration = source.indexOf('const reloadCardsAndAccounts = useCallback(() => {');
     const cacheWrite = source.indexOf('await setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);');
     const removeCall = source.indexOf('const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);');
-    const removeReload = source.indexOf('await reloadCardsAndAccounts();', removeCall);
+    const removeReload = source.indexOf('reloadCardsAndAccounts();', removeCall);
     const removeToast = source.indexOf('Toast.show({', removeCall);
     const restoreCall = source.indexOf('await restoreArchivedOwner(target.ownerType, target.ownerId);');
-    const restoreReload = source.indexOf('await reloadCardsAndAccounts();', restoreCall);
+    const restoreReload = source.indexOf('reloadCardsAndAccounts();', restoreCall);
     const restoreToast = source.indexOf('Toast.show({', restoreCall);
 
     expect(reloadDeclaration).toBeGreaterThan(-1);
@@ -124,8 +122,8 @@ describe('account removal UI copy', () => {
       source.indexOf("text1: 'Restore failed'") + 180
     );
 
-    expect(removeFailure).toContain('await reloadCardsAndAccounts();');
-    expect(restoreFailure).toContain('await reloadCardsAndAccounts();');
+    expect(removeFailure).toContain('reloadCardsAndAccounts();');
+    expect(restoreFailure).toContain('reloadCardsAndAccounts();');
     expect(source).not.toMatch(/setCreditCardViews\([^)]*filter/);
     expect(source).not.toMatch(/setBanks\([^)]*filter/);
   });

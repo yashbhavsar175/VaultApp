@@ -13,8 +13,8 @@ export type AutomaticTransactionReviewReason =
   | 'unverified_debit';
 
 export type AutomaticTransactionPolicy =
-  | { action: 'post'; type: 'expense' | 'income' }
-  | { action: 'review'; reasonCode: AutomaticTransactionReviewReason };
+  | { action: 'post'; type: 'expense' | 'income' | 'transfer' }
+  | { action: 'skip'; reason: AutomaticTransactionReviewReason };
 
 const EARNED_INCOME_PATTERN =
   /\b(?:salary|payroll|wages?|freelance|business)\b|\b(?:porter|swiggy|zomato|rapido|zepto|delivery)\b.*\b(?:earning|earnings|payout|settlement)\b|\b(?:earning|earnings|payout|settlement)\b.*\b(?:porter|swiggy|zomato|rapido|zepto|delivery)\b/i;
@@ -61,51 +61,19 @@ function looksLikePersonCounterparty(text: string): boolean {
   return words.length >= 2 && words.length <= 4 && words.every(word => word.length >= 2);
 }
 
+const SELF_TRANSFER_PATTERN =
+  /\b(?:self[\s_-]*transfer|own account|between (?:my|your)(?: own)? accounts?|account transfer)\b/i;
+
 export function getAutomaticTransactionPolicy(
   direction: AutomaticTransactionDirection,
   text: string
 ): AutomaticTransactionPolicy {
+  // Directly save all transactions as requested by user, removing the "needs review" feature.
   if (SELF_TRANSFER_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'self_transfer' };
+    return { action: 'post', type: 'transfer' };
   }
-
-  if (REFUND_OR_REIMBURSEMENT_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'refund_or_reimbursement' };
-  }
-
-  if (PERSONAL_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'personal_transfer' };
-  }
-
-  if (CREDIT_CARD_BILL_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'credit_card_bill_payment' };
-  }
-
   if (direction === 'credit') {
-    if (CASH_DEPOSIT_PATTERN.test(text)) {
-      return { action: 'review', reasonCode: 'cash_deposit' };
-    }
-    if (BORROWED_PATTERN.test(text)) {
-      return { action: 'review', reasonCode: 'borrowed_money' };
-    }
-    if (EARNED_INCOME_PATTERN.test(text)) {
-      return { action: 'post', type: 'income' };
-    }
-    return { action: 'review', reasonCode: 'unverified_credit' };
+    return { action: 'post', type: 'income' };
   }
-
-  if (CASH_WITHDRAWAL_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'cash_withdrawal' };
-  }
-  if (DEBT_REPAYMENT_PATTERN.test(text)) {
-    return { action: 'review', reasonCode: 'debt_repayment' };
-  }
-  if (looksLikePersonCounterparty(text)) {
-    return { action: 'review', reasonCode: 'personal_transfer' };
-  }
-  if (MERCHANT_EXPENSE_PATTERN.test(text)) {
-    return { action: 'post', type: 'expense' };
-  }
-
   return { action: 'post', type: 'expense' };
 }

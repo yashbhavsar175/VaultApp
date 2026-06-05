@@ -10,7 +10,7 @@ import {
   updateTransaction,
 } from './core';
 import { emitFinanceDataChanged } from './services/dataEvents';
-import { OFFLINE_TX_QUEUE_BASE_KEY, REVIEW_QUEUE_BASE_KEY, getUserScopedQueueKey } from './services/userScopedQueues';
+import { OFFLINE_TX_QUEUE_BASE_KEY, getUserScopedQueueKey } from './services/userScopedQueues';
 
 jest.mock('./services/notifications', () => ({
   showTransactionConfirmation: jest.fn(),
@@ -370,16 +370,6 @@ describe('review source disposition on transaction delete', () => {
   });
 
   it('marks a deleted reviewed expense queue source reviewed without creating an income tombstone', async () => {
-    await AsyncStorage.setItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1'), JSON.stringify([{
-      id: 'queue_1',
-      status: 'posted',
-      createdTransactionId: 'tx_expense',
-      user_id: 'user_1',
-      queueOwnerId: 'user_1',
-      candidate: {
-        evidenceId: 'ev_expense',
-      },
-    }]));
     mockSupabase.__mocks.mockIn.mockResolvedValueOnce({
       data: [{
         id: 'tx_expense',
@@ -396,11 +386,6 @@ describe('review source disposition on transaction delete', () => {
 
     await deleteTransaction('tx_expense');
 
-    const rawQueue = await AsyncStorage.getItem(getUserScopedQueueKey(REVIEW_QUEUE_BASE_KEY, 'user_1'));
-    expect(JSON.parse(rawQueue || '[]')[0]).toEqual(expect.objectContaining({
-      status: 'reviewed',
-      deletedTransactionId: 'tx_expense',
-    }));
     const incomeDecisionInsert = mockSupabase.__mocks.mockInsert.mock.calls.find(
       ([payload]: any[]) => payload?.decision === 'not_income'
     );

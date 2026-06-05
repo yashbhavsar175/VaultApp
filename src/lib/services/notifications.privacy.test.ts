@@ -123,9 +123,9 @@ describe('notification privacy paths', () => {
     expect(serializedSummary).not.toContain('Main Road');
   });
 
-  it('shows review notifications with safe review copy when called directly', async () => {
+  it('shows balance update notifications when called directly', async () => {
     await expect(showFinancialEventNotification({
-      route: 'review_queue',
+      route: 'balance_only',
       sourceKind: 'notification',
       amount: 1250,
       direction: 'debit',
@@ -135,18 +135,30 @@ describe('notification privacy paths', () => {
 
     const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
     const serializedPayload = JSON.stringify(payload);
-    expect(payload.title).toBe('Money movement needs review');
+    expect(payload.title).toBe('Balance updated');
     expect(payload.body).toContain('Rs.1,250.00');
-    expect(payload.body).toContain('account ending 1234');
-    expect(payload.body).toContain('needs review');
     expect(serializedPayload).not.toContain('runtime:notification:test:abcdef12');
+  });
+
+  it('does not display review-required financial notifications', async () => {
+    await expect(showFinancialEventNotification({
+      route: 'review_required',
+      sourceKind: 'notification',
+      amount: 1250,
+      direction: 'debit',
+      accountLast4: '1234',
+      eventId: 'runtime:notification:test:review1234',
+    })).resolves.toBe('blocked');
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+    expect(notifee.createChannel).not.toHaveBeenCalled();
   });
 
   it('blocks local financial notifications safely when notification permission is denied', async () => {
     (notifee as any).getNotificationSettings = jest.fn(() => Promise.resolve({ authorizationStatus: 0 }));
 
     await expect(showFinancialEventNotification({
-      route: 'review_queue',
+      route: 'balance_only',
       sourceKind: 'sms',
       amount: 99,
       direction: 'credit',

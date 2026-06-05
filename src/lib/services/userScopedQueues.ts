@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const OFFLINE_TX_QUEUE_BASE_KEY = 'offline_tx_queue';
 export const OFFLINE_DELETE_QUEUE_BASE_KEY = 'offline_delete_queue';
-export const REVIEW_QUEUE_BASE_KEY = 'auto_transaction_review_queue_v1';
 
 export const USER_QUEUE_ACTIONS = {
   quarantined: 'quarantined',
@@ -133,6 +132,5 @@ export async function clearFinancialQueuesForUser(userId: string): Promise<void>
   await Promise.all([
     clearUserScopedQueue(OFFLINE_TX_QUEUE_BASE_KEY, userId),
     clearUserScopedQueue(OFFLINE_DELETE_QUEUE_BASE_KEY, userId),
-    clearUserScopedQueue(REVIEW_QUEUE_BASE_KEY, userId),
   ]);
 }

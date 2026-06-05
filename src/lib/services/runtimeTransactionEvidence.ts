@@ -74,6 +74,7 @@ const PACKAGE_LABELS: Record<string, string> = {
   'in.amazon.mShop.android.shopping': 'Amazon Pay',
   'com.whatsapp': 'WhatsApp',
   'com.dreamplug.androidapp': 'CRED',
+  'com.kotak811mobilebankingapp.instantsavingsupiscanandpayrecharge': 'Kotak',
 };
 
 function normalizeForHash(value: string): string {

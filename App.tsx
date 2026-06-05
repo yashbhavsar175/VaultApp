@@ -132,6 +132,30 @@ function App() {
     configureGoogleSignIn();
   }, []);
 
+  // One-time cleanup script for dirty transaction notes
+  useEffect(() => {
+    const cleanNames = async () => {
+      if (!session?.user) return;
+      try {
+        const { data } = await supabase.from('transactions').select('id, note').eq('user_id', session.user.id);
+        if (data) {
+          let count = 0;
+          for (const tx of data) {
+            if (tx.note && /\b(?:deposited|credited|received)\b/i.test(tx.note)) {
+              const newNote = tx.note.replace(/\b(?:deposited|credited|received)\b/ig, '').replace(/\s+/g, ' ').trim();
+              await supabase.from('transactions').update({ note: newNote }).eq('id', tx.id);
+              count++;
+            }
+          }
+          if (count > 0) console.log(`✅ [Cleanup] Cleaned ${count} old transaction names!`);
+        }
+      } catch (e) {
+        console.error('[Cleanup] Error cleaning names:', e);
+      }
+    };
+    cleanNames();
+  }, [session]);
+
   // Initialize native background helpers on app start
   useEffect(() => {
     initPorterDistanceCalculator();

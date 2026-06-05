@@ -34,7 +34,7 @@ import {
   AutomaticTransactionReviewReason,
   getAutomaticTransactionPolicy,
 } from '../services/automaticTransactionPolicy';
-import { enqueueReviewCandidate } from '../services/autoTransactionReviewQueue';
+// Removed autoTransactionReviewQueue import
 import { processSignal } from '../services/transactionIntelligence';
 import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../services/userScopedQueues';
 import {
@@ -448,10 +448,10 @@ async function resolveAutomaticPolicy(input: {
       accountLast4: input.parsed.accountLast4,
       sameUserNameMatch: true,
       pairedEvidenceFound: false,
-      routeDecision: 'review_queue',
+      routeDecision: 'post_transfer',
       reasonCode: 'self_transfer',
     });
-    return { action: 'review', reasonCode: 'self_transfer', sameUserNameMatch };
+    return { action: 'post', type: 'transfer', sameUserNameMatch };
   }
 
   const policy = getAutomaticTransactionPolicy(input.parsed.type, input.text);
@@ -801,16 +801,10 @@ async function checkForDuplicates(
     if (recentError) return null;
 
     if (recentData && recentData.length > 0) {
-      const existingTxn = referenceNumber
-        ? recentData[0]
-        : recentData.find(tx => isSameUnreferencedTransaction(tx, rawText, merchant));
-      if (existingTxn) {
-        // Additional check: if we have SMS source, make sure it matches
-        if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
-          return existingTxn;
-        }
-        return existingTxn;
-      }
+      // For transactions within 1 minute with EXACT same amount and type,
+      // we aggressively deduplicate them (whether referenced or unreferenced)
+      // because they are almost certainly the same event reported by different sources.
+      return recentData[0];
     }
 
     // Then check for older duplicates (within 5 minutes) - but be less aggressive

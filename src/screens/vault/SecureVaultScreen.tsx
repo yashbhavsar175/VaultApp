@@ -99,6 +99,7 @@ export default function SecureVaultScreen() {
   // ── SECURITY: Vault Lock State ─────────────────────────────────────────────
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [biometricsAvailable, setBiometricsAvailable] = useState<boolean | null>(null);
   const [vaultLockMessage, setVaultLockMessage] = useState<string | null>(null);
   const isUnlockedRef = useRef(isUnlocked);
   const isAuthenticatingRef = useRef(isAuthenticating);
@@ -146,6 +147,7 @@ export default function SecureVaultScreen() {
     try {
       const rnBiometrics = new ReactNativeBiometrics();
       const { available } = await rnBiometrics.isSensorAvailable();
+      setBiometricsAvailable(available);
 
       if (!available) {
         isUnlockedRef.current = false;
@@ -451,10 +453,15 @@ export default function SecureVaultScreen() {
           <AppButton
             title={isAuthenticating ? 'Verifying...' : 'Unlock with Biometrics'}
             onPress={authenticateUser}
-            disabled={isAuthenticating}
+            disabled={isAuthenticating || biometricsAvailable === false}
             fullWidth
             style={{ marginBottom: spacing.md }}
           />
+          {biometricsAvailable === false && (
+            <Text style={[typography.caption, { color: colors.subtext, textAlign: 'center', marginBottom: spacing.md }]}>
+              Biometrics not available on this device.
+            </Text>
+          )}
 
           {isAuthenticating && (
             <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: spacing.md }} />

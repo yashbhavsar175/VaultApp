@@ -57,12 +57,14 @@ export default function AppButton({
           borderRadius: borderRadius.md,
           paddingVertical: spacing.md,
           paddingHorizontal: spacing.lg,
+          opacity: disabled ? 0.4 : 1,
         },
         fullWidth && styles.fullWidth,
         style,
       ]}
       onPress={onPress}
       disabled={disabled || loading}
+      accessibilityRole="button"
       activeOpacity={0.7}>
       {loading ? (
         <ActivityIndicator color={getTextColor()} />

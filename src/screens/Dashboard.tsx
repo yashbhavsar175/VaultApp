@@ -12,23 +12,12 @@ import { getPeopleLedger } from '../lib/database/userdata';
 import { getCached, setCache, CACHE_KEYS } from '../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/services/dataEvents';
 import {
-  computeDashboardReviewBreakdown,
-  computeDashboardReviewPromptSummary,
   computeMonthlyTransactionTotals,
 } from '../utils/financeSummary';
 import { runWhenIdle } from '../utils/runWhenIdle';
-import {
-  getIncomeReviewCandidates,
-  getIncomeReviewDecisions,
-  IncomeReviewCandidate,
-  IncomeReviewDecision,
-} from '../lib/services/incomeReview';
-import { getReviewQueue, ReviewItem } from '../lib/services/autoTransactionReviewQueue';
-import {
-  DashboardSummarySnapshot,
-  getCachedDashboardSummary,
-  setCachedDashboardSummary,
-} from '../lib/services/dashboardSummaryCache';
+
+
+
 
 type DashboardDebugPayload = Record<string, boolean | number | string | null | undefined>;
 
@@ -57,12 +46,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [peopleLedger, setPeopleLedger] = useState<PeopleLedger[]>([]);
-  const [incomeReviewDecisions, setIncomeReviewDecisions] = useState<IncomeReviewDecision[]>([]);
-  const [incomeReviewCandidates, setIncomeReviewCandidates] = useState<IncomeReviewCandidate[]>([]);
-  const [transactionReviewItems, setTransactionReviewItems] = useState<ReviewItem[]>([]);
-  const [cachedDashboardSummary, setCachedDashboardSummaryState] = useState<DashboardSummarySnapshot | null>(null);
   const [hasResolvedDashboardData, setHasResolvedDashboardData] = useState(false);
-  const [hasResolvedIncomeReviewDecisions, setHasResolvedIncomeReviewDecisions] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const isMountedRef = useRef(true);
@@ -163,50 +147,10 @@ export default function Dashboard() {
   const lentPeopleEntries = useMemo(() => peopleLedger.filter(e => e.type === 'lent'), [peopleLedger]);
 
   const monthlyTotals = useMemo(
-    () => computeMonthlyTransactionTotals(transactions, selectedDate, { incomeReviewDecisions }),
-    [incomeReviewDecisions, selectedDate, transactions]
+    () => computeMonthlyTransactionTotals(transactions, selectedDate),
+    [selectedDate, transactions]
   );
-  const reviewPromptSummary = useMemo(
-    () => computeDashboardReviewPromptSummary(transactions, selectedDate, { incomeReviewDecisions }),
-    [incomeReviewDecisions, selectedDate, transactions]
-  );
-  const reviewBreakdown = useMemo(
-    () => computeDashboardReviewBreakdown(reviewPromptSummary, incomeReviewCandidates, transactionReviewItems),
-    [incomeReviewCandidates, reviewPromptSummary, transactionReviewItems]
-  );
-  const shouldUseCachedMonthlyTotals = Boolean(
-    cachedDashboardSummary
-    && (!hasResolvedDashboardData || !hasResolvedIncomeReviewDecisions)
-  );
-  const shouldUseCachedPeopleSummary = Boolean(
-    cachedDashboardSummary
-    && !hasResolvedDashboardData
-    && peopleLedger.length === 0
-  );
-  const shouldUseCachedReviewBreakdown = Boolean(
-    cachedDashboardSummary
-    && !hasResolvedDashboardData
-    && incomeReviewCandidates.length === 0
-    && transactionReviewItems.length === 0
-  );
-  const hasCachedDashboardDisplay = shouldUseCachedMonthlyTotals
-    || shouldUseCachedPeopleSummary
-    || shouldUseCachedReviewBreakdown;
-  const displayMonthlyTotals = shouldUseCachedMonthlyTotals
-    ? cachedDashboardSummary!.monthlyTotals
-    : monthlyTotals;
-  const displayPeopleSummary = shouldUseCachedPeopleSummary
-    ? cachedDashboardSummary!.peopleSummary
-    : peopleSummary;
-  const displayReviewBreakdown = shouldUseCachedReviewBreakdown
-    ? cachedDashboardSummary!.reviewBreakdown
-    : reviewBreakdown;
-  const reviewPromptCount = displayReviewBreakdown.totalReviewableCount;
-  const hasMixedReviewSources = displayReviewBreakdown.incomeReviewCount > 0
-    && displayReviewBreakdown.transactionReviewCount > 0;
-  const reviewPromptLabel = hasMixedReviewSources
-    ? `${displayReviewBreakdown.incomeReviewCount} ${displayReviewBreakdown.incomeReviewCount === 1 ? 'credit' : 'credits'} and ${displayReviewBreakdown.transactionReviewCount} ${displayReviewBreakdown.transactionReviewCount === 1 ? 'movement' : 'movements'} need review`
-    : `${reviewPromptCount} ${reviewPromptCount === 1 ? 'item needs' : 'items need'} review`;
+
 
   const {
     totalIncome,
@@ -217,104 +161,30 @@ export default function Dashboard() {
     totalInvestment,
     totalEMI,
     monthlyBalance,
-  } = displayMonthlyTotals;
+  } = monthlyTotals;
   const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
 
   // Exact change tracking avoids JSON.stringify on full datasets during refresh.
   const lastTransactionsRef = useRef<Transaction[]>([]);
   const lastPeopleRef = useRef<PeopleLedger[]>([]);
   const isSilentLoadInFlightRef = useRef(false);
-  const reviewLoadRequestIdRef = useRef(0);
-  const cachedDashboardSummaryRef = useRef<DashboardSummarySnapshot | null>(null);
+
 
   useEffect(() => {
     logDashboardDebug('render_source', {
       loading,
-      monthlySource: shouldUseCachedMonthlyTotals ? 'cached_summary' : 'live_state',
-      peopleSource: shouldUseCachedPeopleSummary ? 'cached_summary' : 'live_state',
-      reviewSource: shouldUseCachedReviewBreakdown ? 'cached_summary' : 'live_state',
       hasResolvedDashboardData,
-      hasResolvedIncomeReviewDecisions,
-      transactionCount: transactions.length,
-      peopleCount: peopleLedger.length,
-      incomeReviewCount: incomeReviewCandidates.length,
-      transactionReviewCount: transactionReviewItems.length,
-      hasCachedSummary: Boolean(cachedDashboardSummary),
     });
   }, [
-    cachedDashboardSummary,
     hasResolvedDashboardData,
-    hasResolvedIncomeReviewDecisions,
-    incomeReviewCandidates.length,
     loading,
     peopleLedger.length,
-    shouldUseCachedMonthlyTotals,
-    shouldUseCachedPeopleSummary,
-    shouldUseCachedReviewBreakdown,
-    transactionReviewItems.length,
     transactions.length,
   ]);
 
-  const loadCachedDashboardSummarySilently = useCallback(async () => {
-    try {
-      const snapshot = await getCachedDashboardSummary(selectedDate);
-      if (isMountedRef.current) {
-        cachedDashboardSummaryRef.current = snapshot;
-        setCachedDashboardSummaryState(snapshot);
-      }
-      logDashboardDebug('summary_cache_read', {
-        hit: Boolean(snapshot),
-        monthKey: snapshot?.monthKey,
-      });
-      return snapshot;
-    } catch {
-      if (isMountedRef.current) {
-        cachedDashboardSummaryRef.current = null;
-        setCachedDashboardSummaryState(null);
-      }
-      logDashboardDebug('summary_cache_read', { hit: false, failed: true });
-      return null;
-    }
-  }, [selectedDate]);
 
-  const loadIncomeReviewDecisionsSilently = useCallback(async () => {
-    try {
-      const decisions = await getIncomeReviewDecisions();
-      if (isMountedRef.current) {
-        setIncomeReviewDecisions(decisions);
-        setHasResolvedIncomeReviewDecisions(true);
-      }
-      logDashboardDebug('income_review_decisions_loaded', {
-        count: decisions.length,
-      });
-      return decisions;
-    } catch {
-      console.warn('[Dashboard] Income review decisions unavailable');
-      logDashboardDebug('income_review_decisions_unavailable', {
-        keepsCachedSummary: Boolean(cachedDashboardSummaryRef.current),
-      });
-      return [] as IncomeReviewDecision[];
-    }
-  }, []);
 
-  const loadReviewPromptDataSilently = useCallback(async () => {
-    const requestId = ++reviewLoadRequestIdRef.current;
-    try {
-      const [candidates, queueItems] = await Promise.all([
-        getIncomeReviewCandidates({ showExcluded: true }),
-        getReviewQueue(),
-      ]);
-      if (!isMountedRef.current || requestId !== reviewLoadRequestIdRef.current) {
-        return { candidates, queueItems };
-      }
-      setIncomeReviewCandidates(candidates);
-      setTransactionReviewItems(queueItems);
-      return { candidates, queueItems };
-    } catch {
-      console.warn('[Dashboard] Review prompt data unavailable');
-      return { candidates: [] as IncomeReviewCandidate[], queueItems: [] as ReviewItem[] };
-    }
-  }, []);
+
 
   const areTransactionsEqual = useCallback((left: Transaction[], right: Transaction[]) => {
     if (left.length !== right.length) return false;
@@ -358,7 +228,6 @@ export default function Dashboard() {
     try {
       // Load transactions
       let latestTransactions = lastTransactionsRef.current;
-      let latestLedger = lastPeopleRef.current;
       let loadedTransactions = false;
       let loadedPeopleLedger = false;
       try {
@@ -379,14 +248,11 @@ export default function Dashboard() {
         console.error('Error loading transactions:', error);
       }
 
-      const decisions = await loadIncomeReviewDecisionsSilently();
-      const reviewData = await loadReviewPromptDataSilently();
-      
+      // Removed review loaders
       // Load people ledger data
       try {
         const ledgerData = await getPeopleLedger(true);
         loadedPeopleLedger = true;
-        latestLedger = ledgerData;
         const activeLedger = ledgerData.filter(entry => !entry.is_settled);
         logDashboardDebug('live_people_ledger_loaded', {
           count: ledgerData.length,
@@ -406,7 +272,6 @@ export default function Dashboard() {
       if (!loadedTransactions) {
         logDashboardDebug('live_refresh_waiting', {
           reason: 'transactions_not_loaded',
-          keepsCachedSummary: Boolean(cachedDashboardSummaryRef.current),
         });
         return;
       }
@@ -423,29 +288,9 @@ export default function Dashboard() {
         return;
       }
 
-      const activeLedger = latestLedger.filter(entry => !entry.is_settled);
-      const snapshot = {
-        monthlyTotals: computeMonthlyTransactionTotals(latestTransactions, selectedDate, { incomeReviewDecisions: decisions }),
-        peopleSummary: computePeopleSummary(activeLedger),
-        reviewBreakdown: computeDashboardReviewBreakdown(
-          computeDashboardReviewPromptSummary(latestTransactions, selectedDate, { incomeReviewDecisions: decisions }),
-          reviewData.candidates,
-          reviewData.queueItems,
-        ),
-      };
       if (isMountedRef.current) {
-        cachedDashboardSummaryRef.current = {
-          ...snapshot,
-          monthKey: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`,
-          createdAt: new Date().toISOString(),
-        };
-        setCachedDashboardSummaryState({
-          ...snapshot,
-          monthKey: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`,
-          createdAt: new Date().toISOString(),
-        });
+        // Force re-render with new data
       }
-      void setCachedDashboardSummary(selectedDate, snapshot);
     } catch (error) {
       console.error('Error in loadDataSilently:', error);
     } finally {
@@ -454,16 +299,11 @@ export default function Dashboard() {
   }, [
     arePeopleLedgerEqual,
     areTransactionsEqual,
-    computePeopleSummary,
-    loadIncomeReviewDecisionsSilently,
-    loadReviewPromptDataSilently,
-    selectedDate,
   ]);
 
   const loadData = useCallback(async () => {
     try {
-      const cachedSummary = await loadCachedDashboardSummarySilently();
-      if (cachedSummary) setLoading(false);
+
       // Step 1: Try cache first for INSTANT display (no skeleton)
       const [cachedTxns, cachedLedger] = await Promise.all([
         getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS),
@@ -473,14 +313,10 @@ export default function Dashboard() {
       if (cachedTxns || cachedLedger) {
         // Cache hit! Show data instantly — no skeleton needed
         const cachedTransactions = cachedTxns?.data || [];
-        const shouldPreferSummaryOverEmptyTransactions = Boolean(
-          cachedSummary
-          && cachedTransactions.length === 0
-        );
+        const shouldPreferSummaryOverEmptyTransactions = false;
         const cachedLedgerData = cachedLedger?.data || [];
         const activeCachedLedgerCount = cachedLedgerData.filter(entry => !entry.is_settled).length;
         logDashboardDebug('raw_cache_read', {
-          hasSummary: Boolean(cachedSummary),
           hasTransactionCache: Boolean(cachedTxns),
           transactionCacheStale: cachedTxns?.isStale,
           transactionCount: cachedTransactions.length,
@@ -488,7 +324,6 @@ export default function Dashboard() {
           ledgerCacheStale: cachedLedger?.isStale,
           ledgerCount: cachedLedgerData.length,
           activeLedgerCount: activeCachedLedgerCount,
-          hasResolvedIncomeReviewDecisions,
           monthlyPrefersSummary: shouldPreferSummaryOverEmptyTransactions,
         });
         setTransactions(cachedTransactions);
@@ -500,8 +335,6 @@ export default function Dashboard() {
         }
         setHasResolvedDashboardData(Boolean(cachedTxns) && !shouldPreferSummaryOverEmptyTransactions);
         setLoading(false); // Skip skeleton entirely!
-        void loadIncomeReviewDecisionsSilently();
-        void loadReviewPromptDataSilently();
 
         // Step 2: Silently refresh in background if stale
         if (cachedTxns?.isStale || cachedLedger?.isStale) {
@@ -515,25 +348,17 @@ export default function Dashboard() {
       await loadDataSilently();
     } catch (error) {
       console.error('Error in loadData:', error);
+
     } finally {
       setLoading(false);
     }
   }, [
-    hasResolvedIncomeReviewDecisions,
-    loadCachedDashboardSummarySilently,
     loadDataSilently,
-    loadIncomeReviewDecisionsSilently,
-    loadReviewPromptDataSilently,
   ]);
-
-  useEffect(() => {
-    void loadCachedDashboardSummarySilently();
-  }, [loadCachedDashboardSummarySilently]);
 
   // Keep ref always pointing to the latest loadDataSilently — prevents stale closure in debounce
   const loadDataSilentlyRef = useRef(loadDataSilently);
   useEffect(() => { loadDataSilentlyRef.current = loadDataSilently; }, [loadDataSilently]);
-
   // Debounce ref — prevents rapid back-to-back loads during bulk operations
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -556,27 +381,19 @@ export default function Dashboard() {
           loadData();
           setIsInitialLoad(false);
         } else {
-          void loadReviewPromptDataSilently();
           // Debounced reload — waits for data to settle
           debouncedLoadSilently();
         }
       });
       return () => task.cancel();
-    }, [isInitialLoad, debouncedLoadSilently, loadData, loadReviewPromptDataSilently])
+    }, [isInitialLoad, debouncedLoadSilently, loadData])
   );
 
   useFocusEffect(
     React.useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
-        if (financeDataChangedAffects(payload, ['review'])) {
-          cachedDashboardSummaryRef.current = null;
-          setCachedDashboardSummaryState(null);
-          setHasResolvedDashboardData(true);
-          void loadReviewPromptDataSilently();
-        }
+
         if (financeDataChangedAffects(payload, ['transactions', 'ledger'])) {
-          cachedDashboardSummaryRef.current = null;
-          setCachedDashboardSummaryState(null);
           setHasResolvedDashboardData(true);
           if (payload.transactionId && payload.source?.includes('delete')) {
             setTransactions(prev => prev.filter(tx => tx.id !== payload.transactionId));
@@ -585,7 +402,7 @@ export default function Dashboard() {
           debouncedLoadSilently();
         }
       });
-    }, [debouncedLoadSilently, loadReviewPromptDataSilently])
+    }, [debouncedLoadSilently])
   );
 
   // Cleanup debounce timer on unmount
@@ -604,33 +421,7 @@ export default function Dashboard() {
     setRefreshing(false);
   };
 
-  const handleReviewIncome = () => {
-    triggerHaptic();
-    (navigation as any).navigate('Settings', {
-      screen: 'MoneyMovementReview',
-      params: { initialSection: 'credits' },
-    });
-  };
 
-  const handleReviewMovements = () => {
-    triggerHaptic();
-    (navigation as any).navigate('Settings', {
-      screen: 'MoneyMovementReview',
-      params: { initialSection: 'payments' },
-    });
-  };
-
-  const handleReviewAllMovements = () => {
-    triggerHaptic();
-    (navigation as any).navigate('Settings', {
-      screen: 'MoneyMovementReview',
-      params: { initialSection: 'all' },
-    });
-  };
-
-  const handleReviewNow = displayReviewBreakdown.transactionReviewCount > 0
-    ? handleReviewMovements
-    : handleReviewIncome;
 
   // SECURITY: Blank privacy screen when app is in background
   if (isPrivacyMode) {
@@ -642,7 +433,7 @@ export default function Dashboard() {
     );
   }
 
-  if (loading && !hasCachedDashboardDisplay) {
+  if (loading) {
     // Skeleton loader that mimics the actual Dashboard layout
     return (
       <ScreenWrapper>
@@ -773,49 +564,7 @@ export default function Dashboard() {
           </View>
         </View>
 
-        {reviewPromptCount > 0 && (
-          <View style={{ paddingHorizontal: spacing.lg, marginBottom: spacing.lg }}>
-            <Card style={[
-              styles.reviewPromptCard,
-              {
-                borderColor: colors.warning || '#f59e0b',
-                backgroundColor: colors.card,
-              },
-            ]}>
-              <View style={styles.reviewPromptHeader}>
-                <View style={[
-                  styles.reviewPromptIcon,
-                  { backgroundColor: `${colors.warning || '#f59e0b'}20` },
-                ]}>
-                  <MaterialCommunityIcons name="inbox-multiple-outline" size={22} color={colors.warning || '#f59e0b'} />
-                </View>
-                <View style={{ flex: 1, marginLeft: spacing.sm }}>
-                  <Text style={[typography.bodyBold, { color: colors.text }]}>
-                    Money movements need review
-                  </Text>
-                  <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                    {reviewPromptLabel}
-                  </Text>
-                </View>
-              </View>
-              <Text style={[typography.body, { color: colors.text, marginTop: spacing.sm }]}>
-                Some credits or debits were not counted in income or expenses.
-              </Text>
-              <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>
-                Review them to keep your dashboard accurate.
-              </Text>
-              <View style={[styles.reviewPromptActions, { marginTop: spacing.md }]}>
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={hasMixedReviewSources ? handleReviewAllMovements : handleReviewNow}
-                  style={[styles.reviewPromptButton, { backgroundColor: colors.accent }]}>
-                  <Text style={[typography.bodyBold, { color: '#fff' }]}>Review now</Text>
-                  <MaterialCommunityIcons name="chevron-right" size={18} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            </Card>
-          </View>
-        )}
+
 
         {/* Accordion Sections */}
         <View style={{ paddingHorizontal: spacing.lg }}>
@@ -912,10 +661,10 @@ export default function Dashboard() {
                       You Lent
                     </Text>
                     <Text style={[typography.h1, { color: colors.income, fontSize: 24, fontWeight: 'bold', marginTop: 4 }]}>
-                      {formatAmount(displayPeopleSummary.totalLent)}
+                      {formatAmount(peopleSummary.totalLent)}
                     </Text>
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 12, marginTop: 4 }]}>
-                      {displayPeopleSummary.lentCount} {displayPeopleSummary.lentCount === 1 ? 'person' : 'people'}
+                      {peopleSummary.lentCount} {peopleSummary.lentCount === 1 ? 'person' : 'people'}
                     </Text>
                   </Card>
 
@@ -1008,6 +757,8 @@ export default function Dashboard() {
         style={[styles.quickAddFab, { backgroundColor: colors.accent }]}
         activeOpacity={0.8}
         onPress={() => setShowQuickAdd(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Open quick add"
       >
         <MaterialCommunityIcons name="microphone" size={24} color="#fff" />
       </TouchableOpacity>

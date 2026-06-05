@@ -15,7 +15,7 @@ import { sanitizeTransactionRawSmsForPrivacy } from './privacy/rawText';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   OFFLINE_TX_QUEUE_BASE_KEY,
-  REVIEW_QUEUE_BASE_KEY,
+
   getQueueOwnerId,
   loadUserScopedQueue,
   logUserQueueAction,
@@ -183,7 +183,6 @@ const TRANSACTIONS_CACHE_KEY = 'cache_transactions';
 const DASHBOARD_SUMMARY_CACHE_PREFIX = 'cache_dashboard_summary';
 const REVIEWED_INCOME_NOTE = 'Reviewed income';
 const REVIEWED_INCOME_CATEGORY = 'Reviewed Income';
-const REVIEWED_EXPENSE_REASON = 'review_queue_expense_confirmed';
 const INCOME_REVIEW_REASON = 'income_review_confirmed';
 
 async function invalidateDashboardSummaryCache(): Promise<void> {
@@ -242,13 +241,6 @@ function isReviewedIncomeTransaction(tx: DeletedReviewSource): boolean {
     tx.primary_evidence_id ||
     tx.account_match_reason === INCOME_REVIEW_REASON ||
     (tx.note === REVIEWED_INCOME_NOTE && tx.category === REVIEWED_INCOME_CATEGORY)
-  );
-}
-
-function isReviewedExpenseTransaction(tx: DeletedReviewSource): boolean {
-  return tx.type === 'expense' && Boolean(
-    tx.primary_evidence_id ||
-    tx.account_match_reason === REVIEWED_EXPENSE_REASON
   );
 }
 
@@ -362,45 +354,6 @@ async function writeIncomeReviewDeletionTombstone(
   return true;
 }
 
-async function markDeletedReviewQueueSources(
-  userId: string,
-  transactions: DeletedReviewSource[]
-): Promise<boolean> {
-  const reviewSourceIds = new Set(transactions
-    .filter(isReviewedExpenseTransaction)
-    .map(tx => tx.id));
-  const evidenceIds = new Set(transactions
-    .filter(isReviewedExpenseTransaction)
-    .map(tx => tx.primary_evidence_id)
-    .filter((id): id is string => Boolean(id)));
-
-  if (reviewSourceIds.size === 0 && evidenceIds.size === 0) return false;
-
-  const queue = await loadUserScopedQueue<Record<string, any>>(REVIEW_QUEUE_BASE_KEY, userId);
-  let changed = false;
-  const nextQueue = queue.map(item => {
-    const candidate = item.candidate || {};
-    const matchesTransaction = typeof item.createdTransactionId === 'string' &&
-      reviewSourceIds.has(item.createdTransactionId);
-    const matchesEvidence = typeof candidate.evidenceId === 'string' &&
-      evidenceIds.has(candidate.evidenceId);
-
-    if (!matchesTransaction && !matchesEvidence) return item;
-    if (item.status === 'reviewed' || item.status === 'ignored') return item;
-
-    changed = true;
-    return {
-      ...item,
-      status: 'reviewed',
-      deletedTransactionId: matchesTransaction ? item.createdTransactionId : undefined,
-    };
-  });
-
-  if (!changed) return false;
-
-  await saveUserScopedQueue(REVIEW_QUEUE_BASE_KEY, userId, nextQueue);
-  return true;
-}
 
 async function markDeletedReviewSources(
   userId: string,
@@ -416,7 +369,7 @@ async function markDeletedReviewSources(
     }
   }
 
-  changedReviewState = (await markDeletedReviewQueueSources(userId, transactions)) || changedReviewState;
+
 
   if (changedReviewState) {
     emitFinanceDataChanged({

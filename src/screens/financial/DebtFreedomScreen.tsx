@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useFocusEffect } from '@react-navigation/native';
 import { AppHeader, Card, ScreenWrapper } from '../../components';
 import { useTheme } from '../../context/ThemeContext';
 import {
@@ -373,9 +374,11 @@ export default function DebtFreedomScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    loadCoach();
-  }, [loadCoach]);
+  useFocusEffect(
+    useCallback(() => {
+      loadCoach();
+    }, [loadCoach])
+  );
 
   const openSettingsModal = () => {
     setSettingsForm(buildFormState(viewModel));

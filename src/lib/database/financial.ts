@@ -377,6 +377,15 @@ export async function deleteCreditCard(cardId: string): Promise<void> {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
+  // Delete associated transactions first to prevent foreign key constraint violation
+  const { error: txnError } = await supabase
+    .from('cc_transactions')
+    .delete()
+    .eq('card_id', cardId)
+    .eq('user_id', userData.user.id);
+
+  if (txnError) throw txnError;
+
   const { error } = await supabase
     .from('credit_cards')
     .delete()

@@ -81,7 +81,11 @@ export default function BalanceHistoryModal({
                 </Text>
               )}
             </View>
-            <TouchableOpacity onPress={onClose} accessibilityLabel="Close balance history" style={styles.closeButton}>
+            <TouchableOpacity
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close balance history"
+              style={styles.closeButton}>
               <MaterialCommunityIcons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -91,7 +95,9 @@ export default function BalanceHistoryModal({
               <ActivityIndicator color={colors.accent} />
             </View>
           ) : (
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: spacing.lg }}>
               <View style={[styles.summary, { backgroundColor: colors.background }]}>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={[typography.caption, { color: colors.subtext }]}>{balanceLabel}</Text>
@@ -105,6 +111,7 @@ export default function BalanceHistoryModal({
                 {!!onUpdateBalance && (
                   <TouchableOpacity
                     onPress={onUpdateBalance}
+                    accessibilityRole="button"
                     accessibilityLabel="Update balance from history"
                     style={[styles.updateButton, { backgroundColor: '#10b98120' }]}>
                     <MaterialCommunityIcons name="wallet-plus-outline" size={20} color="#10b981" />

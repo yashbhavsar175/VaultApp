@@ -30,6 +30,7 @@ export interface Transaction {
   from_account_id?: string | null;
   to_account_id?: string | null;
   is_transfer_pending?: boolean | null;
+  is_seed?: boolean | null;
   refund_of_transaction_id?: string | null;
   account_match_status?: AccountMatchStatus | null;
   account_match_confidence?: AccountMatchConfidence | null;

@@ -57,6 +57,7 @@ export interface ConfirmDetectedBankAccountInput {
   bankName: string;
   accountLast4: string;
   accountType: Extract<BankAccount['account_type'], 'savings' | 'current'>;
+  startingBalance?: number | null;
 }
 
 export interface ConfirmDetectedCreditCardInput {
@@ -65,6 +66,7 @@ export interface ConfirmDetectedCreditCardInput {
   cardName: string;
   cardLast4: string;
   creditLimit?: number | null;
+  currentOutstanding?: number | null;
   dueDate?: number | null;
   billingCycleDate?: number | null;
 }
@@ -600,6 +602,11 @@ export async function confirmDetectedBankAccount(input: ConfirmDetectedBankAccou
   const ownerId = ownerIdFromRpc(rpcResult, detectedAccount);
   const account = await getBankAccountById(userId, ownerId);
   const snapshot = await getSnapshotFromDetection(userId, detectedAccount, 'bank_account', ownerId);
+  
+  if (input.startingBalance !== undefined && input.startingBalance !== null) {
+    await supabase.from('bank_accounts').update({ starting_balance: input.startingBalance }).eq('id', ownerId);
+  }
+
   await notifyAccountsChanged();
 
   return { account, detectedAccount, snapshot };
@@ -626,6 +633,11 @@ export async function confirmDetectedCreditCard(input: ConfirmDetectedCreditCard
 
   const detectedAccount = await getDetectionById(userId, input.detectedAccountId);
   const ownerId = ownerIdFromRpc(rpcResult, detectedAccount);
+  
+  if (input.currentOutstanding !== undefined && input.currentOutstanding !== null) {
+    await supabase.from('credit_cards').update({ current_outstanding: input.currentOutstanding }).eq('id', ownerId);
+  }
+
   const creditCard = await getCreditCardById(userId, ownerId);
   const snapshot = await getSnapshotFromDetection(userId, detectedAccount, 'credit_card', ownerId);
   emitFinanceDataChanged({ areas: ['accounts'], source: 'detected_account_review' });

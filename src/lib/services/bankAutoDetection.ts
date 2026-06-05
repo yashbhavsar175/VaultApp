@@ -25,6 +25,11 @@ try {
 // TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function normalizeBankName(name: string): string {
+  if (!name) return '';
+  return name.toLowerCase().replace(/\b(bank|ltd|limited|the)\b/g, '').replace(/[^a-z0-9]/g, '');
+}
+
 export interface DetectedBank {
   bankName: string;
   senderIds: string[];
@@ -140,9 +145,9 @@ async function syncDetectedBalancesToExistingAccounts(detectedBanks: DetectedBan
 
     for (const account of accounts) {
       const detectedBank = detectedBanks.find(bank => {
-        const sameBank = bank.bankName.toLowerCase() === account.bank_name.toLowerCase();
-        const hasAccount = bank.last4Digits.includes(account.account_last4);
-        return sameBank || hasAccount;
+        const sameBank = normalizeBankName(bank.bankName) === normalizeBankName(account.bank_name);
+        const hasAccount = account.account_last4 ? bank.last4Digits.includes(account.account_last4) : true;
+        return sameBank && hasAccount;
       });
 
       if (!detectedBank) continue;
@@ -359,18 +364,19 @@ export async function getUnaddedBanks(): Promise<DetectedBank[]> {
     if (!detected) return [];
 
     const userAccounts = await getBankAccounts();
-    const userBankNames = new Set(userAccounts.map(acc => acc.bank_name.toLowerCase()));
+    const userBankNames = new Set(userAccounts.map(acc => normalizeBankName(acc.bank_name)));
     const userAccountKeys = new Set(
-      userAccounts.map(acc => `${acc.bank_name.toLowerCase()}|${acc.account_last4}`)
+      userAccounts.map(acc => `${normalizeBankName(acc.bank_name)}|${acc.account_last4}`)
     );
 
     return detected.detectedBanks.filter(bank => {
+      const normalizedDetected = normalizeBankName(bank.bankName);
       if (bank.last4Digits.length === 0) {
-        return !userBankNames.has(bank.bankName.toLowerCase());
+        return !userBankNames.has(normalizedDetected);
       }
 
       return bank.last4Digits.some(last4 =>
-        !userAccountKeys.has(`${bank.bankName.toLowerCase()}|${last4}`)
+        !userAccountKeys.has(`${normalizedDetected}|${last4}`)
       );
     });
   } catch {
@@ -395,13 +401,13 @@ export async function autoAddBank(detectedBank: DetectedBank): Promise<boolean> 
 
     const existingAccounts = await getBankAccounts();
     const existingKeys = new Set(
-      existingAccounts.map(acc => `${acc.bank_name.toLowerCase()}|${acc.account_last4}`)
+      existingAccounts.map(acc => `${normalizeBankName(acc.bank_name)}|${acc.account_last4}`)
     );
     const last4Digits = detectedBank.last4Digits.length > 0 ? detectedBank.last4Digits : ['0000'];
     let addedCount = 0;
 
     for (const last4 of last4Digits) {
-      const accountKey = `${detectedBank.bankName.toLowerCase()}|${last4}`;
+      const accountKey = `${normalizeBankName(detectedBank.bankName)}|${last4}`;
       if (existingKeys.has(accountKey)) continue;
 
       const detectedBalance = getDetectedBalanceForLast4(detectedBank, last4);
@@ -453,7 +459,7 @@ export async function detectAndSuggestBank(
     // Check if bank already added
     const userAccounts = await getBankAccounts();
     const isAdded = userAccounts.some(acc => 
-      acc.bank_name.toLowerCase() === parsed.bankName!.toLowerCase()
+      normalizeBankName(acc.bank_name) === normalizeBankName(parsed.bankName!)
     );
 
     if (isAdded) {

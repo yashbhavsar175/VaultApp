@@ -51,7 +51,7 @@ export function summarizeParsedSmsForLog(parsed: ParsedTransaction) {
   };
 }
 
-type FinancialEventRoute = 'stored_transaction' | 'review_queue' | 'balance_only';
+type FinancialEventRoute = 'stored_transaction' | 'balance_only' | 'review_required';
 
 interface FinancialEventNotificationInput {
   route: FinancialEventRoute;
@@ -79,6 +79,10 @@ function suffixId(value?: string | null): string | undefined {
   return safe.slice(-8);
 }
 
+function logInfo(..._details: unknown[]): void {
+  // Intentionally silent: financial notification paths must not write runtime details to logs.
+}
+
 function safeLast4(value?: string | null): string | undefined {
   const digits = value?.replace(/\D/g, '') || '';
   return digits.length >= 4 ? digits.slice(-4) : undefined;
@@ -91,7 +95,6 @@ function formatSafeAmount(amount?: number | null): string {
 }
 
 function routeTitle(route: FinancialEventRoute): string {
-  if (route === 'review_queue') return 'Money movement needs review';
   if (route === 'balance_only') return 'Balance updated';
   return 'Transaction saved';
 }
@@ -104,10 +107,6 @@ function routeBody(input: FinancialEventNotificationInput): string {
     : 'Money movement';
   const last4 = safeLast4(input.accountLast4) || safeLast4(input.cardLast4);
   const suffix = last4 ? `\nAccount ending ${last4}` : '';
-  if (input.route === 'review_queue') {
-    const account = last4 ? ` from account ending ${last4}` : '';
-    return `${amount}${account} needs review`;
-  }
   return `${direction} ${amount} from ${source}${suffix}`;
 }
 
@@ -138,8 +137,18 @@ async function getNotificationPermissionStatus(): Promise<{
 export async function showFinancialEventNotification(
   input: FinancialEventNotificationInput
 ): Promise<'sent' | 'blocked' | 'failed'> {
+  if (input.route === 'review_required') {
+    logInfo('[SpendSenseNotification] Display skipped', {
+      route: input.route,
+      reasonCode: 'review_required_notifications_disabled',
+      sourceKind: input.sourceKind,
+      eventIdSuffix: suffixId(input.eventId),
+    });
+    return 'blocked';
+  }
+
   const permission = await getNotificationPermissionStatus();
-  console.log('[SpendSenseNotification] Display requested', {
+  logInfo('[SpendSenseNotification] Display requested', {
     route: input.route,
     sourceKind: input.sourceKind,
     permissionStatus: permission.label,
@@ -147,7 +156,7 @@ export async function showFinancialEventNotification(
   });
 
   if (permission.blocked) {
-    console.log('[SpendSenseNotification] Display blocked', {
+    logInfo('[SpendSenseNotification] Display blocked', {
       route: input.route,
       reasonCode: 'permission_denied',
     });
@@ -156,7 +165,7 @@ export async function showFinancialEventNotification(
 
   try {
     await createTransactionChannels();
-    console.log('[SpendSenseNotification] Channel ready', {
+    logInfo('[SpendSenseNotification] Channel ready', {
       channelId: 'sms_parsed',
       route: input.route,
     });
@@ -177,7 +186,7 @@ export async function showFinancialEventNotification(
       },
     });
 
-    console.log('[SpendSenseNotification] Display succeeded', {
+    logInfo('[SpendSenseNotification] Display succeeded', {
       route: input.route,
       notificationScheduled: true,
     });
@@ -255,7 +264,7 @@ export async function createTransactionChannels() {
       description: 'Notifications when SMS cannot be parsed',
     });
 
-    console.log('Transaction notification channels created');
+    logInfo('Transaction notification channels created');
   } catch (error) {
     console.error('Error creating transaction channels:', error);
   }
@@ -280,14 +289,14 @@ export async function showTransactionConfirmation(
 ): Promise<void> {
   try {
     const permission = await getNotificationPermissionStatus();
-    console.log('[SpendSenseNotification] Display requested', {
+    logInfo('[SpendSenseNotification] Display requested', {
       route: 'stored_transaction',
       sourceKind: rawSms?.startsWith('redacted_notification') ? 'notification' : 'sms',
       permissionStatus: permission.label,
       eventIdSuffix: suffixId(transactionId),
     });
     if (permission.blocked) {
-      console.log('[SpendSenseNotification] Display blocked', {
+      logInfo('[SpendSenseNotification] Display blocked', {
         route: 'stored_transaction',
         reasonCode: 'permission_denied',
       });
@@ -295,7 +304,7 @@ export async function showTransactionConfirmation(
     }
 
     await createTransactionChannels();
-    console.log('[SpendSenseNotification] Channel ready', {
+    logInfo('[SpendSenseNotification] Channel ready', {
       channelId: 'sms_parsed',
       route: 'stored_transaction',
     });
@@ -337,7 +346,7 @@ export async function showTransactionConfirmation(
       },
     });
 
-    console.log('[SpendSenseNotification] Display succeeded', {
+    logInfo('[SpendSenseNotification] Display succeeded', {
       route: 'stored_transaction',
       transactionIdSuffix: suffixId(transactionId),
     });
@@ -396,7 +405,7 @@ export async function showSmsFailedNotification(
       },
     });
 
-    console.log('SMS failed notification displayed');
+    logInfo('SMS failed notification displayed');
   } catch (error) {
     console.error('Error showing SMS failed notification:', error);
   }
@@ -412,18 +421,18 @@ export async function showSmsFailedNotification(
 export async function handleTransactionNotificationEvent(event: any): Promise<void> {
   const { type, detail } = event;
 
-  console.log('[Transaction Notification] Event received:', type);
+  logInfo('[Transaction Notification] Event received:', type);
 
   if (type === EventType.ACTION_PRESS) {
     const { pressAction, notification } = detail;
     const transactionId = notification?.data?.transactionId;
 
-    console.log('[Transaction Notification] Action pressed:', pressAction?.id);
-    console.log('[Transaction Notification] Transaction ID:', transactionId);
+    logInfo('[Transaction Notification] Action pressed:', pressAction?.id);
+    logInfo('[Transaction Notification] Transaction ID:', transactionId);
 
     if (pressAction?.id === 'delete' && transactionId) {
       try {
-        console.log('Deleting transaction:', transactionId);
+        logInfo('Deleting transaction:', transactionId);
 
         // OFFLINE RELIABILITY: check connectivity before hitting Supabase
         const netState = await NetInfo.fetch();
@@ -444,7 +453,7 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
           if (error) {
             console.error('Error deleting transaction:', error);
           } else {
-            console.log('Transaction deleted successfully');
+            logInfo('Transaction deleted successfully');
             await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
               current ? current.filter(tx => tx.id !== transactionId) : current
             );
@@ -457,23 +466,23 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
           }
         } else {
           // Offline — queue for background sync, dismiss immediately for uninterrupted UX
-          console.log('Offline — queuing delete for background sync');
+          logInfo('Offline — queuing delete for background sync');
           await appendUserScopedQueueItem(OFFLINE_DELETE_QUEUE_BASE_KEY, user.id, {
             transactionId,
             _queued_at: new Date().toISOString(),
           });
           await notifee.cancelNotification(notification.id);
-          console.log('Delete queued — notification dismissed');
+          logInfo('Delete queued — notification dismissed');
         }
       } catch (error) {
         console.error('Error in delete handler:', error);
       }
     } else if (pressAction?.id === 'ok') {
       await notifee.cancelNotification(notification.id);
-      console.log('Transaction confirmed by user');
+      logInfo('Transaction confirmed by user');
     } else if (pressAction?.id === 'report_bug') {
       try {
-        console.log('Reporting bug for notification');
+        logInfo('Reporting bug for notification');
         const rawSms = notification?.data?.rawSms || 'No raw SMS available';
         const sender = notification?.data?.sender || 'Unknown Sender';
         const logicLog = notification?.data?.logicLog || 'No logic log available';
@@ -499,7 +508,7 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
 
         await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(currentLogs));
         await notifee.cancelNotification(notification.id);
-        console.log('Bug report saved successfully');
+        logInfo('Bug report saved successfully');
       } catch (error) {
         console.error('Error saving bug report:', error);
       }
@@ -509,7 +518,7 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
   if (type === EventType.PRESS) {
     const { notification } = detail;
     const transactionId = notification?.data?.transactionId;
-    console.log('[Transaction Notification] Notification pressed, ID:', transactionId);
+    logInfo('[Transaction Notification] Notification pressed, ID:', transactionId);
     // TODO: Navigate to transaction detail screen — handled in foreground listener in App.tsx
   }
 }
@@ -523,7 +532,7 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
  */
 export async function onBackgroundEvent(event: any) {
   const { type, detail } = event;
-  console.log('[Background] Notifee event received:', type);
+  logInfo('[Background] Notifee event received:', type);
 
   if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
     const action = detail?.notification?.data?.action;
@@ -534,7 +543,7 @@ export async function onBackgroundEvent(event: any) {
   }
 
   if (type === EventType.DELIVERED) {
-    console.log('[Background] Notification delivered');
+    logInfo('[Background] Notification delivered');
   }
 }
 
@@ -545,7 +554,7 @@ export async function onBackgroundEvent(event: any) {
 export function initializeForegroundListener() {
   return notifee.onForegroundEvent(async (event) => {
     const { type, detail } = event;
-    console.log('[Foreground] Notifee event received:', type);
+    logInfo('[Foreground] Notifee event received:', type);
 
     if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
       const action = detail?.notification?.data?.action;
@@ -561,15 +570,15 @@ export function initializeForegroundListener() {
  * Call this when app starts to ensure listeners are active
  */
 export async function initializeBackgroundListeners() {
-  console.log('[Background] Initializing background listeners...');
+  logInfo('[Background] Initializing background listeners...');
 
   try {
     const hasPermission = await RNAndroidNotificationListener.getPermissionStatus();
 
     if (hasPermission === 'authorized') {
-      console.log('[Background] Notification listener permission granted');
+      logInfo('[Background] Notification listener permission granted');
     } else {
-      console.log('[Background] Notification listener permission not granted');
+      logInfo('[Background] Notification listener permission not granted');
     }
   } catch (error) {
     console.error('[Background] Error initializing listeners:', error);
@@ -595,7 +604,7 @@ async function recordLegacySmsBalanceSignalSafely(
     });
 
     if (result.parsed.isBalanceSignal) {
-      console.log('[BalanceSignal] Recorded legacy SMS balance signal', {
+      logInfo('[BalanceSignal] Recorded legacy SMS balance signal', {
         hash: result.parsed.redactedSource.hash,
         snapshots: result.snapshots.length,
         detectedCandidates: result.detectedCandidates.length,
@@ -635,17 +644,17 @@ export async function processTransactionSMS(
 
     // Step 1: Check if it's a transaction SMS
     if (!isTransactionSMS(smsText)) {
-      console.log('[SMS Parser] Not a transaction SMS');
+      logInfo('[SMS Parser] Not a transaction SMS');
       return { success: false, parsed: parseSMS(smsText, senderId) };
     }
 
     // Step 2: Parse SMS
     const parsed = parseSMS(smsText, senderId);
-    console.log('[SMS Parser] Parsed:', summarizeParsedSmsForLog(parsed));
+    logInfo('[SMS Parser] Parsed:', summarizeParsedSmsForLog(parsed));
 
     // Step 3: Check confidence
     if (parsed.confidence < 50) {
-      console.log('[SMS Parser] Low confidence, skipping auto-creation');
+      logInfo('[SMS Parser] Low confidence, skipping auto-creation');
       await showSmsFailedNotification(smsText, senderId, `Low confidence: ${parsed.confidence}%`);
       return { success: false, parsed };
     }
@@ -665,7 +674,7 @@ export async function processTransactionSMS(
     }
 
     if (!matchedAccount) {
-      console.log('[SMS Parser] No matching account found');
+      logInfo('[SMS Parser] No matching account found');
       await showSmsFailedNotification(
         smsText,
         senderId,
@@ -675,7 +684,7 @@ export async function processTransactionSMS(
     }
 
     if (!user) {
-      console.log('[SMS Parser] No user found');
+      logInfo('[SMS Parser] No user found');
       return { success: false, parsed };
     }
 
@@ -784,7 +793,7 @@ export async function processTransactionSMS(
       senderId
     );
 
-    console.log('[SMS Parser] Transaction created successfully:', transaction.id);
+    logInfo('[SMS Parser] Transaction created successfully:', transaction.id);
     return { success: true, transactionId: transaction.id, parsed };
   } catch (error) {
     console.error('[SMS Parser] Error processing SMS:', error);

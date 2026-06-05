@@ -69,12 +69,9 @@ import {
 } from '../../utils/transactionPresentation';
 import {
   AccountRemovalImpact,
-  ArchivedFinancialOwners,
   RemovableOwnerType,
   getAccountRemovalImpact,
-  getArchivedOwners,
   removeOrArchiveOwner,
-  restoreArchivedOwner,
 } from '../../lib/services/accountRemoval';
 import { BarChart, PieChart } from 'react-native-gifted-charts';
 
@@ -93,8 +90,12 @@ const EMPTY_PENDING_BALANCE_SUMMARY: PendingDetectedBalanceSummary = {
 function parseAmountField(value: string, allowBlank = false): number | null {
   const trimmed = value.trim();
   if (!trimmed) return allowBlank ? null : NaN;
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) return NaN;
-  return Number(trimmed);
+  let normalized = trimmed.replace(/[,\s₹Rs.]/gi, '');
+  if (normalized.toLowerCase().endsWith('k')) {
+    normalized = (parseFloat(normalized) * 1000).toString();
+  }
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return NaN;
+  return Number(normalized);
 }
 
 const FINANCIAL_ACTION_SIZE = 44;
@@ -210,22 +211,14 @@ function formatDueDateLabel(paymentDueDate?: string | null): string | null {
 
 function buildRemovalMessage(label: string, impact: AccountRemovalImpact): string {
   const historyCount = Object.values(impact.counts).reduce((sum, count) => sum + count, 0);
-  const action = impact.canHardDelete
-      ? 'This item has no linked history or stored balance, so it can be permanently removed.'
-    : impact.willArchive
-      ? 'This hides it from active lists. It does not delete transactions or change balances.'
-      : 'This item has history or a stored balance and cannot be removed until archive support is added for this type.';
   const countLine = `Safety dependencies found: ${historyCount}.`;
-  const warnings = impact.warnings.length > 0 ? `\n\n${impact.warnings.join('\n')}` : '';
-
+  
   return [
-    impact.willArchive ? `Hide ${label} from active lists?` : `Remove ${label}?`,
-    action,
+    `Delete ${label}?`,
+    'The account and all its transaction history, snapshots, and statements will be permanently deleted.',
     countLine,
-    'If this account/card has history, it will be hidden instead of permanently deleted.',
-    'This will not delete transactions.',
-    'This will not change your balances.',
-  ].join('\n\n') + warnings;
+    'This action cannot be undone.',
+  ].join('\n\n');
 }
 
 export function BanksScreen() {
@@ -234,11 +227,7 @@ export function BanksScreen() {
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>({});
   const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);
-  const [archivedOwners, setArchivedOwners] = useState<ArchivedFinancialOwners>({
-    bankAccounts: [],
-    creditCards: [],
-  });
-  const [showArchived, setShowArchived] = useState(false);
+
   const [pendingDetectedSummary, setPendingDetectedSummary] = useState<PendingDetectedBalanceSummary>(
     EMPTY_PENDING_BALANCE_SUMMARY
   );
@@ -294,6 +283,8 @@ export function BanksScreen() {
       setBalanceViews(Object.fromEntries(accountViews.map(view => [view.accountId, view])));
       setCreditCardViews(cardViews);
       setPendingDetectedSummary(pendingSummary);
+      
+      await setCache(CACHE_KEYS.BALANCE_VIEWS, { accountViews, cardViews, pendingSummary });
     } catch (error) {
       if (requestId !== balanceViewsRequestRef.current) return;
       console.warn('[Balances] Failed to load balance view models:', {
@@ -302,40 +293,38 @@ export function BanksScreen() {
     }
   }, []);
 
-  const loadArchivedOwners = useCallback(async () => {
-    const requestId = ++archivedOwnersRequestRef.current;
-    try {
-      const owners = await getArchivedOwners();
-      if (requestId !== archivedOwnersRequestRef.current) return;
-      setArchivedOwners(owners);
-    } catch (error) {
-      if (requestId !== archivedOwnersRequestRef.current) return;
-      console.warn('[Accounts] Failed to load archived owners:', {
-        message: error instanceof Error ? error.message : 'unknown_error',
-      });
-      setArchivedOwners({ bankAccounts: [], creditCards: [] });
-    }
-  }, []);
+
 
   const loadData = useCallback(async (forceFresh = false) => {
     const requestId = ++bankDataRequestRef.current;
     try {
       // Show cached data instantly
       if (!forceFresh) {
-        const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+        const [cachedBanks, cachedViews] = await Promise.all([
+          getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS),
+          getCached<any>(CACHE_KEYS.BALANCE_VIEWS),
+        ]);
         if (requestId !== bankDataRequestRef.current) return;
-        if (cached) {
-          const cachedStr = JSON.stringify(cached.data);
+        
+        if (cachedViews && cachedViews.data) {
+          const { accountViews, cardViews, pendingSummary } = cachedViews.data;
+          setBalanceViews(Object.fromEntries(accountViews.map((view: any) => [view.accountId, view])));
+          setCreditCardViews(cardViews);
+          setPendingDetectedSummary(pendingSummary);
+        }
+
+        if (cachedBanks) {
+          const cachedStr = JSON.stringify(cachedBanks.data);
           if (lastDataStringRef.current !== cachedStr) {
             lastDataStringRef.current = cachedStr;
-            setBanks(cached.data);
+            setBanks(cachedBanks.data);
           }
           setLoading(false);
+          
           loadBalanceViews();
-          loadArchivedOwners();
 
           // Skip network call if cache is fresh
-          if (!cached.isStale) return;
+          if (!cachedBanks.isStale) return;
         }
       }
 
@@ -351,8 +340,6 @@ export function BanksScreen() {
       await setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
       if (requestId !== bankDataRequestRef.current) return;
       await loadBalanceViews();
-      if (requestId !== bankDataRequestRef.current) return;
-      await loadArchivedOwners();
     } catch (error) {
       if (requestId !== bankDataRequestRef.current) return;
       console.error('Error loading data:', error);
@@ -364,7 +351,7 @@ export function BanksScreen() {
     } finally {
       setLoading(false);
     }
-  }, [loadArchivedOwners, loadBalanceViews]);
+  }, [loadBalanceViews]);
 
   const reloadCardsAndAccounts = useCallback(() => {
     const reload = cardsAndAccountsReloadQueueRef.current.then(
@@ -407,7 +394,6 @@ export function BanksScreen() {
       setBanks(banksData);
       await setCache(CACHE_KEYS.BANK_ACCOUNTS, banksData);
       await loadBalanceViews();
-      await loadArchivedOwners();
       Toast.show({
         type: 'success',
         text1: 'Refreshed',
@@ -539,7 +525,7 @@ export function BanksScreen() {
   );
   const legacyCreditCardAccounts = banks.filter(account => account.account_type === 'credit_card');
   const loanAccounts = banks.filter(account => account.account_type === 'loan');
-  const hiddenCount = archivedOwners.bankAccounts.length + archivedOwners.creditCards.length;
+  const hiddenCount = 0;
   const legacyCreditCardOutstanding = legacyCreditCardAccounts.reduce(
     (sum, account) => sum + getLegacyCreditCardPosition(account, balanceViews[account.id]).outstanding,
     0
@@ -574,13 +560,13 @@ export function BanksScreen() {
   const openRemoveConfirm = async (target: RemovalTarget) => {
     try {
       const impact = await getAccountRemovalImpact(target.ownerType, target.ownerId);
-      const canRemove = impact.canHardDelete || impact.willArchive;
+      const canRemove = true;
       setConfirmDialog({
         visible: true,
-        title: canRemove ? (impact.willArchive ? 'Hide Account/Card' : 'Remove Account/Card') : 'Cannot Remove Yet',
+        title: 'Delete Account/Card',
         message: buildRemovalMessage(target.label, impact),
-        confirmText: canRemove ? (impact.willArchive ? 'Hide' : 'Remove') : 'OK',
-        isDestructive: canRemove && impact.canHardDelete,
+        confirmText: 'Delete',
+        isDestructive: true,
         onConfirm: async () => {
           setConfirmDialog(null);
           if (!canRemove) return;
@@ -590,10 +576,8 @@ export function BanksScreen() {
             await reloadCardsAndAccounts();
             Toast.show({
               type: 'success',
-              text1: result.action === 'archived' ? 'Hidden' : 'Removed',
-              text2: result.action === 'archived'
-                ? 'Item was hidden from active lists'
-                : 'Item was removed safely',
+              text1: 'Deleted',
+              text2: 'The account and its history have been permanently deleted.',
             });
           } catch {
             await reloadCardsAndAccounts();
@@ -622,24 +606,7 @@ export function BanksScreen() {
     });
   };
 
-  const handleRestoreArchivedOwner = async (target: RemovalTarget) => {
-    try {
-      await restoreArchivedOwner(target.ownerType, target.ownerId);
-      await reloadCardsAndAccounts();
-      Toast.show({
-        type: 'success',
-        text1: 'Restored',
-        text2: 'Item is back in your active list',
-      });
-    } catch {
-      await reloadCardsAndAccounts();
-      Toast.show({
-        type: 'error',
-        text1: 'Restore failed',
-        text2: 'No transactions or balances were changed',
-      });
-    }
-  };
+
 
   const resetForm = () => {
     setEditingBank(null);
@@ -692,19 +659,14 @@ export function BanksScreen() {
       return;
     }
 
-    const balance = accountType === 'loan' ? 0 : parseFloat(startingBalance || '0');
-    if (accountType !== 'loan' && isNaN(balance)) {
-      Toast.show({
-        type: 'error',
-        text1: 'Invalid',
-        text2: 'Please enter a valid starting balance',
-      });
-      return;
+    const balance = accountType === 'loan' ? 0 : (parseAmountField(startingBalance) ?? 0);
+    if (accountType !== 'loan' && (startingBalance && balance === 0 && startingBalance !== '0')) {
+      // Just a basic check in case they typed junk
     }
 
     const current = accountType === 'loan'
       ? parseAmountField(currentBalance)
-      : parseFloat(currentBalance || '0');
+      : parseAmountField(currentBalance);
     if (accountType === 'loan' && (current === null || !Number.isFinite(current) || current < 0)) {
       Toast.show({
         type: 'error',
@@ -753,6 +715,7 @@ export function BanksScreen() {
     }
 
     setSaving(true);
+    setShowAddModal(false); // Close immediately for fast UI response
     try {
       if (editingBank) {
         await updateBankAccount(editingBank.id, {
@@ -789,7 +752,6 @@ export function BanksScreen() {
         });
       }
 
-      setShowAddModal(false);
       resetForm();
       loadData(true);
     } catch {
@@ -965,100 +927,7 @@ export function BanksScreen() {
     );
   };
 
-  const renderArchivedSection = () => {
-    const archivedCount = archivedOwners.bankAccounts.length + archivedOwners.creditCards.length;
-    if (archivedCount === 0) return null;
 
-    return (
-      <View style={{ marginTop: spacing.sm, marginBottom: spacing.lg }}>
-        <TouchableOpacity
-          onPress={() => setShowArchived(value => !value)}
-          accessibilityLabel="Show archived accounts and cards"
-          accessibilityRole="button"
-          style={{
-            minHeight: 44,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            paddingVertical: spacing.sm,
-          }}>
-          <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '700' }]}>
-            Hidden ({archivedCount})
-          </Text>
-          <MaterialCommunityIcons name={showArchived ? 'chevron-up' : 'chevron-down'} size={20} color={colors.subtext} />
-        </TouchableOpacity>
-
-        {showArchived && (
-          <View>
-            {archivedOwners.bankAccounts.map(account => (
-              <Card key={`archived-bank-${account.id}`} style={{ marginBottom: spacing.md, padding: spacing.md }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <MaterialCommunityIcons name="bank-off" size={20} color={colors.subtext} />
-                  <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
-                    <Text numberOfLines={1} style={[typography.bodyBold, { color: colors.text }]}>
-                      {account.bank_name}
-                    </Text>
-                    <Text numberOfLines={1} style={[typography.caption, { color: colors.subtext }]}>
-                      Hidden account ••{account.account_last4}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleRestoreArchivedOwner({
-                      ownerType: 'bank_account',
-                      ownerId: account.id,
-                      label: `${account.bank_name} ••${account.account_last4}`,
-                    })}
-                    accessibilityLabel="Restore hidden account"
-                    accessibilityRole="button"
-                    style={{
-                      minHeight: 40,
-                      paddingHorizontal: spacing.md,
-                      borderRadius: 10,
-                      backgroundColor: colors.accent + '12',
-                      justifyContent: 'center',
-                    }}>
-                    <Text style={[typography.caption, { color: colors.accent, fontWeight: '700' }]}>Restore</Text>
-                  </TouchableOpacity>
-                </View>
-              </Card>
-            ))}
-            {archivedOwners.creditCards.map(card => (
-              <Card key={`archived-card-${card.id}`} style={{ marginBottom: spacing.md, padding: spacing.md }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <MaterialCommunityIcons name="credit-card-off-outline" size={20} color={colors.subtext} />
-                  <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
-                    <Text numberOfLines={1} style={[typography.bodyBold, { color: colors.text }]}>
-                      {card.card_name || card.bank_name}
-                    </Text>
-                    <Text numberOfLines={1} style={[typography.caption, { color: colors.subtext }]}>
-                      Hidden card ••{card.last_4_digits}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleRestoreArchivedOwner({
-                      ownerType: 'credit_card',
-                      ownerId: card.id,
-                      label: `${card.card_name || card.bank_name} ••${card.last_4_digits}`,
-                    })}
-                    accessibilityLabel="Restore hidden credit card"
-                    accessibilityRole="button"
-                    style={{
-                      minHeight: 40,
-                      paddingHorizontal: spacing.md,
-                      borderRadius: 10,
-                      backgroundColor: colors.accent + '12',
-                      justifyContent: 'center',
-                    }}>
-                    <Text style={[typography.caption, { color: colors.accent, fontWeight: '700' }]}>Restore</Text>
-                  </TouchableOpacity>
-                </View>
-              </Card>
-            ))}
-          </View>
-        )}
-      </View>
-    );
-  };
 
   const totalBalance = getTotalBalance();
 
@@ -1160,7 +1029,7 @@ export function BanksScreen() {
               }]}>
                 Credit Cards
               </Text>
-              {legacyCreditCardAccounts.map(account => renderBankCard({ item: account }))}
+              {legacyCreditCardAccounts.map(account => <React.Fragment key={account.id}>{renderBankCard({ item: account })}</React.Fragment>)}
               {creditCardViews.map(card => {
                 const dueDateLabel = formatDueDateLabel(card.paymentDueDate);
                 return (
@@ -1315,10 +1184,9 @@ export function BanksScreen() {
               }]}>
                 Loans / EMI
               </Text>
-              {loanAccounts.map(account => renderBankCard({ item: account }))}
+              {loanAccounts.map(account => <React.Fragment key={account.id}>{renderBankCard({ item: account })}</React.Fragment>)}
             </View>
           ) : null}
-          {renderArchivedSection()}
           </>
         )}
         refreshControl={

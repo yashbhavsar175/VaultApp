@@ -37,6 +37,52 @@ const TYPE_OPTIONS = [
 
 type Mode = 'ai' | 'manual';
 
+type ParsedTransactionReview = {
+  amount: number;
+  note: string;
+  type: TransactionType;
+  category: string;
+  confidence: number;
+};
+
+function ReviewParseCard({
+  review,
+  onUse,
+  onEdit,
+}: {
+  review: ParsedTransactionReview;
+  onUse: () => void;
+  onEdit: () => void;
+}) {
+  const { colors, typography, spacing, borderRadius } = useTheme();
+  const typeLabel = TYPE_OPTIONS.find(option => option.value === review.type)?.label || review.type;
+
+  return (
+    <Card style={{ marginTop: spacing.md, padding: spacing.md }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+        <Text style={[typography.bodyBold, { color: colors.text }]}>Review parsed transaction</Text>
+        <View style={{ backgroundColor: colors.accent + '20', borderRadius: borderRadius.full, paddingHorizontal: spacing.sm, paddingVertical: 4 }}>
+          <Text style={[typography.caption, { color: colors.accent, fontWeight: '700' }]}>
+            {review.confidence}% confidence
+          </Text>
+        </View>
+      </View>
+      <Text style={[typography.caption, { color: colors.subtext }]}>Amount</Text>
+      <Text style={[typography.body, { color: colors.text, marginBottom: spacing.xs }]}>₹{review.amount}</Text>
+      <Text style={[typography.caption, { color: colors.subtext }]}>Note</Text>
+      <Text style={[typography.body, { color: colors.text, marginBottom: spacing.xs }]}>{review.note}</Text>
+      <Text style={[typography.caption, { color: colors.subtext }]}>Type</Text>
+      <Text style={[typography.body, { color: colors.text, marginBottom: spacing.xs }]}>{typeLabel}</Text>
+      <Text style={[typography.caption, { color: colors.subtext }]}>Category</Text>
+      <Text style={[typography.body, { color: colors.text }]}>{review.category || 'general'}</Text>
+      <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+        <AppButton title="Edit manually" variant="secondary" onPress={onEdit} style={{ flex: 1 }} />
+        <AppButton title="Use this" onPress={onUse} style={{ flex: 1 }} />
+      </View>
+    </Card>
+  );
+}
+
 export default function Add() {
   const navigation = useNavigation();
   const { colors, typography, spacing, borderRadius } = useTheme();
@@ -45,6 +91,7 @@ export default function Add() {
   // AI Mode state
   const [aiInput, setAiInput] = useState('');
   const [parsing, setParsing] = useState(false);
+  const [parsedReview, setParsedReview] = useState<ParsedTransactionReview | null>(null);
   // Manual Mode state
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
@@ -207,21 +254,16 @@ export default function Add() {
     setParsing(true);
     try {
       const result = await parseTransactionWithAI(aiInput);
-      
-      // Auto-fill the manual form with parsed data
-      setAmount(formatAmountInput(result.amount.toString()));
-      setNote(result.note);
-      setSelectedType(result.type);
-      setCategory(result.category);
-      
-      // Switch to manual mode for review and account selection
-      setMode('manual');
-      setAiInput('');
+
+      setParsedReview({
+        ...result,
+        confidence: 80,
+      });
       HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
       Toast.show({
         type: 'success',
         text1: 'Parsed Successfully',
-        text2: 'Please select an account and save',
+        text2: 'Review before using this transaction',
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -236,6 +278,22 @@ export default function Add() {
     } finally {
       setParsing(false);
     }
+  };
+
+  const handleUseParsedReview = () => {
+    if (!parsedReview) return;
+    setAmount(formatAmountInput(parsedReview.amount.toString()));
+    setNote(parsedReview.note);
+    setSelectedType(parsedReview.type);
+    setCategory(parsedReview.category);
+    setMode('manual');
+    setAiInput('');
+    setParsedReview(null);
+  };
+
+  const handleEditParsedReviewManually = () => {
+    setMode('manual');
+    setParsedReview(null);
   };
 
   const handleSaveManual = async () => {
@@ -415,6 +473,7 @@ export default function Add() {
 
   const resetForm = () => {
     setAiInput('');
+    setParsedReview(null);
     setAmount('');
     setNote('');
     setSelectedType('expense');
@@ -423,6 +482,18 @@ export default function Add() {
     setErrors({});
     setShowSuggestions(false);
   };
+
+  const rawAmount = getRawAmount(amount);
+  const parsedAmount = parseFloat(rawAmount);
+  const isFormValid = Boolean(
+    rawAmount &&
+    rawAmount !== '0' &&
+    Number.isFinite(parsedAmount) &&
+    parsedAmount > 0 &&
+    note.trim() &&
+    selectedType &&
+    selectedAccount
+  );
 
   return (
     <ScreenWrapper scrollable keyboardAvoiding>
@@ -475,6 +546,13 @@ export default function Add() {
             fullWidth
             style={{ marginTop: spacing.lg }}
           />
+          {parsedReview && (
+            <ReviewParseCard
+              review={parsedReview}
+              onUse={handleUseParsedReview}
+              onEdit={handleEditParsedReviewManually}
+            />
+          )}
         </View>
       ) : (
         <ScrollView 
@@ -736,6 +814,7 @@ export default function Add() {
           <AppButton
             title="Save"
             onPress={handleSaveManual}
+            disabled={!isFormValid}
             loading={saving}
             fullWidth
             style={{ marginTop: spacing.lg }}
@@ -758,7 +837,10 @@ export default function Add() {
           <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
             <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
               <Text style={[typography.h3, { color: colors.text }]}>Select Type</Text>
-              <TouchableOpacity onPress={() => setShowTypeModal(false)}>
+              <TouchableOpacity
+                onPress={() => setShowTypeModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close type selector">
                 <MaterialCommunityIcons name="close" size={24} color={colors.subtext} />
               </TouchableOpacity>
             </View>
@@ -814,7 +896,10 @@ export default function Add() {
           <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
             <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
               <Text style={[typography.h3, { color: colors.text }]}>Select Account</Text>
-              <TouchableOpacity onPress={() => setShowAccountModal(false)}>
+              <TouchableOpacity
+                onPress={() => setShowAccountModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close account selector">
                 <MaterialCommunityIcons name="close" size={24} color={colors.subtext} />
               </TouchableOpacity>
             </View>

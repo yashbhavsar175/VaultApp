@@ -86,6 +86,7 @@ When working on this app:
 - Do not assume README is fully current; current source code has more features than the README.
 - Any schema change must be checked against both SQL files and TypeScript/database functions.
 - UI quality rule: App-facing UI copy must be English-only. Do not use Hinglish/Hindi in React Native screens, modals, buttons, labels, empty states, toasts, or tests that represent user-facing copy. Visible fallback icons such as '?' indicate an invalid/missing icon and must be treated as UI bugs. Every new UI card/action should use a verified icon name or a safe wrapper with fallback tests.
+- React components rule: Do not define React components inline (inside other components' render functions), especially for form inputs (`TextInput`, etc). This causes the component to unmount and remount on every re-render, leading to bugs like the keyboard closing after typing a single character. Always define components at the module scope.
 
 Low-Credit Safe Mode:
 - Minimize Codex usage while preserving safety.

@@ -260,6 +260,7 @@ export function cleanMerchantName(value?: string | null): string {
   }
 
   const cleanedValue = rawValue
+    .replace(/\b(?:deposited|credited|received)\b/ig, '')
     .replace(/\s+/g, ' ')
     .replace(/\s+\b(?:da|pa|qr|upi)\b$/i, '')
     .trim();
@@ -310,21 +311,34 @@ export function getCategoryIcon(category: string): string {
 
 export function getTransactionDisplayName(transaction: TransactionLike): string {
   const cleanedMerchant = cleanMerchantName(transaction.merchant);
-  if (cleanedMerchant) return cleanedMerchant;
+  let finalName = '';
+  
+  if (cleanedMerchant) {
+    finalName = cleanedMerchant;
+  } else {
+    const cleanedNote = cleanMerchantName(transaction.note);
+    if (cleanedNote) {
+      finalName = cleanedNote;
+    } else {
+      const upiId = transaction.upi_id || extractUpiIdFromText(transaction.raw_sms);
+      const cleanedUpi = cleanMerchantName(upiId);
+      if (cleanedUpi) {
+        finalName = cleanedUpi;
+      } else if (/\bsupercard\b/i.test(getSearchText(transaction))) {
+        finalName = 'SuperCard';
+      } else {
+        const cleanedCategory = cleanMerchantName(transaction.category);
+        if (cleanedCategory) {
+          finalName = cleanedCategory;
+        } else {
+          finalName = inferTransactionCategory(transaction);
+        }
+      }
+    }
+  }
 
-  const cleanedNote = cleanMerchantName(transaction.note);
-  if (cleanedNote) return cleanedNote;
-
-  const upiId = transaction.upi_id || extractUpiIdFromText(transaction.raw_sms);
-  const cleanedUpi = cleanMerchantName(upiId);
-  if (cleanedUpi) return cleanedUpi;
-
-  if (/\bsupercard\b/i.test(getSearchText(transaction))) return 'SuperCard';
-
-  const cleanedCategory = cleanMerchantName(transaction.category);
-  if (cleanedCategory) return cleanedCategory;
-
-  return inferTransactionCategory(transaction);
+  // console.log(`[DisplayName Debug] ID: ${(transaction as any).id} | Merchant: "${transaction.merchant}" | Note: "${transaction.note}" | Final: "${finalName}"`);
+  return finalName;
 }
 
 export function getTransactionSourceLabel(transaction: TransactionLike): string {

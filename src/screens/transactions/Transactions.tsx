@@ -41,7 +41,7 @@ import {
   getTransactionIcon,
   formatTransactionDate,
 } from '../../utils/transactionHelpers';
-import { getPendingCount } from '../../lib/services/autoTransactionReviewQueue';
+import { getTransactionDisplayName } from '../../utils/transactionPresentation';
 
 type FilterType = 'all' | TransactionType;
 
@@ -153,13 +153,18 @@ const TransactionRow = React.memo(({
             />
           </View>
           <View style={[styles.transactionInfo, { paddingRight: selectMode ? 44 : 8 }]}>
-            <Text
-              style={{ color: colors.text, fontSize: 14, fontWeight: '500' }}
-              numberOfLines={1}
-              ellipsizeMode="tail"
-            >
-              {item.note}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text
+                style={{ color: colors.text, fontSize: 14, fontWeight: '500', flexShrink: 1 }}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {getTransactionDisplayName(item)}
+              </Text>
+              {item.type === 'income' && item.account_match_status === 'manual_confirmed' && (
+                <MaterialCommunityIcons name="check-decagram" size={14} color="#10b981" style={{ marginLeft: 4 }} />
+              )}
+            </View>
             <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>{formatTransactionDate(item.created_at)}</Text>
           </View>
           {/* 🔴 MAGIC FIX: Animate Amount BACKWARDS by 36px so it stays pinned to the right edge and doesn't get clipped! */}
@@ -190,7 +195,6 @@ export default function Transactions() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
-  const [pendingReviewCount, setPendingReviewCount] = useState(0);
 
   // Select mode state — use a plain object for O(1) lookup instead of Set
   const [selectMode, setSelectMode] = useState(false);
@@ -265,6 +269,28 @@ export default function Transactions() {
   // Initial load: cache first, then network
   useEffect(() => {
     const initLoad = async () => {
+      // RECOVERY SCRIPT FOR BROKEN INCOME TRANSACTIONS
+      try {
+        const { supabase } = require('../../lib/core');
+        const { data: brokenTxs } = await supabase
+          .from('transactions')
+          .select('id, type, category')
+          .eq('type', 'income')
+          .is('category', null);
+          
+        if (brokenTxs && brokenTxs.length > 0) {
+          console.log(`[Recovery] Found ${brokenTxs.length} broken income transactions. Fixing...`);
+          for (const tx of brokenTxs) {
+            await supabase.from('transactions').update({ category: 'Income' }).eq('id', tx.id);
+          }
+          console.log(`[Recovery] Successfully fixed ${brokenTxs.length} transactions!`);
+          loadTransactions();
+          return;
+        }
+      } catch (e) {
+        console.error('[Recovery] Failed', e);
+      }
+
       // Try cache for instant display (getCached returns { data, isStale } | null)
       const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
       if (cached) {
@@ -280,29 +306,19 @@ export default function Transactions() {
     initLoad();
   }, [filter, loadTransactions, applyFilter]);
 
-  const loadPendingReviewCount = useCallback(async () => {
-    try {
-      const count = await getPendingCount();
-      setPendingReviewCount(count);
-    } catch (e) {
-      console.error('Failed to get pending review count:', e);
-    }
-  }, []);
-
   useFocusEffect(
     useCallback(() => {
       let isActive = true;
       const task = runWhenIdle(() => {
         if (isActive) {
           loadTransactions();
-          loadPendingReviewCount();
         }
       });
       return () => {
         isActive = false;
         task.cancel();
       };
-    }, [loadTransactions, loadPendingReviewCount])
+    }, [loadTransactions])
   );
 
   const scheduleEventRefresh = useCallback(() => {
@@ -571,41 +587,6 @@ export default function Transactions() {
       ) : (
         <AppHeader title="History" showBack={true} />
       )}
-
-      {!selectMode && pendingReviewCount > 0 && (
-        <TouchableOpacity
-          activeOpacity={0.8}
-          style={{
-            backgroundColor: colors.card,
-            borderColor: '#f59e0b',
-            marginHorizontal: 16,
-            marginTop: 12,
-            borderRadius: borderRadius.md || 12,
-            padding: 12,
-            flexDirection: 'row',
-            alignItems: 'center',
-            borderWidth: 1,
-            marginBottom: 4,
-          }}
-          onPress={() => (navigation as any).navigate('Settings', {
-            screen: 'MoneyMovementReview',
-            params: { initialSection: 'payments' },
-          })}>
-          <MaterialCommunityIcons name="inbox-multiple-outline" size={24} color="#f59e0b" />
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={[typography.bodyBold, { color: colors.text, fontSize: 14 }]}>
-              Transactions Awaiting Review
-            </Text>
-            <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-              You have {pendingReviewCount} auto-detected {pendingReviewCount === 1 ? 'item' : 'items'} that need review.
-            </Text>
-          </View>
-          <MaterialCommunityIcons name="chevron-right" size={20} color={colors.subtext} />
-        </TouchableOpacity>
-      )}
-
-
-
 
 
 

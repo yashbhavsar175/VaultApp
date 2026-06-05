@@ -59,6 +59,54 @@ function safeLast4(value?: string | null): string {
   return digits.length === 4 ? digits : '';
 }
 
+function LabeledInput({
+  label,
+  value,
+  onChangeText,
+  keyboardType,
+  maxLength,
+  placeholder,
+  containerStyle,
+  editable = true,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  keyboardType?: 'default' | 'number-pad' | 'decimal-pad';
+  maxLength?: number;
+  placeholder?: string;
+  containerStyle?: object;
+  editable?: boolean;
+}) {
+  const { colors, typography, spacing } = useTheme();
+  return (
+    <View style={[{ marginBottom: spacing.md, opacity: editable ? 1 : 0.5 }, containerStyle]}>
+      <Text style={[typography.caption, { color: colors.text, marginBottom: spacing.xs }]}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        keyboardType={keyboardType}
+        maxLength={maxLength}
+        placeholder={placeholder}
+        placeholderTextColor={colors.subtext}
+        editable={editable}
+        style={[
+          typography.body,
+          {
+            backgroundColor: colors.card,
+            borderColor: colors.border,
+            borderWidth: 1,
+            borderRadius: 8,
+            color: colors.text,
+            paddingHorizontal: spacing.md,
+            paddingVertical: spacing.sm,
+          },
+        ]}
+      />
+    </View>
+  );
+}
+
 function inferAccountTypeHint(hint?: string | null): Extract<BankAccount['account_type'], 'savings' | 'current'> {
   return hint?.toLowerCase().includes('current') ? 'current' : 'savings';
 }
@@ -87,6 +135,10 @@ export default function DetectedAccountsScreen() {
   const [creditLimit, setCreditLimit] = useState('');
   const [dueDate, setDueDate] = useState('1');
   const [billingCycleDate, setBillingCycleDate] = useState('1');
+  const [unknownDueDate, setUnknownDueDate] = useState(false);
+  const [unknownBillingDate, setUnknownBillingDate] = useState(false);
+  const [currentOutstanding, setCurrentOutstanding] = useState('');
+  const [startingBalance, setStartingBalance] = useState('');
   const [linkedBankAccountId, setLinkedBankAccountId] = useState('');
   const [debitCardLabel, setDebitCardLabel] = useState('');
   const actionInFlightRef = useRef(false);
@@ -153,7 +205,11 @@ export default function DetectedAccountsScreen() {
     setCreditLimit('');
     setDueDate('1');
     setBillingCycleDate('1');
+    setUnknownDueDate(false);
+    setUnknownBillingDate(false);
     setDebitCardLabel(cardDigits ? `Debit card ${cardDigits}` : '');
+    setStartingBalance('');
+    setCurrentOutstanding('');
 
     const matchedAccount = linkableBankAccounts.find(account =>
       safeLast4(account.account_last4) === accountDigits &&
@@ -216,6 +272,7 @@ export default function DetectedAccountsScreen() {
             bankName,
             accountLast4,
             accountType,
+            startingBalance: startingBalance.trim() ? Number(startingBalance) : null,
           }),
           'Bank account confirmed'
         ),
@@ -235,8 +292,9 @@ export default function DetectedAccountsScreen() {
             cardName,
             cardLast4,
             creditLimit: creditLimit.trim() ? Number(creditLimit) : null,
-            dueDate: Number(dueDate || 1),
-            billingCycleDate: Number(billingCycleDate || 1),
+            currentOutstanding: currentOutstanding.trim() ? Number(currentOutstanding) : null,
+            dueDate: unknownDueDate ? null : Number(dueDate || 1),
+            billingCycleDate: unknownBillingDate ? null : Number(billingCycleDate || 1),
           }),
           'Credit card confirmed'
         ),
@@ -460,6 +518,7 @@ export default function DetectedAccountsScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
+              <LabeledInput label="Starting balance" value={startingBalance} onChangeText={setStartingBalance} keyboardType="decimal-pad" placeholder="0" />
             </>
           )}
 
@@ -468,10 +527,37 @@ export default function DetectedAccountsScreen() {
               <LabeledInput label="Bank name" value={bankName} onChangeText={setBankName} />
               <LabeledInput label="Card name" value={cardName} onChangeText={setCardName} />
               <LabeledInput label="Card last4" value={cardLast4} onChangeText={setCardLast4} keyboardType="number-pad" maxLength={4} />
-              <LabeledInput label="Credit limit" value={creditLimit} onChangeText={setCreditLimit} keyboardType="decimal-pad" placeholder="0" />
               <View style={styles.twoColumnRow}>
-                <LabeledInput label="Due day" value={dueDate} onChangeText={setDueDate} keyboardType="number-pad" maxLength={2} containerStyle={styles.halfInput} />
-                <LabeledInput label="Billing day" value={billingCycleDate} onChangeText={setBillingCycleDate} keyboardType="number-pad" maxLength={2} containerStyle={styles.halfInput} />
+                <LabeledInput label="Credit limit" value={creditLimit} onChangeText={setCreditLimit} keyboardType="decimal-pad" placeholder="0" containerStyle={styles.halfInput} />
+                <LabeledInput label="Outstanding" value={currentOutstanding} onChangeText={setCurrentOutstanding} keyboardType="decimal-pad" placeholder="0" containerStyle={styles.halfInput} />
+              </View>
+              <View style={styles.twoColumnRow}>
+                <View style={styles.halfInput}>
+                  <LabeledInput label="Due day" value={dueDate} onChangeText={setDueDate} keyboardType="number-pad" maxLength={2} editable={!unknownDueDate} />
+                  <TouchableOpacity
+                    onPress={() => {
+                      setUnknownDueDate(!unknownDueDate);
+                      if (!unknownDueDate) setDueDate('');
+                      else setDueDate('1');
+                    }}
+                    style={{ flexDirection: 'row', alignItems: 'center', marginTop: -spacing.sm, marginBottom: spacing.md }}>
+                    <MaterialCommunityIcons name={unknownDueDate ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={colors.accent} />
+                    <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs }]}>Don't know</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.halfInput}>
+                  <LabeledInput label="Billing day" value={billingCycleDate} onChangeText={setBillingCycleDate} keyboardType="number-pad" maxLength={2} editable={!unknownBillingDate} />
+                  <TouchableOpacity
+                    onPress={() => {
+                      setUnknownBillingDate(!unknownBillingDate);
+                      if (!unknownBillingDate) setBillingCycleDate('');
+                      else setBillingCycleDate('1');
+                    }}
+                    style={{ flexDirection: 'row', alignItems: 'center', marginTop: -spacing.sm, marginBottom: spacing.md }}>
+                    <MaterialCommunityIcons name={unknownBillingDate ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={colors.accent} />
+                    <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs }]}>Don't know</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </>
           )}
@@ -563,49 +649,7 @@ export default function DetectedAccountsScreen() {
     </Modal>
   );
 
-  function LabeledInput({
-    label,
-    value,
-    onChangeText,
-    keyboardType,
-    maxLength,
-    placeholder,
-    containerStyle,
-  }: {
-    label: string;
-    value: string;
-    onChangeText: (value: string) => void;
-    keyboardType?: 'default' | 'number-pad' | 'decimal-pad';
-    maxLength?: number;
-    placeholder?: string;
-    containerStyle?: object;
-  }) {
-    return (
-      <View style={[{ marginBottom: spacing.md }, containerStyle]}>
-        <Text style={[typography.caption, { color: colors.text, marginBottom: spacing.xs }]}>{label}</Text>
-        <TextInput
-          value={value}
-          onChangeText={onChangeText}
-          keyboardType={keyboardType}
-          maxLength={maxLength}
-          placeholder={placeholder}
-          placeholderTextColor={colors.subtext}
-          style={[
-            typography.body,
-            {
-              backgroundColor: colors.card,
-              borderColor: colors.border,
-              borderWidth: 1,
-              borderRadius: 8,
-              color: colors.text,
-              paddingHorizontal: spacing.md,
-              paddingVertical: spacing.sm,
-            },
-          ]}
-        />
-      </View>
-    );
-  }
+
 
   return (
     <ScreenWrapper>

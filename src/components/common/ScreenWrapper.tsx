@@ -24,18 +24,19 @@ export default function ScreenWrapper({
   keyboardAvoiding = false,
   style,
 }: ScreenWrapperProps) {
-  const { colors } = useTheme();
+  const { colors, spacing } = useTheme();
   const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, spacing.lg);
 
   const content = scrollable ? (
     <ScrollView
       style={[styles.scrollView, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.scrollContent}
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomInset + spacing.lg }]}
       showsVerticalScrollIndicator={false}>
       {children}
     </ScrollView>
   ) : (
-    <View style={[styles.container, { backgroundColor: colors.background }, style]}>
+    <View style={[styles.container, { backgroundColor: colors.background, paddingBottom: bottomInset }, style]}>
       {children}
     </View>
   );

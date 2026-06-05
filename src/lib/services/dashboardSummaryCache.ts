@@ -1,6 +1,6 @@
 import { supabase } from '../core';
 import { getCached, setCache, CACHE_KEYS, scopedCacheKey } from './cache';
-import { DashboardReviewBreakdown, MonthlyTransactionTotals } from '../../utils/financeSummary';
+import { MonthlyTransactionTotals } from '../../utils/financeSummary';
 
 export interface DashboardPeopleSummarySnapshot {
   totalLent: number;
@@ -13,7 +13,6 @@ export interface DashboardSummarySnapshot {
   monthKey: string;
   monthlyTotals: MonthlyTransactionTotals;
   peopleSummary: DashboardPeopleSummarySnapshot;
-  reviewBreakdown: DashboardReviewBreakdown;
   createdAt: string;
 }
 

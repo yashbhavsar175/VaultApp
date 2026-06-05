@@ -94,6 +94,32 @@ export default function SMSTestScreen() {
     // Check if it's a transaction SMS
     const isTxn = isTransactionSMS(smsText);
     
+    const processParsedTransaction = async () => {
+      const result = await processTransactionSMS(smsText, senderId);
+      if (result.success) {
+        Alert.alert('Success', 'Transaction created.');
+      } else {
+        Alert.alert('Failed', 'Could not create transaction. Check notifications for details.');
+      }
+      loadStats();
+      loadBugReports();
+    };
+
+    const confirmProcessing = () => {
+      Alert.alert(
+        'Process Real Transaction?',
+        'This will process a real transaction from the SMS test data. Are you sure?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Confirm',
+            style: 'destructive',
+            onPress: processParsedTransaction,
+          },
+        ]
+      );
+    };
+
     Alert.alert(
       'Parse Result',
       `Is Transaction: ${isTxn ? 'Yes' : 'No'}\n` +
@@ -105,19 +131,11 @@ export default function SMSTestScreen() {
       `Type: ${parsed.transactionType}\n` +
       `Merchant: ${parsed.merchant || 'Not detected'}`,
       [
-        { text: 'OK' },
+        { text: 'OK', style: 'cancel' },
         {
           text: 'Process Transaction',
-          onPress: async () => {
-            const result = await processTransactionSMS(smsText, senderId);
-            if (result.success) {
-              Alert.alert('Success', `Transaction created: ${result.transactionId}`);
-            } else {
-              Alert.alert('Failed', 'Could not create transaction. Check notifications for details.');
-            }
-            loadStats();
-            loadBugReports();
-          },
+          style: 'destructive',
+          onPress: confirmProcessing,
         },
       ]
     );
@@ -134,7 +152,7 @@ export default function SMSTestScreen() {
     <ScreenWrapper>
       <AppHeader title="SMS Parser Test" showBack={true} />
       
-      <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.lg, paddingTop: spacing.lg }}>
         {/* Statistics Card */}
         <Card style={{ marginBottom: spacing.lg }}>
           <Text style={[typography.bodyBold, { color: colors.text, marginBottom: spacing.sm }]}>

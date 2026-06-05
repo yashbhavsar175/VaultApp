@@ -30,13 +30,7 @@ import {
   getDebtFreedomSettings,
   isDebtFreedomSettingsTableMissingError,
 } from './debtFreedomSettings';
-import {
-  applyIncomeReviewDecisionsToIncomeEvents,
-  buildIncomeReviewCandidatesFromRows,
-  getIncomeReviewDecisions,
-  IncomeReviewDecision,
-  isIncomeReviewTableMissingError,
-} from './incomeReview';
+
 
 type DebtFreedomSourceRows = {
   transactions: Transaction[];
@@ -53,8 +47,6 @@ export type DebtFreedomCoachViewModelOptions = DebtFreedomOptions & {
   rows?: Partial<DebtFreedomSourceRows>;
   settings?: DebtFreedomSettings | null;
   settingsError?: unknown;
-  incomeReviewDecisions?: IncomeReviewDecision[];
-  incomeReviewError?: unknown;
 };
 
 export type DebtFreedomCoachViewModel = {
@@ -80,7 +72,6 @@ export type DebtFreedomCoachViewModel = {
   };
   settings: DebtFreedomSettings | null;
   settingsStatus: 'loaded' | 'missing' | 'error';
-  incomeReviewStatus: 'loaded' | 'missing' | 'error';
 };
 
 const INCOME_TOKENS = [
@@ -144,12 +135,6 @@ function finiteNonNegative(value?: number | null): number | null {
 
 function normalizedText(...values: Array<string | null | undefined>): string {
   return values.filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-function safeSignalHash(value?: string | null): string | null {
-  const trimmed = value?.trim().toLowerCase();
-  if (!trimmed) return null;
-  return /^[a-f0-9]{8,128}$/.test(trimmed) ? trimmed : null;
 }
 
 function looksSensitiveText(value?: string | null): boolean {
@@ -551,15 +536,37 @@ export function buildIncomeEventsFromTransactions(
       return events;
     }
 
+    if (tx.account_match_status === 'ignored') {
+      events.push(classifyIncomeCandidate({
+        id: tx.id,
+        amount: tx.amount,
+        receivedAt: tx.created_at,
+        sourceType: 'unknown',
+        label: 'Excluded by user',
+        category: safeCategory(tx.category),
+        confidence: 'excluded',
+        includeInIncome: false,
+        exclusionReason: 'unknown_credit',
+        metadata: {
+          source: tx.sms_source ? 'transaction_signal' : 'manual',
+          referencePresent: Boolean(tx.reference_number),
+        },
+      }));
+      return events;
+    }
+
     if (tx.type !== 'income') return events;
 
+    const isManualConfirmed = tx.account_match_status === 'manual_confirmed';
     const sourceType = incomeSourceForText(text);
     const explicitCategory = hasAnyToken(normalizedText(tx.category), INCOME_TOKENS);
     const earnedSignal = hasAnyToken(text, INCOME_TOKENS);
-    const includeInIncome = ['salary', 'gig_work', 'freelance', 'business'].includes(sourceType) && earnedSignal;
-    const confidence: IncomeEvent['confidence'] = includeInIncome
-      ? explicitCategory || sourceType === 'salary' ? 'high' : 'medium'
-      : 'needs_review';
+    const includeInIncome = isManualConfirmed || (['salary', 'gig_work', 'freelance', 'business'].includes(sourceType) && earnedSignal);
+    const confidence: IncomeEvent['confidence'] = isManualConfirmed
+      ? 'confirmed'
+      : includeInIncome
+        ? explicitCategory || sourceType === 'salary' ? 'high' : 'medium'
+        : 'needs_review';
 
     events.push(classifyIncomeCandidate({
       id: tx.id,
@@ -575,71 +582,6 @@ export function buildIncomeEventsFromTransactions(
       metadata: {
         source: tx.sms_source ? 'transaction_signal' : 'manual',
         referencePresent: Boolean(tx.reference_number),
-      },
-    }));
-    return events;
-  }, []);
-}
-
-function reviewedEvidenceDecisionFor(
-  evidence: TransactionEvidence,
-  decisions: IncomeReviewDecision[]
-): IncomeReviewDecision | null {
-  const signalHash = safeSignalHash(evidence.signal_id);
-  return decisions.find(decision => (
-    decision.decision === 'count_as_income'
-    && (
-      decision.evidence_id === evidence.id
-      || (signalHash && decision.signal_hash === signalHash)
-    )
-  )) || null;
-}
-
-function incomeSourceForReviewedDecision(
-  sourceType: IncomeReviewDecision['income_source_type']
-): IncomeEvent['sourceType'] {
-  switch (sourceType) {
-    case 'salary':
-    case 'gig_work':
-    case 'freelance':
-    case 'business':
-    case 'cash_deposit':
-      return sourceType;
-    default:
-      return 'unknown';
-  }
-}
-
-export function buildIncomeEventsFromReviewedEvidence(
-  evidenceRows: TransactionEvidence[],
-  decisions: IncomeReviewDecision[],
-  options: DebtFreedomOptions = {}
-): IncomeEvent[] {
-  return evidenceRows.reduce<IncomeEvent[]>((events, evidence) => {
-    if (evidence.transaction_id || evidence.direction !== 'credit') return events;
-    if (!isCurrentMonthDate(evidence.captured_at, options)) return events;
-    const amount = finitePositive(evidence.amount);
-    if (!amount) return events;
-
-    const decision = reviewedEvidenceDecisionFor(evidence, decisions);
-    if (!decision) return events;
-
-    events.push(classifyIncomeCandidate({
-      id: evidence.id,
-      amount,
-      receivedAt: evidence.captured_at,
-      sourceType: incomeSourceForReviewedDecision(decision.income_source_type),
-      label: 'Reviewed income',
-      category: null,
-      counterpartyLabel: null,
-      confidence: 'confirmed',
-      includeInIncome: true,
-      exclusionReason: null,
-      metadata: {
-        source: safeSignalHash(evidence.signal_id),
-        appPackage: null,
-        bankName: null,
-        referencePresent: false,
       },
     }));
     return events;
@@ -707,7 +649,7 @@ async function getCurrentUserId(): Promise<string> {
 async function fetchTransactionsForUser(userId: string): Promise<Transaction[]> {
   const { data, error } = await supabase
     .from('transactions')
-    .select('id, user_id, amount, type, note, category, created_at, account_id, account_last4, sms_source, reference_number, from_account_id, to_account_id, refund_of_transaction_id')
+    .select('id, user_id, amount, type, note, category, created_at, account_id, account_last4, sms_source, reference_number, from_account_id, to_account_id, refund_of_transaction_id, account_match_status')
     .eq('user_id', userId)
     .order('created_at', { ascending: false });
 
@@ -805,16 +747,12 @@ async function fetchDebtFreedomRows(): Promise<DebtFreedomSourceRows> {
 function buildDataQuality(
   plan: DebtFreedomPlan,
   debtItems: DebtItem[],
-  incomeEvents: IncomeEvent[],
-  pendingIncomeCandidateCount = 0
+  incomeEvents: IncomeEvent[]
 ): DebtFreedomCoachViewModel['dataQuality'] {
   return {
     hasConfirmedIncome: plan.incomeProjection.source === 'confirmed',
     hasVariableIncomeEstimate: plan.incomeProjection.source === 'current_month_daily_average',
-    needsIncomeReviewCount: Math.max(
-      incomeEvents.filter(event => event.confidence === 'needs_review').length,
-      pendingIncomeCandidateCount
-    ),
+    needsIncomeReviewCount: incomeEvents.filter(event => event.confidence === 'needs_review').length,
     duplicateDebtWarningCount: debtDuplicateGroupCount(debtItems),
     missingAprCount: debtItems.filter(debt => debt.outstanding > 0 && debt.annualInterestRate === null).length,
     missingEmiCount: debtItems.filter(debt =>
@@ -824,41 +762,6 @@ function buildDataQuality(
     ).length,
     hiddenDebtCount: debtItems.filter(debt => debt.outstanding > 0 && debt.isHidden).length,
   };
-}
-
-async function resolveIncomeReviewDecisions(options: DebtFreedomCoachViewModelOptions): Promise<{
-  decisions: IncomeReviewDecision[];
-  incomeReviewStatus: DebtFreedomCoachViewModel['incomeReviewStatus'];
-}> {
-  if (Object.prototype.hasOwnProperty.call(options, 'incomeReviewError')) {
-    if (isIncomeReviewTableMissingError(options.incomeReviewError)) {
-      return { decisions: [], incomeReviewStatus: 'error' };
-    }
-    throw options.incomeReviewError;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(options, 'incomeReviewDecisions')) {
-    return {
-      decisions: options.incomeReviewDecisions || [],
-      incomeReviewStatus: 'loaded',
-    };
-  }
-
-  if (options.rows) {
-    return { decisions: [], incomeReviewStatus: 'missing' };
-  }
-
-  try {
-    return {
-      decisions: await getIncomeReviewDecisions(),
-      incomeReviewStatus: 'loaded',
-    };
-  } catch (error) {
-    if (isIncomeReviewTableMissingError(error)) {
-      return { decisions: [], incomeReviewStatus: 'error' };
-    }
-    throw error;
-  }
 }
 
 async function resolveSettings(
@@ -965,17 +868,8 @@ export async function getDebtFreedomCoachViewModel(
   } : await fetchDebtFreedomRows();
 
   const debtItems = buildDebtItemsFromRows(sourceRows, planOptions);
-  const { decisions: incomeReviewDecisions, incomeReviewStatus } = await resolveIncomeReviewDecisions(options);
-  const rawIncomeEvents = [
-    ...buildIncomeEventsFromTransactions(sourceRows.transactions, planOptions),
-    ...buildIncomeEventsFromReviewedEvidence(sourceRows.incomeEvidence, incomeReviewDecisions, planOptions),
-  ];
-  const incomeEvents = applyIncomeReviewDecisionsToIncomeEvents(rawIncomeEvents, incomeReviewDecisions);
-  const pendingIncomeCandidateCount = buildIncomeReviewCandidatesFromRows({
-    transactions: sourceRows.transactions,
-    evidence: sourceRows.incomeEvidence,
-    decisions: incomeReviewDecisions,
-  }).filter(candidate => !candidate.currentDecision && candidate.suggestedDecision === 'needs_review').length;
+  const rawIncomeEvents = buildIncomeEventsFromTransactions(sourceRows.transactions, planOptions);
+  const incomeEvents = rawIncomeEvents;
   const { settings, settingsStatus } = await resolveSettings(options);
   const income = buildIncomePlan(incomeEvents, settings);
   const expenses = buildExpensePlan(settings);
@@ -994,9 +888,8 @@ export async function getDebtFreedomCoachViewModel(
     debtItems,
     incomeEvents,
     summary: buildDebtFreedomSummaryLabels(plan),
-    dataQuality: buildDataQuality(plan, debtItems, incomeEvents, pendingIncomeCandidateCount),
+    dataQuality: buildDataQuality(plan, debtItems, incomeEvents),
     settings,
     settingsStatus,
-    incomeReviewStatus,
   };
 }

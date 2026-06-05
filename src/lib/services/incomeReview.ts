@@ -1,5 +1,5 @@
 import { addTransaction, getTransactions, supabase } from '../core';
-import { IncomeEvent, IncomeSourceType as CoachIncomeSourceType } from './debtFreedom';
+
 import { Transaction, TransactionEvidence } from '../../types';
 import { emitFinanceDataChanged } from './dataEvents';
 import { linkEvidenceToTransaction } from './transactionEvidence';
@@ -74,9 +74,12 @@ export interface GetIncomeReviewCandidatesOptions {
   transactions?: Transaction[];
   evidence?: TransactionEvidence[];
   decisions?: IncomeReviewDecision[];
+  excludedEvidenceIds?: string[];
   showExcluded?: boolean;
   limit?: number;
 }
+
+const REVIEWED_INCOME_DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 
 const DECISIONS = new Set<IncomeReviewDecisionValue>([
   'count_as_income',
@@ -141,7 +144,6 @@ const EVIDENCE_COLUMNS = [
 ].join(', ');
 const REVIEWED_INCOME_NOTE = 'Reviewed income';
 const REVIEWED_INCOME_CATEGORY = 'Income';
-const REVIEWED_INCOME_DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 
 const GIG_TOKENS = ['porter', 'swiggy', 'zomato', 'rapido', 'zepto', 'delivery', 'gig', 'payout', 'earning', 'earnings'];
 const SALARY_TOKENS = ['salary'];
@@ -186,10 +188,25 @@ function safeSignalHash(value?: string | null): string | null {
   return /^[a-f0-9]{8,128}$/.test(trimmed) ? trimmed : null;
 }
 
+function safeEvidenceSignalId(value?: string | null): string | null {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed || !/^[a-z0-9:._-]{4,180}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 function safeReasonCode(value?: string | null): string | null {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return /^[a-z0-9_:-]{1,64}$/i.test(trimmed) ? trimmed : null;
+}
+
+
+function isEvidenceExcludedFromIncomeReview(
+  evidence: TransactionEvidence,
+  options: Pick<GetIncomeReviewCandidatesOptions, 'excludedEvidenceIds'>
+): boolean {
+  const excludedEvidenceIds = new Set(options.excludedEvidenceIds || []);
+  return excludedEvidenceIds.has(evidence.id);
 }
 
 function sanitizeDecisionInput(input: IncomeReviewDecisionInput) {
@@ -295,6 +312,7 @@ function decisionForCandidate(
 function candidateFromTransaction(tx: Transaction, decisions: IncomeReviewDecision[]): IncomeReviewCandidate | null {
   const amount = finitePositive(tx.amount);
   if (!amount) return null;
+  if ((tx.type as string) === 'transfer') return null;
 
   const text = normalizedText(tx.category, tx.note, tx.sms_source);
   const base = {
@@ -567,12 +585,15 @@ export function buildIncomeReviewCandidatesFromRows(
     evidence?: TransactionEvidence[];
     decisions?: IncomeReviewDecision[];
   },
-  options: Pick<GetIncomeReviewCandidatesOptions, 'showExcluded' | 'limit'> = {}
+  options: Pick<GetIncomeReviewCandidatesOptions, 'showExcluded' | 'limit' | 'excludedEvidenceIds'> = {}
 ): IncomeReviewCandidate[] {
   const decisions = rows.decisions || [];
+  const evidenceRows = (rows.evidence || []).filter(evidence =>
+    !isEvidenceExcludedFromIncomeReview(evidence, options)
+  );
   const candidates = dedupeIncomeReviewCandidates([
     ...(rows.transactions || []).map(tx => candidateFromTransaction(tx, decisions)),
-    ...(rows.evidence || []).map(evidence => candidateFromEvidence(evidence, decisions)),
+    ...evidenceRows.map(evidence => candidateFromEvidence(evidence, decisions)),
   ]
     .filter((candidate): candidate is IncomeReviewCandidate => Boolean(candidate))
   )
@@ -656,7 +677,6 @@ export async function getIncomeReviewScreenState(
     fetchTransactionsForUser(userId, limit),
     fetchEvidenceForUser(userId, limit),
   ]);
-
   return {
     candidates: buildIncomeReviewCandidatesFromRows({ transactions, evidence, decisions }, options),
     storageStatus,
@@ -777,6 +797,14 @@ async function resolveReviewedIncomeTransactionId(
   if (!payload.evidence_id) return null;
 
   const evidence = await fetchOwnedEvidence(userId, payload.evidence_id);
+  const exclusions = { evidenceIds: new Set(), evidenceSignalIds: new Set() };
+  const evidenceSignalId = safeEvidenceSignalId(evidence.signal_id);
+  if (
+    exclusions.evidenceIds.has(evidence.id) ||
+    Boolean(evidenceSignalId && exclusions.evidenceSignalIds.has(evidenceSignalId))
+  ) {
+    throw new Error('Money movement evidence cannot be counted as income');
+  }
   if (evidence.transaction_id) {
     await ensureTransactionOwner(userId, evidence.transaction_id);
     return evidence.transaction_id;
@@ -793,11 +821,21 @@ async function resolveReviewedIncomeTransactionId(
     throw new Error('Multiple matching reviewed income transactions need review');
   }
 
+  const rawNote = evidence.merchant_or_person || '';
+  const cleanNote = rawNote
+    .replace(/\b(?:otp|one\s*time\s*password|verification\s*code|security\s*code)\b[^,.]*/gi, '')
+    .replace(/\b(?:\d[ -]?){6,}\b/g, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  const looksLikeRaw = /\b(transferred|transfer|debited|credited|account|a\/c|upi|utr|inr|rs\.?|otp)\b/i.test(cleanNote);
+  const finalNote = cleanNote && !looksLikeRaw ? cleanNote : REVIEWED_INCOME_NOTE;
+
   const transaction = matches[0] || await addTransaction({
     amount,
     type: 'income',
     category: REVIEWED_INCOME_CATEGORY,
-    note: REVIEWED_INCOME_NOTE,
+    note: finalNote,
     created_at: evidence.captured_at,
     sms_source: evidence.source_type,
     account_last4: safeLast4(evidence.account_last4),
@@ -832,60 +870,3 @@ export async function saveIncomeReviewDecision(
   });
 }
 
-function coachSourceType(sourceType: IncomeReviewIncomeSourceType | null): CoachIncomeSourceType {
-  switch (sourceType) {
-    case 'salary':
-    case 'gig_work':
-    case 'freelance':
-    case 'business':
-    case 'cash_deposit':
-      return sourceType;
-    default:
-      return 'unknown';
-  }
-}
-
-export function applyIncomeReviewDecisionsToIncomeEvents(
-  incomeEvents: IncomeEvent[],
-  decisions: IncomeReviewDecision[]
-): IncomeEvent[] {
-  return incomeEvents.map(event => {
-    const decision = decisions.find(item => (
-      item.transaction_id === event.id
-      || item.evidence_id === event.id
-      || item.signal_hash === event.metadata?.source
-    ));
-    if (!decision) return event;
-
-    if (decision.decision === 'count_as_income') {
-      return {
-        ...event,
-        sourceType: coachSourceType(decision.income_source_type),
-        label: 'Reviewed income',
-        confidence: 'confirmed',
-        includeInIncome: true,
-        exclusionReason: null,
-      };
-    }
-
-    if (decision.decision === 'not_income') {
-      return {
-        ...event,
-        label: 'Reviewed not income',
-        confidence: 'excluded',
-        includeInIncome: false,
-        exclusionReason: 'unknown_credit',
-        counterpartyLabel: null,
-      };
-    }
-
-    return {
-      ...event,
-      label: 'Income needs review',
-      confidence: 'needs_review',
-      includeInIncome: false,
-      exclusionReason: 'unknown_credit',
-      counterpartyLabel: null,
-    };
-  });
-}

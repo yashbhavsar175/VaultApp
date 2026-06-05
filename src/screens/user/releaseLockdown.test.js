@@ -14,7 +14,7 @@ describe('release-build lockdown', () => {
     expect(developerSection).toContain('{__DEV__ && (');
     expect(developerSection).toContain('Test Notifications');
     expect(developerSection).toContain('Seed 120 Dummy Entries');
-    expect(developerSection).toContain('Seed Review Queue');
+    expect(developerSection).not.toContain('Seed Review Queue');
   });
 
   it('keeps Porter debug actions and Porter Test navigation behind __DEV__', () => {

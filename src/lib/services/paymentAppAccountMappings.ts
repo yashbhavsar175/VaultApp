@@ -25,7 +25,7 @@ export interface PaymentAppBankHint {
 }
 
 export interface PaymentAppBankAccountMatch extends PaymentAppBankHint {
-  mappingStatus: 'needs_review' | 'user_confirmed';
+  mappingStatus: 'needs_review' | 'system_matched' | 'user_confirmed';
   mappedBankAccountId?: string;
   mappedBankAccountLast4?: string;
   mappedBankName?: string;
@@ -79,6 +79,20 @@ function safeLast4(value?: string | null): string | undefined {
   return digits.length === 4 ? digits : undefined;
 }
 
+function normalizedBankToken(value?: string | null): string {
+  return (value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function bankNameMatchesHint(account: BankAccount, bankHint: string): boolean {
+  const accountToken = normalizedBankToken(account.bank_name);
+  const hintToken = normalizedBankToken(bankHint);
+  return Boolean(accountToken && hintToken && (
+    accountToken === hintToken ||
+    accountToken.includes(hintToken) ||
+    hintToken.includes(accountToken)
+  ));
+}
+
 export function bankHintHash(bankHint: string): string {
   return stableHash(`bank_hint:${bankHint}`);
 }
@@ -121,6 +135,23 @@ async function getBankAccountForUser(userId: string, accountId: string): Promise
     : null;
 }
 
+async function getUniqueBankAccountForHint(userId: string, bankHint: string): Promise<BankAccount | null> {
+  const { data, error } = await supabase
+    .from('bank_accounts')
+    .select('*')
+    .eq('user_id', userId)
+    .limit(50);
+
+  if (error) throw error;
+  const matches = ((data || []) as BankAccount[]).filter(account =>
+    (account.account_type === 'savings' || account.account_type === 'current') &&
+    !account.is_archived &&
+    bankNameMatchesHint(account, bankHint)
+  );
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
 export async function resolvePaymentAppBankAccountForUser(input: {
   userId: string;
   text: string;
@@ -141,10 +172,32 @@ export async function resolvePaymentAppBankAccountForUser(input: {
 
   if (error) throw error;
   const mappings = data || [];
-  if (mappings.length !== 1) return { ...hint, mappingStatus: 'needs_review' };
+  if (mappings.length !== 1) {
+    const hintedAccount = await getUniqueBankAccountForHint(input.userId, hint.bankHint);
+    if (!hintedAccount) return { ...hint, mappingStatus: 'needs_review' };
+
+    return {
+      ...hint,
+      mappingStatus: 'system_matched',
+      mappedBankAccountId: hintedAccount.id,
+      mappedBankAccountLast4: safeLast4(hintedAccount.account_last4),
+      mappedBankName: hintedAccount.bank_name,
+    };
+  }
 
   const account = await getBankAccountForUser(input.userId, mappings[0].owner_id);
-  if (!account) return { ...hint, mappingStatus: 'needs_review' };
+  if (!account) {
+    const hintedAccount = await getUniqueBankAccountForHint(input.userId, hint.bankHint);
+    if (!hintedAccount) return { ...hint, mappingStatus: 'needs_review' };
+
+    return {
+      ...hint,
+      mappingStatus: 'system_matched',
+      mappedBankAccountId: hintedAccount.id,
+      mappedBankAccountLast4: safeLast4(hintedAccount.account_last4),
+      mappedBankName: hintedAccount.bank_name,
+    };
+  }
 
   return {
     ...hint,

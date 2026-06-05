@@ -20,7 +20,7 @@ type TabIconProps = {
 };
 
 const HIDDEN_DASHBOARD_TAB_SCREENS = ['Transactions', 'TransactionDetail', 'Banks', 'Analytics', 'DetectedAccountsScreen'];
-const HIDDEN_SETTINGS_TAB_SCREENS = ['Banks', 'BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'ReconciliationProposals', 'DebtFreedomCoach', 'MoneyMovementReview', 'IncomeReview', 'Places', 'PorterTest'];
+const HIDDEN_SETTINGS_TAB_SCREENS = ['Banks', 'BankConfigScreen', 'DetectedAccountsScreen', 'SMSTestScreen', 'DebtFreedomCoach', 'Places', 'PorterTest'];
 const SETTINGS_TAB_ROUTE = 'Settings';
 const SETTINGS_ROOT_ROUTE = 'SettingsHome';
 

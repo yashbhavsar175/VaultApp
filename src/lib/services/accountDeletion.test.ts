@@ -13,7 +13,6 @@ import {
 } from './accountDeletion';
 import {
   OFFLINE_TX_QUEUE_BASE_KEY,
-  REVIEW_QUEUE_BASE_KEY,
   getUserScopedQueueKey,
 } from './userScopedQueues';
 
@@ -120,7 +119,7 @@ describe('whole-account app-data deletion', () => {
       ['bank_auto_detection_date', '2026-06-03'],
       ['debug_bug_reports', 'cached reports'],
       [OFFLINE_TX_QUEUE_BASE_KEY, 'legacy queue'],
-      [`${REVIEW_QUEUE_BASE_KEY}:legacy_quarantine:123`, 'legacy review queue'],
+
       [getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'), JSON.stringify([{ queueOwnerId: 'user_a' }])],
       [getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'), JSON.stringify([{ queueOwnerId: 'user_b' }])],
     ]);
@@ -146,7 +145,7 @@ describe('whole-account app-data deletion', () => {
     expect(await AsyncStorage.getItem('cache_transactions')).toBeNull();
     expect(await AsyncStorage.getItem('cache_ledger_payments:ledger_a')).toBeNull();
     expect(await AsyncStorage.getItem(OFFLINE_TX_QUEUE_BASE_KEY)).toBeNull();
-    expect(await AsyncStorage.getItem(`${REVIEW_QUEUE_BASE_KEY}:legacy_quarantine:123`)).toBeNull();
+
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'))).not.toBeNull();
   });

@@ -47,7 +47,7 @@ export interface VaultItemDB {
 async function mapRow(row: any): Promise<VaultItemDB> {
   const fields = typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields;
   
-  // Decrypt secret fields
+  // Decryption uses the authenticated user's derived AES key; plaintext stays client-side.
   const decryptedFields = await decryptVaultFields(fields);
   const decryptedNotes = await decryptVaultText(row.notes || '');
   
@@ -85,7 +85,7 @@ export async function addVaultItem(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
-  // Encrypt secret fields and notes before storing
+  // Encryption uses the authenticated user's derived AES key before any Supabase write.
   const encryptedFields = await encryptVaultFields(item.fields);
   const encryptedNotes = await encryptVaultText(item.notes);
 
@@ -115,10 +115,13 @@ export async function updateVaultItem(
   const updatePayload: any = { updated_at: new Date().toISOString() };
   if (updates.title !== undefined) updatePayload.title = updates.title;
   if (updates.category !== undefined) updatePayload.category = updates.category;
-  if (updates.notes !== undefined) updatePayload.notes = await encryptVaultText(updates.notes);
+  if (updates.notes !== undefined) {
+    // Encryption uses the authenticated user's derived AES key before any Supabase write.
+    updatePayload.notes = await encryptVaultText(updates.notes);
+  }
   
-  // Encrypt secret fields before updating
   if (updates.fields !== undefined) {
+    // Encryption uses the authenticated user's derived AES key before any Supabase write.
     updatePayload.fields = await encryptVaultFields(updates.fields);
   }
 

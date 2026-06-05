@@ -3,7 +3,6 @@ import { supabase } from '../core';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   OFFLINE_TX_QUEUE_BASE_KEY,
-  REVIEW_QUEUE_BASE_KEY,
   clearFinancialQueuesForUser,
 } from './userScopedQueues';
 
@@ -68,7 +67,7 @@ const STORAGE_REMOVE_BATCH_SIZE = 100;
 const LEGACY_QUEUE_BASE_KEYS = [
   OFFLINE_TX_QUEUE_BASE_KEY,
   OFFLINE_DELETE_QUEUE_BASE_KEY,
-  REVIEW_QUEUE_BASE_KEY,
+
 ] as const;
 
 export class AccountDataDeletionError extends Error {

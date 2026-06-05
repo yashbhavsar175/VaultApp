@@ -274,13 +274,14 @@ function compareBalanceAuthority(
   const closeInTime = Math.abs(timeDiff) <= BALANCE_TIE_WINDOW_MS;
   const rankDiff = sourceRank(right.source, right.confidence) - sourceRank(left.source, left.confidence);
 
+  if (isManualExact(left) && isWeakBalanceSignal(right)) return -1;
+  if (isManualExact(right) && isWeakBalanceSignal(left)) return 1;
+
   if (left.confidence === 'low' || right.confidence === 'low') {
     if (rankDiff !== 0) return rankDiff;
   }
 
   if (!closeInTime) {
-    if (isManualExact(left) && isWeakBalanceSignal(right)) return -1;
-    if (isManualExact(right) && isWeakBalanceSignal(left)) return 1;
     return timeDiff;
   }
 
@@ -567,23 +568,25 @@ export function buildAccountBalanceViewModelsForRows(
       fallbackBalanceValue(fallbackKind, fallbackAmount),
     ], preferredKinds)!;
 
-    return {
-      accountId: account.id,
-      bankName: account.bank_name,
-      accountLast4: account.account_last4,
-      accountType: account.account_type,
-      displayBalance: balance.amount,
-      balanceKind: balance.balanceKind,
-      source: balance.source,
-      confidence: balance.confidence,
-      lastUpdated: balance.detectedAt,
-      isEstimated: balance.isEstimated,
-      sourceLabel: balance.sourceLabel,
-      confidenceLabel: balance.confidenceLabel,
-      staleWarning: balance.staleWarning,
-    };
-  });
-}
+      const result = {
+        accountId: account.id,
+        bankName: account.bank_name,
+        accountLast4: account.account_last4,
+        accountType: account.account_type,
+        displayBalance: balance.amount,
+        balanceKind: balance.balanceKind,
+        source: balance.source,
+        confidence: balance.confidence,
+        lastUpdated: balance.detectedAt,
+        isEstimated: balance.isEstimated,
+        sourceLabel: balance.sourceLabel,
+        confidenceLabel: balance.confidenceLabel,
+        staleWarning: balance.staleWarning,
+      };
+      
+      return result;
+    });
+  }
 
 function latestStatementForCard(
   statements: StatementRow[],
@@ -627,27 +630,29 @@ export function buildCreditCardBalanceViewModelsForRows(
     const displaySource = outstanding;
     const limitAmount = Math.max(creditLimit.amount, 0);
 
-    return {
-      creditCardId: card.id,
-      bankName: card.bank_name,
-      cardName: card.card_name || null,
-      cardLast4: card.last_4_digits,
-      outstanding: outstanding.amount,
-      availableLimit: availableLimit.amount,
-      creditLimit: creditLimit.amount,
-      dueAmount: dueAmount?.amount ?? statement?.total_due ?? null,
-      minimumDue: minimumDue?.amount ?? statement?.minimum_due ?? null,
-      paymentDueDate: statement?.payment_due_date || null,
-      source: displaySource.source,
-      confidence: displaySource.confidence,
-      lastUpdated: displaySource.detectedAt,
-      utilizationPercent: limitAmount > 0 ? Math.min((outstanding.amount / limitAmount) * 100, 999) : 0,
-      sourceLabel: displaySource.sourceLabel,
-      confidenceLabel: displaySource.confidenceLabel,
-      staleWarning: displaySource.staleWarning,
-    };
-  });
-}
+      const result = {
+        creditCardId: card.id,
+        bankName: card.bank_name,
+        cardName: card.card_name || null,
+        cardLast4: card.last_4_digits,
+        outstanding: outstanding.amount,
+        availableLimit: availableLimit.amount,
+        creditLimit: creditLimit.amount,
+        dueAmount: dueAmount?.amount ?? statement?.total_due ?? null,
+        minimumDue: minimumDue?.amount ?? statement?.minimum_due ?? null,
+        paymentDueDate: statement?.payment_due_date || null,
+        source: displaySource.source,
+        confidence: displaySource.confidence,
+        lastUpdated: displaySource.detectedAt,
+        utilizationPercent: limitAmount > 0 ? Math.min((outstanding.amount / limitAmount) * 100, 999) : 0,
+        sourceLabel: displaySource.sourceLabel,
+        confidenceLabel: displaySource.confidenceLabel,
+        staleWarning: displaySource.staleWarning,
+      };
+
+      return result;
+    });
+  }
 
 export function buildBankAccountDetailViewForRows(
   account: BankAccount,
