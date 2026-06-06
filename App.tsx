@@ -14,6 +14,7 @@ import AppIntroScreen from './src/screens/intro/AppIntroScreen';
 import { supabase, configureGoogleSignIn, syncOfflineTransactions } from './src/lib/core';
 import { initializeForegroundListener } from './src/lib/services/notifications';
 import { initPorterDistanceCalculator } from './src/lib/services/porter';
+import { startLocationMonitoring, stopLocationMonitoring } from './src/lib/services/placeReminders';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { CACHE_KEYS, getCached, prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
@@ -201,6 +202,16 @@ function App() {
       unsubscribe();
     };
   }, []);
+
+  // Initialize place reminders location monitoring
+  useEffect(() => {
+    if (session?.user) {
+      startLocationMonitoring();
+    } else {
+      stopLocationMonitoring();
+    }
+    return () => stopLocationMonitoring();
+  }, [session]);
 
   const getCachedProfileStatus = useCallback(async (nextSession: Session): Promise<ProfileStatus | null> => {
     try {

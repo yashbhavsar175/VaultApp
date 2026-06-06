@@ -1119,6 +1119,22 @@ export default function Settings() {
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
             </TouchableOpacity>
 
+            <TouchableOpacity 
+              style={[styles.accountRow, { paddingBottom: spacing.sm, paddingTop: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]} 
+              onPress={() => (navigation as any).navigate('PlaceReminders')}
+            >
+              <MaterialCommunityIcons name="map-marker-radius" size={22} color={colors.accent} />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.body, { color: colors.text }]}>
+                  Place Reminders
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Get reminders when you reach or pass a place
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+
             <TouchableOpacity style={[styles.accountRow, { paddingTop: spacing.sm }]} onPress={handleChangePassword}>
               <MaterialCommunityIcons name="lock-outline" size={22} color={colors.accent} />
               <Text style={[typography.body, { color: colors.text, flex: 1, marginLeft: spacing.md }]}>

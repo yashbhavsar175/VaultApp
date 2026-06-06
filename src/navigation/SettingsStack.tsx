@@ -3,6 +3,8 @@ import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/
 import Settings from '../screens/user/Settings';
 import { BanksScreen, DetectedAccountsScreen, SMSTestScreen, PlacesScreen } from '../screens/AllScreens';
 import DebtFreedomScreen from '../screens/financial/DebtFreedomScreen';
+import PlaceRemindersScreen from '../screens/reminders/PlaceRemindersScreen';
+import EditPlaceReminderScreen from '../screens/reminders/EditPlaceReminderScreen';
 import { AccountsAndCardsRouteRedirect } from './RouteRedirects';
 
 const PorterTestScreen = __DEV__
@@ -17,6 +19,8 @@ export type SettingsStackParamList = {
   SMSTestScreen: undefined;
   DebtFreedomCoach: undefined;
   Places: undefined;
+  PlaceReminders: undefined;
+  EditPlaceReminder: { reminder?: any };
   PorterTest: undefined;
 };
 
@@ -42,6 +46,8 @@ export default function SettingsStack() {
       <Stack.Screen name="SMSTestScreen" component={SMSTestScreen} />
       <Stack.Screen name="DebtFreedomCoach" component={DebtFreedomScreen} />
       <Stack.Screen name="Places" component={PlacesScreen} />
+      <Stack.Screen name="PlaceReminders" component={PlaceRemindersScreen} />
+      <Stack.Screen name="EditPlaceReminder" component={EditPlaceReminderScreen} />
       {__DEV__ && PorterTestScreen ? <Stack.Screen name="PorterTest" component={PorterTestScreen} /> : null}
     </Stack.Navigator>
   );
