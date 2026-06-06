@@ -745,6 +745,13 @@ export async function recordEstimatedBankBalanceMovementForUser(
   const nextAmount = previous.amount + delta;
   if (!Number.isFinite(nextAmount) || nextAmount < 0) return null;
 
+  console.log('================================================================');
+  console.log(`[BalanceEstimate] 💳 Bank Account: ${previous.detectedBankName || input.bankAccountId}`);
+  console.log(`[BalanceEstimate] 📉 Transaction Amount: ₹${input.amount} (${input.direction})`);
+  console.log(`[BalanceEstimate] 💰 Previous Balance: ₹${previous.amount}`);
+  console.log(`[BalanceEstimate] 💵 New Estimated Balance: ₹${nextAmount}`);
+  console.log('================================================================');
+
   const detectedAt = toDetectedAt(input.timestamp);
   const senderOrPackage = input.senderOrPackage?.trim() || null;
   const payload = buildBalanceSnapshotInsert(input.userId, {

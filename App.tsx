@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ActivityIndicator, AppState, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Session } from '@supabase/supabase-js';
@@ -18,15 +18,20 @@ import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { CACHE_KEYS, getCached, prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
 
-declare const process: { env?: { NODE_ENV?: string } };
-
 const LEGACY_AUTH_TOKEN_KEY = 'supabase.auth.token';
 const AUTH_STARTUP_TIMEOUT_MS = 4500;
 const PROFILE_STARTUP_TIMEOUT_MS = 6000;
 const AUTH_BOOTSTRAP_WATCHDOG_MS = 8000;
 const STARTUP_CACHE_CLEAR_TIMEOUT_MS = 1500;
-const INTRO_EXIT_FALLBACK_MS = 700;
-const SKIP_INTRO_FALLBACK = process.env?.NODE_ENV === 'test';
+const APP_BACKGROUND_COLOR = '#050509';
+
+const navigationTheme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    background: APP_BACKGROUND_COLOR,
+  },
+};
 
 type ProfileStatus = 'unknown' | 'checking' | 'complete' | 'incomplete' | 'error';
 
@@ -545,53 +550,47 @@ function App() {
     setIntroDone(true);
   }, []);
 
-  useEffect(() => {
-    if (SKIP_INTRO_FALLBACK) return;
-    if (!authReady || introDone) return;
-
-    const fallbackTimer = setTimeout(() => {
-      setIntroDone(true);
-    }, INTRO_EXIT_FALLBACK_MS);
-
-    return () => clearTimeout(fallbackTimer);
-  }, [authReady, introDone]);
-
-  if (!authReady || !introDone) {
-    return <AppIntroScreen readyToExit={authReady} onIntroComplete={handleIntroComplete} />;
-  }
-
   return (
-    <ThemeProvider>
-      <SafeAreaProvider>
-        <NavigationContainer>
-          {startupRepairRequired ? (
-            <StartupRepairScreen onRetry={retryStartup} onClearLocalCache={clearLocalStartupCache} />
-          ) : session ? (
-            profileStatus === 'complete' ? (
-              <RootNavigator />
-            ) : profileStatus === 'incomplete' ? (
-              <ProfileScreen onProfileComplete={handleProfileComplete} />
-            ) : (
-              <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
-            )
-          ) : showSignup ? (
-            <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
-          ) : (
-            <LoginScreen onNavigateToSignup={() => setShowSignup(true)} />
-          )}
-        </NavigationContainer>
-        <Toast
-          config={toastConfig}
-          autoHide
-          visibilityTime={3000}
-          swipeable={false}
-          onPress={() => Toast.hide()}
-        />
-        
-        {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
-        {session && profileStatus === 'complete' && <PermissionPrompt />}
-      </SafeAreaProvider>
-    </ThemeProvider>
+    <View style={styles.appContainer}>
+      {authReady && (
+        <ThemeProvider>
+          <SafeAreaProvider>
+            <NavigationContainer theme={navigationTheme}>
+              {startupRepairRequired ? (
+                <StartupRepairScreen onRetry={retryStartup} onClearLocalCache={clearLocalStartupCache} />
+              ) : session ? (
+                profileStatus === 'complete' ? (
+                  <RootNavigator />
+                ) : profileStatus === 'incomplete' ? (
+                  <ProfileScreen onProfileComplete={handleProfileComplete} />
+                ) : (
+                  <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
+                )
+              ) : showSignup ? (
+                <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
+              ) : (
+                <LoginScreen onNavigateToSignup={() => setShowSignup(true)} />
+              )}
+            </NavigationContainer>
+            <Toast
+              config={toastConfig}
+              autoHide
+              visibilityTime={3000}
+              swipeable={false}
+              onPress={() => Toast.hide()}
+            />
+            
+            {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
+            {introDone && session && profileStatus === 'complete' && <PermissionPrompt />}
+          </SafeAreaProvider>
+        </ThemeProvider>
+      )}
+      {!introDone && (
+        <View style={styles.introOverlay}>
+          <AppIntroScreen readyToExit={authReady} onIntroComplete={handleIntroComplete} />
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -648,6 +647,14 @@ function ProfileRouteStatusScreen({
 }
 
 const styles = StyleSheet.create({
+  appContainer: {
+    flex: 1,
+    backgroundColor: APP_BACKGROUND_COLOR,
+  },
+  introOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: APP_BACKGROUND_COLOR,
+  },
   routeStatusContainer: {
     flex: 1,
     alignItems: 'center',

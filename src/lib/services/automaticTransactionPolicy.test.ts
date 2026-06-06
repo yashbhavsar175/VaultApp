@@ -22,11 +22,11 @@ describe('automatic transaction policy', () => {
     )).toEqual({ action: 'post', type: 'income' });
   });
 
-  it('auto-posts self transfers as expenses now', () => {
+  it('auto-posts self transfers as transfers now', () => {
     expect(getAutomaticTransactionPolicy(
       'debit',
       'Rs.5000 self transfer to own account'
-    )).toEqual({ action: 'post', type: 'expense' });
+    )).toEqual({ action: 'post', type: 'transfer' });
   });
 
   it('auto-posts unverified credits as income now', () => {

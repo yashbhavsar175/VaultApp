@@ -57,6 +57,25 @@ describe('notification privacy paths', () => {
     expect(serializedPayload).not.toContain('Main Road');
   });
 
+  it('labels saved transfers as self transfers in local notifications', async () => {
+    await showTransactionConfirmation(
+      'tx_transfer',
+      'transfer',
+      'Yashbhavsar',
+      1,
+      '1447',
+      'redacted_notification len=91 hash=abcdef12 sender=SUPERM',
+      'test',
+      'SUPERM'
+    );
+
+    const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
+
+    expect(payload.title).toBe('Self transfer');
+    expect(payload.body).toBe('Yashbhavsar');
+    expect(payload.body).toContain('Yashbhavsar');
+  });
+
   it('stores bug reports with redacted metadata even for legacy raw notification data', async () => {
     const sensitiveBody = 'Rs.99 debited from account 9876543210 at 12 Main Road. OTP 123456.';
 

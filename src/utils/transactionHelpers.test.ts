@@ -6,6 +6,7 @@ import {
 } from './transactionHelpers';
 import {
   getCategoryIcon,
+  getTransactionDisplayName,
   getTransactionSourceLabel,
   inferTransactionCategory,
 } from './transactionPresentation';
@@ -22,6 +23,24 @@ describe('refund transaction presentation', () => {
     expect(getTransactionAmountPrefix('income')).toBe('+');
     expect(getTransactionAmountPrefix('expense')).toBe('-');
     expect(getTransactionAmountPrefix('transfer')).toBe('\u2194');
+  });
+
+  it('shows self transfers as bank route instead of a person name', () => {
+    expect(getTransactionDisplayName({
+      type: 'transfer',
+      merchant: 'Yashbhavsar',
+      note: 'Bank of Baroda to Kotak',
+      category: 'Transfers',
+      raw_sms: 'Received Rs.1.00 from yashbhavsar175@oksbi',
+    })).toBe('Bank of Baroda to Kotak');
+
+    expect(getTransactionDisplayName({
+      type: 'transfer',
+      merchant: 'Yashbhavsar',
+      note: 'Yashbhavsar',
+      category: 'Yashbhavsar',
+      raw_sms: 'Received Rs.1.00 from yashbhavsar175@oksbi',
+    })).toBe('Bank to Bank');
   });
 
   it('categorizes refund rows separately from income and expense', () => {

@@ -72,7 +72,12 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
       const flag = await AsyncStorage.getItem('has_logged_in_before');
       const rnBiometrics = new ReactNativeBiometrics();
       const { available } = await rnBiometrics.isSensorAvailable();
-      setHasPreviousLogin(!!flag);
+      
+      // If the session is expired/missing, hide the biometric button 
+      // since it can't log the user in without a password.
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      setHasPreviousLogin(!!flag && !!session);
       setBiometricAvailable(available);
     })();
   }, []);

@@ -161,8 +161,28 @@ const SOURCE_LABELS = [
   },
 ];
 
+export const SELF_TRANSFER_DISPLAY_NAME = 'Bank to Bank';
+
 function normalize(value?: string | null): string {
   return (value || '').trim();
+}
+
+function cleanTransferRouteName(value?: string | null): string | null {
+  const normalizedValue = normalize(value).replace(/\s+/g, ' ');
+  if (
+    !normalizedValue ||
+    isGeneric(normalizedValue) ||
+    isUpiIdentifier(normalizedValue) ||
+    /@/.test(normalizedValue)
+  ) {
+    return null;
+  }
+
+  const parts = normalizedValue.split(/\s+to\s+/i).map(part => part.trim()).filter(Boolean);
+  if (parts.length !== 2) return null;
+  if (parts.some(part => isGeneric(part) || /^\d+$/.test(part))) return null;
+
+  return `${parts[0]} to ${parts[1]}`;
 }
 
 function titleCase(value: string): string {
@@ -310,6 +330,13 @@ export function getCategoryIcon(category: string): string {
 }
 
 export function getTransactionDisplayName(transaction: TransactionLike): string {
+  if (transaction.type === 'transfer') {
+    return cleanTransferRouteName(transaction.note) ||
+      cleanTransferRouteName(transaction.merchant) ||
+      cleanTransferRouteName(transaction.category) ||
+      SELF_TRANSFER_DISPLAY_NAME;
+  }
+
   const cleanedMerchant = cleanMerchantName(transaction.merchant);
   let finalName = '';
   

@@ -478,6 +478,7 @@ export default function Settings() {
         setConfirmDialog(null);
         try {
           await clearCache();
+          await AsyncStorage.removeItem('app_user_id');
           await supabase.auth.signOut();
           Toast.show({
             type: 'success',

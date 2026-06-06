@@ -68,6 +68,17 @@ jest.mock('@react-native-google-signin/google-signin', () => ({
 
 jest.mock('react-native-vector-icons/MaterialCommunityIcons', () => 'Icon');
 
+jest.mock('react-native-video', () => ({
+  __esModule: true,
+  default: 'Video',
+  ResizeMode: {
+    COVER: 'cover',
+    CONTAIN: 'contain',
+    STRETCH: 'stretch',
+    NONE: 'none',
+  },
+}));
+
 jest.mock('react-native-maps', () => {
   const React = require('react');
   const { View } = require('react-native');

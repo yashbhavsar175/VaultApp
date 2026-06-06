@@ -162,7 +162,7 @@ describe('auth startup recovery', () => {
       });
 
       let text = tree.root.findAllByType(Text).map(node => node.props.children).join(' ');
-      expect(text).toContain('Preparing your session');
+      expect(tree.root.findByType(AppIntroScreen).props.readyToExit).toBe(false);
       expect(text).not.toContain('Startup needs a retry');
 
       await ReactTestRenderer.act(async () => {
@@ -172,7 +172,6 @@ describe('auth startup recovery', () => {
 
       expect(tree.root.findByType(AppIntroScreen).props.readyToExit).toBe(true);
       text = tree.root.findAllByType(Text).map(node => node.props.children).join(' ');
-      expect(text).toContain('Preparing your session');
       expect(text).not.toContain('Login');
     } finally {
       await ReactTestRenderer.act(() => {

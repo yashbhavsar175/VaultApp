@@ -277,7 +277,37 @@ export async function createTransactionChannels() {
 /**
  * Show confirmation notification for successfully parsed transaction
  */
+const confirmationDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
+
 export async function showTransactionConfirmation(
+  transactionId: string,
+  type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed',
+  _merchant: string,
+  amount: number,
+  accountName?: string,
+  rawSms?: string,
+  logicLog?: string,
+  sender?: string
+): Promise<void> {
+  // Clear any pending notification for this transaction
+  const existingTimeout = confirmationDebounceMap.get(transactionId);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  return new Promise<void>((resolve) => {
+    const timeoutId = setTimeout(async () => {
+      confirmationDebounceMap.delete(transactionId);
+      await executeShowTransactionConfirmation(
+        transactionId, type, _merchant, amount, accountName, rawSms, logicLog, sender
+      );
+      resolve();
+    }, 500);
+    confirmationDebounceMap.set(transactionId, timeoutId);
+  });
+}
+
+async function executeShowTransactionConfirmation(
   transactionId: string,
   type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed',
   _merchant: string,
@@ -309,10 +339,19 @@ export async function showTransactionConfirmation(
       route: 'stored_transaction',
     });
 
-    const typeDisplay = type.charAt(0).toUpperCase() + type.slice(1);
-    const formattedAmount = formatSafeAmount(amount);
-    const accountLast4 = safeLast4(accountName);
-    const bodyText = `${typeDisplay} ${formattedAmount}${accountLast4 ? `\nAccount ending ${accountLast4}` : ''}`;
+    let titleText = 'Transaction saved';
+    let bodyText = '';
+
+    if (type === 'transfer') {
+      titleText = 'Self transfer';
+      bodyText = _merchant || 'Bank to Bank';
+    } else {
+      const typeDisplay = type.charAt(0).toUpperCase() + type.slice(1);
+      const formattedAmount = formatSafeAmount(amount);
+      const accountLast4 = safeLast4(accountName);
+      bodyText = `${typeDisplay} ${formattedAmount}${accountLast4 ? `\nAccount ending ${accountLast4}` : ''}`;
+    }
+
     const notificationRawText = ensureRedactedRawTextRecord(rawSms, {
       kind: 'sms',
       sender,
@@ -324,7 +363,7 @@ export async function showTransactionConfirmation(
 
     await notifee.displayNotification({
       id: `txn_${transactionId}`,
-      title: 'Transaction saved',
+      title: titleText,
       body: bodyText,
       android: {
         channelId: 'sms_parsed',

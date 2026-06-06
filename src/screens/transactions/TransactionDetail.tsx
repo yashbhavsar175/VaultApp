@@ -182,13 +182,14 @@ function formatSourceType(value?: string | null): string {
 }
 
 function formatDirection(transaction: Transaction, evidence?: TransactionEvidence | null): string {
+  if (transaction.type === 'transfer') return 'Self transfer';
+
   const direction = evidence?.direction;
   if (direction === 'credit') return 'Credit';
   if (direction === 'debit') return 'Debit';
   if (direction === 'transfer') return 'Transfer';
   if (transaction.type === 'income') return 'Credit';
   if (transaction.type === 'expense') return 'Debit';
-  if (transaction.type === 'transfer') return 'Transfer';
   return toTitleCase(transaction.type);
 }
 
@@ -679,10 +680,10 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const evidenceAccountLabel = formatOwnerLabel(primaryEvidence?.bank_name, evidenceLast4);
   const accountLabel = evidenceAccountLabel || bankName || formatOwnerLabel(null, transaction.account_last4);
   const sourceTrace = getEntrySourceTrace(transaction, primaryEvidence, accountLabel, colors);
-  const transferFromLabel = transaction.type === 'transfer'
-    ? accountLabelForId(bankAccounts, transaction.from_account_id || transaction.account_id, transaction.account_last4)
+  const transferFromLabel = transaction.type === 'transfer' && transaction.from_account_id
+    ? accountLabelForId(bankAccounts, transaction.from_account_id, transaction.account_last4)
     : null;
-  const transferToLabel = transaction.type === 'transfer'
+  const transferToLabel = transaction.type === 'transfer' && transaction.to_account_id
     ? accountLabelForId(bankAccounts, transaction.to_account_id, null)
     : null;
   const sourcePackage = safePackageName(primaryEvidence?.source_package);
