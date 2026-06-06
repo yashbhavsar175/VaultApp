@@ -641,12 +641,18 @@ export function buildDebtFreedomSummaryLabels(plan: DebtFreedomPlan): DebtFreedo
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debtFreedomViewModel.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 async function fetchTransactionsForUser(userId: string): Promise<Transaction[]> {
+  try {
   const { data, error } = await supabase
     .from('transactions')
     .select('id, user_id, amount, type, note, category, created_at, account_id, account_last4, sms_source, reference_number, from_account_id, to_account_id, refund_of_transaction_id, account_match_status')
@@ -655,9 +661,14 @@ async function fetchTransactionsForUser(userId: string): Promise<Transaction[]> 
 
   if (error) throw error;
   return (data || []) as Transaction[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debtFreedomViewModel.ts:fetchTransactionsForUser failed:', err);
+    throw err;
+  }}
 
 async function fetchIncomeEvidenceForUser(userId: string): Promise<TransactionEvidence[]> {
+  try {
   const { data, error } = await supabase
     .from('transaction_evidence')
     .select(INCOME_EVIDENCE_COLUMNS)
@@ -668,9 +679,14 @@ async function fetchIncomeEvidenceForUser(userId: string): Promise<TransactionEv
 
   if (error) throw error;
   return (data || []) as unknown as TransactionEvidence[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debtFreedomViewModel.ts:fetchIncomeEvidenceForUser failed:', err);
+    throw err;
+  }}
 
 async function fetchCreditCardStatementsForUser(userId: string, cardIds: string[]): Promise<CreditCardStatement[]> {
+  try {
   if (!cardIds.length) return [];
   const { data, error } = await supabase
     .from('credit_card_statements')
@@ -681,12 +697,17 @@ async function fetchCreditCardStatementsForUser(userId: string, cardIds: string[
 
   if (error) throw error;
   return (data || []) as CreditCardStatement[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debtFreedomViewModel.ts:fetchCreditCardStatementsForUser failed:', err);
+    throw err;
+  }}
 
 async function fetchBalanceSnapshotsForUser(
   userId: string,
   owners: Array<{ ownerType: BalanceSnapshot['owner_type']; ownerId: string }>
 ): Promise<BalanceSnapshot[]> {
+  try {
   const snapshots: BalanceSnapshot[] = [];
   for (const ownerType of ['credit_card', 'loan'] as const) {
     const ownerIds = owners
@@ -706,7 +727,11 @@ async function fetchBalanceSnapshotsForUser(
     snapshots.push(...((data || []) as BalanceSnapshot[]));
   }
   return snapshots;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debtFreedomViewModel.ts:fetchBalanceSnapshotsForUser failed:', err);
+    throw err;
+  }}
 
 async function fetchDebtFreedomRows(): Promise<DebtFreedomSourceRows> {
   const userId = await getCurrentUserId();

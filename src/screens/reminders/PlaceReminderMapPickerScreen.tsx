@@ -31,7 +31,7 @@ export default function PlaceReminderMapPickerScreen() {
   const mapRef = useRef<MapView>(null);
 
   useEffect(() => {
-    console.log('[PlaceReminderMapPicker] Picker opened');
+    if (__DEV__) console.log('[PlaceReminderMapPicker] Picker opened');
   }, []);
 
   const reverseGeocode = async (lat: number, lng: number) => {
@@ -47,7 +47,7 @@ export default function PlaceReminderMapPickerScreen() {
       );
       const data = await response.json();
       
-      console.log('[PlaceReminderMapPicker] Geocode result status:', data.status);
+      if (__DEV__) console.log('[PlaceReminderMapPicker] Geocode result status:', data.status);
       
       if (data.status === 'OK' && data.results && data.results.length > 0) {
         // Find a suitable short address. Usually first result is best.
@@ -62,7 +62,7 @@ export default function PlaceReminderMapPickerScreen() {
         setAddressLabel('Selected location');
       }
     } catch (error: any) {
-      console.warn('[PlaceReminderMapPicker] Geocode error', { name: error?.name, message: error?.message });
+      if (__DEV__) console.warn('[PlaceReminderMapPicker] Geocode error', { name: error?.name, message: error?.message });
       setAddressLabel('Selected location');
     } finally {
       setLoadingAddress(false);
@@ -75,25 +75,28 @@ export default function PlaceReminderMapPickerScreen() {
   };
 
   const handleUseLocation = () => {
-    console.log('[PlaceReminderMapPicker] Location selected, source: map_pin');
+    if (__DEV__) console.log('[PlaceReminderMapPicker] Location selected, source: map_pin');
+    const selectedLocation = {
+      latitude: region.latitude,
+      longitude: region.longitude,
+      label: addressLabel,
+      source: 'map_pin',
+    };
     // Set selectedLocation params on the existing EditPlaceReminder screen
     // then goBack() to pop MapPicker off the stack cleanly
-    const state = navigation.getState();
-    const editRoute = state.routes.find((r: any) => r.name === 'EditPlaceReminder');
-    if (editRoute) {
+    const state = typeof navigation.getState === 'function' ? navigation.getState() : undefined;
+    const editRoute = state?.routes?.find((r: any) => r.name === 'EditPlaceReminder');
+    if (editRoute && typeof navigation.dispatch === 'function') {
       navigation.dispatch({
         ...CommonActions.setParams({
-          selectedLocation: {
-            latitude: region.latitude,
-            longitude: region.longitude,
-            label: addressLabel,
-            source: 'map_pin',
-          }
+          selectedLocation,
         }),
         source: editRoute.key,
       });
+      navigation.goBack();
+      return;
     }
-    navigation.goBack();
+    navigation.navigate('EditPlaceReminder', { selectedLocation });
   };
 
   return (

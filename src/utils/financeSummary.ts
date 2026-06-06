@@ -1,4 +1,5 @@
 import { Transaction } from '../types';
+import { getISTDate } from './dateHelpers';
 
 export interface MonthlyTransactionTotals {
   totalIncome: number;
@@ -40,7 +41,7 @@ export function computeMonthlyTransactionTotals(
 
   const totals = transactions.reduce(
     (summary, transaction) => {
-      const txDate = new Date(transaction.created_at);
+      const txDate = getISTDate(transaction.created_at);
       if (txDate.getFullYear() !== year || txDate.getMonth() !== month) {
         return summary;
       }

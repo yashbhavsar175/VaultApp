@@ -424,6 +424,7 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   backdrop: {
@@ -433,6 +434,7 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingBottom: Platform.OS === 'ios' ? 40 : 24,
     elevation: 24,
+    // TODO: Replace with useTheme() colors.* token
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.25,

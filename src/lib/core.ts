@@ -12,6 +12,7 @@ import 'react-native-url-polyfill/auto';
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import EncryptedStorage from 'react-native-encrypted-storage';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
 import { Transaction, TransactionType } from '../types';
@@ -35,9 +36,29 @@ import {
 // SUPABASE CLIENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const secureStorageAdapter = {
+  getItem: async (key: string) => {
+    try {
+      return await EncryptedStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  setItem: async (key: string, value: string) => {
+    try {
+      await EncryptedStorage.setItem(key, value);
+    } catch {}
+  },
+  removeItem: async (key: string) => {
+    try {
+      await EncryptedStorage.removeItem(key);
+    } catch {}
+  },
+};
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
-    storage: AsyncStorage,
+    storage: secureStorageAdapter,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
@@ -182,6 +203,7 @@ export const signOutFromGoogle = async () => {
     }
     await GoogleSignin.signOut();
     await supabase.auth.signOut();
+    await EncryptedStorage.clear();
   } catch (error) {
     console.error('Sign out error:', error);
   }
@@ -579,24 +601,63 @@ export interface FindDuplicateLinkedRefundTransactionInput {
   reference_number?: string | null;
 }
 
-export async function getTransactions(): Promise<Transaction[]> {
+const TRANSACTION_COLUMNS = [
+  'id',
+  'user_id',
+  'amount',
+  'type',
+  'note',
+  'category',
+  'created_at',
+  'account_id',
+  'from_account_id',
+  'to_account_id',
+  'is_transfer_pending',
+  'refund_of_transaction_id',
+  'sms_source',
+  'sms_sender',
+  'raw_sms',
+  'merchant',
+  'account_last4',
+  'balance',
+  'upi_id',
+  'reference_number',
+  'primary_evidence_id',
+  'account_match_status',
+  'account_match_confidence',
+  'account_match_reason',
+].join(',');
+
+export async function getTransactions(
+  userId?: string,
+  page?: number,
+  pageSize: number = 30
+): Promise<Transaction[]> {
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
     throw new Error('User not authenticated');
   }
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('transactions')
-    .select('*')
-    .eq('user_id', user.id)
+    .select(TRANSACTION_COLUMNS)
+    .eq('user_id', userId || user.id)
     .order('created_at', { ascending: false });
+
+  if (page !== undefined) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    query = query.range(from, to);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(error.message);
   }
 
-  return (data || []).map(tx => sanitizeTransactionRawSmsForPrivacy(tx as Transaction));
+  return (data || []).map(tx => sanitizeTransactionRawSmsForPrivacy(tx as unknown as Transaction));
 }
 
 export async function findDuplicateLinkedRefundTransaction(
@@ -690,6 +751,13 @@ export async function updateTransaction(
   id: string,
   updates: Partial<Omit<Transaction, 'id' | 'user_id' | 'created_at'>>
 ): Promise<Transaction> {
+  if (updates.amount !== undefined && updates.amount <= 0) {
+    throw new Error('Amount must be greater than zero');
+  }
+  if (updates.type === 'transfer') {
+    throw new Error('Cannot update transaction type to transfer');
+  }
+
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 

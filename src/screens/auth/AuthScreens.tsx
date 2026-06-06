@@ -69,16 +69,22 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
 
   useEffect(() => {
     (async () => {
-      const flag = await AsyncStorage.getItem('has_logged_in_before');
-      const rnBiometrics = new ReactNativeBiometrics();
-      const { available } = await rnBiometrics.isSensorAvailable();
-      
-      // If the session is expired/missing, hide the biometric button 
-      // since it can't log the user in without a password.
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      setHasPreviousLogin(!!flag && !!session);
-      setBiometricAvailable(available);
+      try {
+        const flag = await AsyncStorage.getItem('has_logged_in_before');
+        const rnBiometrics = new ReactNativeBiometrics();
+        const { available } = await rnBiometrics.isSensorAvailable();
+
+        // If the session is expired/missing, hide the biometric button
+        // since it can't log the user in without a password.
+        const { data: { session } } = await supabase.auth.getSession();
+
+        setHasPreviousLogin(!!flag && !!session);
+        setBiometricAvailable(available);
+      } catch (err) {
+        if (__DEV__) console.error('Failed to load biometric login state:', err);
+        setHasPreviousLogin(false);
+        setBiometricAvailable(false);
+      }
     })();
   }, []);
 
@@ -92,7 +98,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
       });
       if (success) {
         HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-        // Re-use existing Supabase session (already persisted in AsyncStorage)
+        // Re-use existing Supabase session (persisted by the Supabase auth storage adapter)
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
           Toast.show({ type: 'success', text1: 'Welcome Back', text2: 'Biometric login successful' });
@@ -104,7 +110,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
       }
     } catch (e) {
       shake();
-      console.error('Biometric login error:', e);
+      if (__DEV__) console.error('Biometric login error:', e);
     }
   };
 
@@ -444,7 +450,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
         // Save user ID for background tasks
         await AsyncStorage.setItem('app_user_id', data.user.id);
         await AsyncStorage.setItem('has_logged_in_before', '1');
-        console.log('User ID saved for background tasks:', data.user.id);
+        if (__DEV__) console.log('User ID saved for background tasks:', data.user.id);
 
         Toast.show({
           type: 'success',

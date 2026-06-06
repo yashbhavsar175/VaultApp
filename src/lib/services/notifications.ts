@@ -12,7 +12,7 @@
 import notifee, { AndroidImportance, AuthorizationStatus, EventType } from '@notifee/react-native';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
 import NetInfo from '@react-native-community/netinfo';
-import { supabase } from '../core';
+import { deleteTransaction, supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { parseSMS, isTransactionSMS, ParsedTransaction } from './smsParser';
 import { getBankAccounts, updateBankAccount } from '../database/financial';
@@ -499,27 +499,10 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
         }
 
         if (netState.isConnected) {
-          // Online — delete from Supabase immediately
-          const { error } = await supabase
-            .from('transactions')
-            .delete()
-            .eq('id', transactionId)
-            .eq('user_id', user.id);
-
-          if (error) {
-            console.error('Error deleting transaction:', error);
-          } else {
-            logInfo('Transaction deleted successfully');
-            await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
-              current ? current.filter(tx => tx.id !== transactionId) : current
-            );
-            emitFinanceDataChanged({
-              areas: ['transactions'],
-              source: 'notificationAction:delete',
-              transactionId,
-            });
-            await notifee.cancelNotification(notification.id);
-          }
+          // Online — use shared deletion path so review state stays consistent
+          await deleteTransaction(transactionId);
+          logInfo('Transaction deleted successfully');
+          await notifee.cancelNotification(notification.id);
         } else {
           // Offline — queue for background sync, dismiss immediately for uninterrupted UX
           logInfo('Offline — queuing delete for background sync');

@@ -738,14 +738,17 @@ const styles = StyleSheet.create({
   heroCard: {
     borderRadius: 16, padding: 20, alignItems: 'center',
     position: 'relative', overflow: 'hidden', elevation: 6,
+    // TODO: Replace with useTheme() colors.* token
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 4,
   },
   heroCircle1: {
     position: 'absolute', width: 150, height: 150, borderRadius: 75,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(255,255,255,0.08)', top: -30, right: -30,
   },
   heroCircle2: {
     position: 'absolute', width: 100, height: 100, borderRadius: 50,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(255,255,255,0.05)', bottom: -20, left: -20,
   },
   countBadge: {
@@ -757,6 +760,7 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute', bottom: 24, right: 20, width: 56, height: 56, borderRadius: 28,
     justifyContent: 'center', alignItems: 'center', elevation: 6,
+    // TODO: Replace with useTheme() colors.* token
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4,
   },
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center' },

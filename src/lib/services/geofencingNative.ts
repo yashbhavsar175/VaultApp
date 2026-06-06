@@ -18,13 +18,13 @@ const RawModule = GeofenceModule as GeofenceModuleType;
 
 export const GeofencingNative: GeofenceModuleType = {
   async syncGeofences(reminders: NativeGeofenceReminder[]): Promise<boolean> {
-    console.log('[GeofencingNative] syncGeofences called:', { count: reminders.length, ids: reminders.map(r => r.id.slice(-6)) });
+    if (__DEV__) console.log('[GeofencingNative] syncGeofences called:', { count: reminders.length, ids: reminders.map(r => r.id.slice(-6)) });
     try {
       const result = await RawModule.syncGeofences(reminders);
-      console.log('[GeofencingNative] syncGeofences result:', result);
+      if (__DEV__) console.log('[GeofencingNative] syncGeofences result:', result);
       return result;
     } catch (error) {
-      console.warn('[GeofencingNative] syncGeofences error:', {
+      if (__DEV__) console.warn('[GeofencingNative] syncGeofences error:', {
         errorCode: error instanceof Error ? error.name : 'unknown',
         message: error instanceof Error ? error.message : String(error),
       });
@@ -33,13 +33,13 @@ export const GeofencingNative: GeofenceModuleType = {
   },
 
   async clearGeofences(): Promise<boolean> {
-    console.log('[GeofencingNative] clearGeofences called');
+    if (__DEV__) console.log('[GeofencingNative] clearGeofences called');
     try {
       const result = await RawModule.clearGeofences();
-      console.log('[GeofencingNative] clearGeofences result:', result);
+      if (__DEV__) console.log('[GeofencingNative] clearGeofences result:', result);
       return result;
     } catch (error) {
-      console.warn('[GeofencingNative] clearGeofences error:', {
+      if (__DEV__) console.warn('[GeofencingNative] clearGeofences error:', {
         errorCode: error instanceof Error ? error.name : 'unknown',
         message: error instanceof Error ? error.message : String(error),
       });

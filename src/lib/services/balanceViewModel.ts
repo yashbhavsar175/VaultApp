@@ -710,16 +710,22 @@ export function summarizePendingDetectedAccounts(
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 async function fetchSnapshotsForOwners(
   userId: string,
   ownerType: BalanceOwnerType,
   ownerIds: string[]
 ): Promise<SnapshotRow[]> {
+  try {
   if (!ownerIds.length) return [];
 
   const { data, error } = await supabase
@@ -733,9 +739,14 @@ async function fetchSnapshotsForOwners(
 
   if (error) throw error;
   return (data || []) as SnapshotRow[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:fetchSnapshotsForOwners failed:', err);
+    throw err;
+  }}
 
 async function fetchStatementsForCards(userId: string, cardIds: string[]): Promise<StatementRow[]> {
+  try {
   if (!cardIds.length) return [];
 
   const { data, error } = await supabase
@@ -749,7 +760,11 @@ async function fetchStatementsForCards(userId: string, cardIds: string[]): Promi
 
   if (error) throw error;
   return (data || []) as StatementRow[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:fetchStatementsForCards failed:', err);
+    throw err;
+  }}
 
 async function fetchHistoryForOwner(
   userId: string,
@@ -797,6 +812,7 @@ export async function getBalanceHistoryView(
 }
 
 export async function getBankAccountDetailView(accountId: string): Promise<BankAccountDetailView> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('bank_accounts')
@@ -818,9 +834,14 @@ export async function getBankAccountDetailView(accountId: string): Promise<BankA
   ]);
 
   return buildBankAccountDetailViewForRows(account, snapshots, historyRows);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:getBankAccountDetailView failed:', err);
+    throw err;
+  }}
 
 export async function getCreditCardDetailView(creditCardId: string): Promise<CreditCardDetailView> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('credit_cards')
@@ -838,9 +859,14 @@ export async function getCreditCardDetailView(creditCardId: string): Promise<Cre
   ]);
 
   return buildCreditCardDetailViewForRows(card, snapshots, statements, historyRows);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:getCreditCardDetailView failed:', err);
+    throw err;
+  }}
 
 export async function getAccountBalanceViewModels(): Promise<BankAccountBalanceView[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data: accounts, error } = await supabase
     .from('bank_accounts')
@@ -862,7 +888,11 @@ export async function getAccountBalanceViewModels(): Promise<BankAccountBalanceV
 
   if (error) throw error;
   return buildAccountBalanceViewModels(userId, (accounts || []) as BankAccount[]);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:getAccountBalanceViewModels failed:', err);
+    throw err;
+  }}
 
 async function buildAccountBalanceViewModels(
   userId: string,
@@ -883,6 +913,7 @@ async function buildAccountBalanceViewModels(
 }
 
 export async function getCreditCardBalanceViewModels(): Promise<CreditCardBalanceView[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data: cards, error } = await supabase
     .from('credit_cards')
@@ -904,7 +935,11 @@ export async function getCreditCardBalanceViewModels(): Promise<CreditCardBalanc
 
   if (error) throw error;
   return buildCreditCardBalanceViewModels(userId, (cards || []) as CreditCard[]);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:getCreditCardBalanceViewModels failed:', err);
+    throw err;
+  }}
 
 async function buildCreditCardBalanceViewModels(
   userId: string,
@@ -917,6 +952,7 @@ async function buildCreditCardBalanceViewModels(
 }
 
 export async function getPendingDetectedBalanceSummary(): Promise<PendingDetectedBalanceSummary> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('detected_accounts')
@@ -926,7 +962,11 @@ export async function getPendingDetectedBalanceSummary(): Promise<PendingDetecte
 
   if (error) throw error;
   return summarizePendingDetectedAccounts((data || []) as Pick<DetectedAccount, 'detection_type'>[]);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceViewModel.ts:getPendingDetectedBalanceSummary failed:', err);
+    throw err;
+  }}
 function isMissingArchiveColumnError(error: any): boolean {
   const message = String(error?.message || '').toLowerCase();
   return error?.code === '42703'

@@ -347,10 +347,18 @@ export default function PlacesScreen() {
           </View>
         </TouchableOpacity>
         <View style={{ flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <TouchableOpacity onPress={() => openModal(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <TouchableOpacity
+            onPress={() => openModal(item)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Edit ${item.name}`}>
             <MaterialCommunityIcons name="pencil-outline" size={18} color={colors.subtext} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleDelete(item.id, item.name)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <TouchableOpacity
+            onPress={() => handleDelete(item.id, item.name)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${item.name}`}>
             <MaterialCommunityIcons name="trash-can-outline" size={18} color="#ef4444" />
           </TouchableOpacity>
         </View>
@@ -393,6 +401,8 @@ export default function PlacesScreen() {
         style={[styles.fab, { backgroundColor: colors.accent }]}
         activeOpacity={0.8}
         onPress={() => openModal()}
+        accessibilityRole="button"
+        accessibilityLabel="Add place"
       >
         <MaterialCommunityIcons name="plus" size={28} color="#fff" />
       </TouchableOpacity>
@@ -409,7 +419,10 @@ export default function PlacesScreen() {
               <Text style={[typography.h2, { color: colors.text }]}>
                 {isEditing ? 'Edit Place' : 'Save New Place'}
               </Text>
-              <TouchableOpacity onPress={closeModal}>
+              <TouchableOpacity
+                onPress={closeModal}
+                accessibilityRole="button"
+                accessibilityLabel="Close place form">
                 <MaterialCommunityIcons name="close" size={24} color={colors.subtext} />
               </TouchableOpacity>
             </View>
@@ -485,7 +498,10 @@ export default function PlacesScreen() {
                   )}
                 </View>
                 {latitude && (
-                  <TouchableOpacity onPress={() => { setLatitude(null); setLongitude(null); setAddress(''); }}>
+                  <TouchableOpacity
+                    onPress={() => { setLatitude(null); setLongitude(null); setAddress(''); }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear pinned location">
                     <MaterialCommunityIcons name="close-circle" size={20} color={colors.subtext} />
                   </TouchableOpacity>
                 )}

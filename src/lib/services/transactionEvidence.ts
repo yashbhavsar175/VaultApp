@@ -226,10 +226,15 @@ function safeMaskedPaymentMethod(value?: string | null): string | null {
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 function buildEvidencePayload(userId: string, input: CreateTransactionEvidenceInput) {
   const signalId = input.signal_id.trim();
@@ -264,6 +269,7 @@ function buildEvidencePayload(userId: string, input: CreateTransactionEvidenceIn
 export async function createTransactionEvidence(
   input: CreateTransactionEvidenceInput
 ): Promise<TransactionEvidence> {
+  try {
   const userId = await getCurrentUserId();
   const payload = buildEvidencePayload(userId, input);
 
@@ -275,9 +281,14 @@ export async function createTransactionEvidence(
 
   if (error) throw error;
   return data as TransactionEvidence;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:createTransactionEvidence failed:', err);
+    throw err;
+  }}
 
 export async function getEvidenceForTransaction(transactionId: string): Promise<TransactionEvidence[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('transaction_evidence')
@@ -288,9 +299,14 @@ export async function getEvidenceForTransaction(transactionId: string): Promise<
 
   if (error) throw error;
   return (data || []) as TransactionEvidence[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:getEvidenceForTransaction failed:', err);
+    throw err;
+  }}
 
 export async function getUnlinkedEvidence(limit = 50): Promise<TransactionEvidence[]> {
+  try {
   const userId = await getCurrentUserId();
   const safeLimit = Math.max(1, Math.min(limit, 100));
 
@@ -304,7 +320,11 @@ export async function getUnlinkedEvidence(limit = 50): Promise<TransactionEviden
 
   if (error) throw error;
   return (data || []) as TransactionEvidence[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:getUnlinkedEvidence failed:', err);
+    throw err;
+  }}
 
 export async function linkEvidenceToTransaction(
   evidenceId: string,
@@ -313,6 +333,7 @@ export async function linkEvidenceToTransaction(
   confidence: AccountMatchConfidence,
   reason?: string | null
 ): Promise<TransactionEvidence> {
+  try {
   const userId = await getCurrentUserId();
   const safeReason = reason?.trim() || null;
 
@@ -356,12 +377,17 @@ export async function linkEvidenceToTransaction(
   if (transactionUpdateError) throw transactionUpdateError;
 
   return data as TransactionEvidence;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:linkEvidenceToTransaction failed:', err);
+    throw err;
+  }}
 
 export async function markEvidenceReviewRequired(
   evidenceId: string,
   reason?: string | null
 ): Promise<TransactionEvidence> {
+  try {
   const userId = await getCurrentUserId();
 
   const { data, error } = await supabase
@@ -377,7 +403,11 @@ export async function markEvidenceReviewRequired(
 
   if (error) throw error;
   return data as TransactionEvidence;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:markEvidenceReviewRequired failed:', err);
+    throw err;
+  }}
 
 function buildMappingPayload(userId: string, input: CreateOrUpdateAccountAppMappingInput) {
   if (input.owner_type === 'wallet') {
@@ -409,6 +439,7 @@ function buildMappingPayload(userId: string, input: CreateOrUpdateAccountAppMapp
 export async function createOrUpdateAccountAppMapping(
   input: CreateOrUpdateAccountAppMappingInput
 ): Promise<AccountAppMapping> {
+  try {
   const userId = await getCurrentUserId();
   const payload = buildMappingPayload(userId, input);
 
@@ -453,7 +484,11 @@ export async function createOrUpdateAccountAppMapping(
 
   if (error) throw error;
   return data as AccountAppMapping;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:createOrUpdateAccountAppMapping failed:', err);
+    throw err;
+  }}
 
 export async function getActiveAppMappings(
   appPackage: string,
@@ -477,6 +512,7 @@ export async function getActiveAppMappings(
 }
 
 export async function disableAccountAppMapping(id: string): Promise<AccountAppMapping> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('account_app_mappings')
@@ -488,4 +524,8 @@ export async function disableAccountAppMapping(id: string): Promise<AccountAppMa
 
   if (error) throw error;
   return data as AccountAppMapping;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] transactionEvidence.ts:disableAccountAppMapping failed:', err);
+    throw err;
+  }}

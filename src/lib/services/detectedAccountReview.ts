@@ -109,10 +109,15 @@ function assertNever(value: never): never {
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 function normalizeComparable(value?: string | null): string {
   return (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -453,6 +458,7 @@ async function callDetectedAccountRpc(
   rpcName: DetectedAccountRpcName,
   params: Record<string, unknown>
 ): Promise<DetectedAccountRpcRow> {
+  try {
   const { data, error } = await supabase.rpc(rpcName, params);
 
   if (error) {
@@ -471,9 +477,14 @@ async function callDetectedAccountRpc(
   }
 
   return { owner_id: ownerId, status: status as DetectedAccount['status'] };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:callDetectedAccountRpc failed:', err);
+    throw err;
+  }}
 
 async function getDetectionById(userId: string, id: string): Promise<DetectedAccount> {
+  try {
   const { data, error } = await supabase
     .from('detected_accounts')
     .select('*')
@@ -484,9 +495,14 @@ async function getDetectionById(userId: string, id: string): Promise<DetectedAcc
   if (error) throw error;
   if (!data?.id) throw new Error('Detection was not found');
   return data as DetectedAccount;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:getDetectionById failed:', err);
+    throw err;
+  }}
 
 async function getBankAccountById(userId: string, id: string): Promise<BankAccount> {
+  try {
   const { data, error } = await supabase
     .from('bank_accounts')
     .select('*')
@@ -497,9 +513,14 @@ async function getBankAccountById(userId: string, id: string): Promise<BankAccou
   if (error) throw error;
   if (!data?.id) throw new Error('Bank account was not found');
   return data as BankAccount;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:getBankAccountById failed:', err);
+    throw err;
+  }}
 
 async function getCreditCardById(userId: string, id: string): Promise<CreditCard> {
+  try {
   const { data, error } = await supabase
     .from('credit_cards')
     .select('*')
@@ -510,9 +531,14 @@ async function getCreditCardById(userId: string, id: string): Promise<CreditCard
   if (error) throw error;
   if (!data?.id) throw new Error('Credit card was not found');
   return data as CreditCard;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:getCreditCardById failed:', err);
+    throw err;
+  }}
 
 async function getDebitCardById(userId: string, id: string): Promise<DebitCard> {
+  try {
   const { data, error } = await supabase
     .from('debit_cards')
     .select('*')
@@ -523,7 +549,11 @@ async function getDebitCardById(userId: string, id: string): Promise<DebitCard> 
   if (error) throw error;
   if (!data?.id) throw new Error('Debit card was not found');
   return data as DebitCard;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:getDebitCardById failed:', err);
+    throw err;
+  }}
 
 function ownerIdFromRpc(row: DetectedAccountRpcRow, detection: DetectedAccount): string {
   const ownerId = row.owner_id || detection.matched_owner_id;
@@ -537,6 +567,7 @@ async function getSnapshotFromDetection(
   ownerType: BalanceOwnerType,
   ownerId: string
 ): Promise<BalanceSnapshot | null> {
+  try {
   if (detection.balance_amount === null || detection.balance_amount === undefined || !detection.balance_kind) {
     return null;
   }
@@ -561,7 +592,11 @@ async function getSnapshotFromDetection(
 
   if (error) throw error;
   return (data as BalanceSnapshot | null) || null;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:getSnapshotFromDetection failed:', err);
+    throw err;
+  }}
 
 function accountTypeFromInput(type: ConfirmDetectedBankAccountInput['accountType']): ConfirmDetectedBankAccountInput['accountType'] {
   return type === 'current' ? 'current' : 'savings';
@@ -587,6 +622,7 @@ export async function confirmDetectedBankAccount(input: ConfirmDetectedBankAccou
   detectedAccount: DetectedAccount;
   snapshot: BalanceSnapshot | null;
 }> {
+  try {
   const userId = await getCurrentUserId();
   const bankName = requireBankName(input.bankName);
   const accountLast4 = requireLast4(input.accountLast4, 'Account');
@@ -610,13 +646,18 @@ export async function confirmDetectedBankAccount(input: ConfirmDetectedBankAccou
   await notifyAccountsChanged();
 
   return { account, detectedAccount, snapshot };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:confirmDetectedBankAccount failed:', err);
+    throw err;
+  }}
 
 export async function confirmDetectedCreditCard(input: ConfirmDetectedCreditCardInput): Promise<{
   creditCard: CreditCard;
   detectedAccount: DetectedAccount;
   snapshot: BalanceSnapshot | null;
 }> {
+  try {
   const userId = await getCurrentUserId();
   const bankName = requireBankName(input.bankName);
   const cardLast4 = requireLast4(input.cardLast4, 'Card');
@@ -643,7 +684,11 @@ export async function confirmDetectedCreditCard(input: ConfirmDetectedCreditCard
   emitFinanceDataChanged({ areas: ['accounts'], source: 'detected_account_review' });
 
   return { creditCard, detectedAccount, snapshot };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccountReview.ts:confirmDetectedCreditCard failed:', err);
+    throw err;
+  }}
 
 export async function confirmDetectedDebitCard(input: ConfirmDetectedDebitCardInput): Promise<{
   debitCard: DebitCard;

@@ -76,6 +76,7 @@ export async function getBankAccounts(options: ArchiveListOptions = {}): Promise
 
     let query = supabase
       .from('bank_accounts')
+      // TODO: narrow columns.
       .select('*')
       .eq('user_id', user.id);
 
@@ -92,6 +93,7 @@ export async function getBankAccounts(options: ArchiveListOptions = {}): Promise
       warnArchiveFallbackOnce('bank_accounts', error);
       const { data: fallbackData, error: fallbackError } = await supabase
         .from('bank_accounts')
+        // TODO: narrow columns.
         .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: true });
@@ -193,6 +195,7 @@ export async function updateBankAccount(
 }
 
 export async function archiveBankAccountIfSupported(id: string): Promise<boolean> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('No user found');
 
@@ -211,7 +214,11 @@ export async function archiveBankAccountIfSupported(id: string): Promise<boolean
 
   if (error) throw error;
   return true;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:archiveBankAccountIfSupported failed:', err);
+    throw err;
+  }}
 
 export async function deleteBankAccount(id: string): Promise<void> {
   try {
@@ -285,11 +292,13 @@ export interface AddCCTransactionData {
 
 // Get all credit cards for user
 export async function getCreditCards(options: ArchiveListOptions = {}): Promise<CreditCard[]> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
   let query = supabase
     .from('credit_cards')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', userData.user.id);
 
@@ -306,6 +315,7 @@ export async function getCreditCards(options: ArchiveListOptions = {}): Promise<
     warnArchiveFallbackOnce('credit_cards', error);
     const { data: fallbackData, error: fallbackError } = await supabase
       .from('credit_cards')
+      // TODO: narrow columns.
       .select('*')
       .eq('user_id', userData.user.id)
       .order('created_at', { ascending: false });
@@ -315,15 +325,21 @@ export async function getCreditCards(options: ArchiveListOptions = {}): Promise<
 
   if (error) throw error;
   return data || [];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getCreditCards failed:', err);
+    throw err;
+  }}
 
 // Get single credit card
 export async function getCreditCard(cardId: string): Promise<CreditCard | null> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
   const { data, error } = await supabase
     .from('credit_cards')
+    // TODO: narrow columns.
     .select('*')
     .eq('id', cardId)
     .eq('user_id', userData.user.id)
@@ -331,10 +347,15 @@ export async function getCreditCard(cardId: string): Promise<CreditCard | null> 
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getCreditCard failed:', err);
+    throw err;
+  }}
 
 // Add new credit card
 export async function addCreditCard(cardData: AddCardData): Promise<CreditCard> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -350,13 +371,18 @@ export async function addCreditCard(cardData: AddCardData): Promise<CreditCard> 
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:addCreditCard failed:', err);
+    throw err;
+  }}
 
 // Update credit card
 export async function updateCreditCard(
   cardId: string,
   updates: Partial<AddCardData>
 ): Promise<CreditCard> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -370,10 +396,15 @@ export async function updateCreditCard(
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:updateCreditCard failed:', err);
+    throw err;
+  }}
 
 // Delete credit card
 export async function deleteCreditCard(cardId: string): Promise<void> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -393,15 +424,21 @@ export async function deleteCreditCard(cardId: string): Promise<void> {
     .eq('user_id', userData.user.id);
 
   if (error) throw error;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:deleteCreditCard failed:', err);
+    throw err;
+  }}
 
 // Get transactions for a card
 export async function getCardTransactions(cardId: string): Promise<CCTransaction[]> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
   const { data, error } = await supabase
     .from('cc_transactions')
+    // TODO: narrow columns.
     .select('*')
     .eq('card_id', cardId)
     .eq('user_id', userData.user.id)
@@ -409,12 +446,17 @@ export async function getCardTransactions(cardId: string): Promise<CCTransaction
 
   if (error) throw error;
   return data || [];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getCardTransactions failed:', err);
+    throw err;
+  }}
 
 // Add credit card transaction
 export async function addCCTransaction(
   transactionData: AddCCTransactionData
 ): Promise<CCTransaction> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -430,7 +472,11 @@ export async function addCCTransaction(
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:addCCTransaction failed:', err);
+    throw err;
+  }}
 
 // Get total outstanding across all cards
 export async function getTotalCCOutstanding(): Promise<number> {
@@ -477,11 +523,13 @@ export function getCreditUtilization(card: CreditCard): number {
 
 // Find card by last 4 digits
 export async function findCardByLast4Digits(last4: string): Promise<CreditCard | null> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) return null;
 
   const { data, error } = await supabase
     .from('credit_cards')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', userData.user.id)
     .eq('last_4_digits', last4)
@@ -489,7 +537,11 @@ export async function findCardByLast4Digits(last4: string): Promise<CreditCard |
 
   if (error) return null;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:findCardByLast4Digits failed:', err);
+    throw err;
+  }}
 
 // Get monthly spend for a card
 export async function getMonthlySpend(
@@ -497,6 +549,7 @@ export async function getMonthlySpend(
   month: number,
   year: number
 ): Promise<number> {
+  try {
   const startDate = new Date(year, month, 1);
   const endDate = new Date(year, month + 1, 0, 23, 59, 59);
 
@@ -510,7 +563,11 @@ export async function getMonthlySpend(
 
   if (error) return 0;
   return data.reduce((sum, txn) => sum + txn.amount, 0);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getMonthlySpend failed:', err);
+    throw err;
+  }}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOANS
@@ -571,26 +628,34 @@ export interface AddEMIPaymentData {
 
 // Get all loans for user
 export async function getLoans(): Promise<Loan[]> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
   const { data, error } = await supabase
     .from('loans')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', userData.user.id)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
   return data || [];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getLoans failed:', err);
+    throw err;
+  }}
 
 // Get single loan
 export async function getLoan(loanId: string): Promise<Loan | null> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
   const { data, error } = await supabase
     .from('loans')
+    // TODO: narrow columns.
     .select('*')
     .eq('id', loanId)
     .eq('user_id', userData.user.id)
@@ -598,10 +663,15 @@ export async function getLoan(loanId: string): Promise<Loan | null> {
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getLoan failed:', err);
+    throw err;
+  }}
 
 // Add new loan
 export async function addLoan(loanData: AddLoanData): Promise<Loan> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -618,13 +688,18 @@ export async function addLoan(loanData: AddLoanData): Promise<Loan> {
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:addLoan failed:', err);
+    throw err;
+  }}
 
 // Update loan
 export async function updateLoan(
   loanId: string,
   updates: Partial<AddLoanData>
 ): Promise<Loan> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -644,10 +719,15 @@ export async function updateLoan(
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:updateLoan failed:', err);
+    throw err;
+  }}
 
 // Delete loan
 export async function deleteLoan(loanId: string): Promise<void> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -658,15 +738,21 @@ export async function deleteLoan(loanId: string): Promise<void> {
     .eq('user_id', userData.user.id);
 
   if (error) throw error;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:deleteLoan failed:', err);
+    throw err;
+  }}
 
 // Get EMI payments for a loan
 export async function getEMIPayments(loanId: string): Promise<EMIPayment[]> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
   const { data, error } = await supabase
     .from('emi_payments')
+    // TODO: narrow columns.
     .select('*')
     .eq('loan_id', loanId)
     .eq('user_id', userData.user.id)
@@ -674,12 +760,17 @@ export async function getEMIPayments(loanId: string): Promise<EMIPayment[]> {
 
   if (error) throw error;
   return data || [];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:getEMIPayments failed:', err);
+    throw err;
+  }}
 
 // Add EMI payment
 export async function addEMIPayment(
   paymentData: AddEMIPaymentData
 ): Promise<EMIPayment> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) throw new Error('Not authenticated');
 
@@ -716,7 +807,11 @@ export async function addEMIPayment(
 
   if (error) throw error;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:addEMIPayment failed:', err);
+    throw err;
+  }}
 
 // Calculate EMI components (principal vs interest)
 export function calculateEMIComponents(
@@ -805,11 +900,13 @@ export function getRemainingMonths(loan: Loan): number {
 
 // Find loan by lender name
 export async function findLoanByLender(lenderName: string): Promise<Loan | null> {
+  try {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData?.user) return null;
 
   const { data, error } = await supabase
     .from('loans')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', userData.user.id)
     .ilike('lender_name', `%${lenderName}%`)
@@ -817,4 +914,8 @@ export async function findLoanByLender(lenderName: string): Promise<Loan | null>
 
   if (error) return null;
   return data;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] financial.ts:findLoanByLender failed:', err);
+    throw err;
+  }}

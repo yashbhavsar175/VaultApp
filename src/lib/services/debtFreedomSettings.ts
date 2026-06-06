@@ -130,12 +130,17 @@ export function isDebtFreedomSettingsTableMissingError(error: unknown): boolean 
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    throw err;
+  }}
 
 export async function getDebtFreedomSettings(): Promise<DebtFreedomSettings | null> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('debt_freedom_settings')
@@ -145,11 +150,15 @@ export async function getDebtFreedomSettings(): Promise<DebtFreedomSettings | nu
 
   if (error) throw error;
   return data as unknown as DebtFreedomSettings | null;
-}
+
+  } catch (err) {
+    throw err;
+  }}
 
 export async function upsertDebtFreedomSettings(
   input: DebtFreedomSettingsInput
 ): Promise<DebtFreedomSettings> {
+  try {
   const userId = await getCurrentUserId();
   const sanitized = sanitizeDebtFreedomSettingsInput(input);
   const { data, error } = await supabase
@@ -164,4 +173,7 @@ export async function upsertDebtFreedomSettings(
 
   if (error) throw error;
   return data as unknown as DebtFreedomSettings;
-}
+
+  } catch (err) {
+    throw err;
+  }}

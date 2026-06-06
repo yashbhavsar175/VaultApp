@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, AppState, AppSt
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import EncryptedStorage from 'react-native-encrypted-storage';
 import { supabase } from '../../lib/core';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
@@ -150,7 +151,7 @@ export default function Settings() {
       setLastDeliveryIncident(lastIncident);
       setLastDistanceResult(lastDistance);
     } catch (error) {
-      console.log('Error checking Porter service', error);
+      if (__DEV__) console.log('Error checking Porter service', error);
     } finally {
       setDeliveryStatusLoading(false);
     }
@@ -407,7 +408,7 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    console.log('🔧 [Settings] Component mounted');
+    if (__DEV__) console.log('🔧 [Settings] Component mounted');
     loadUserInfo();
     checkPorterService();
 
@@ -463,7 +464,7 @@ export default function Settings() {
         });
       }
     } catch (error) {
-      console.error('Error loading user info:', error);
+      if (__DEV__) console.error('Error loading user info:', error);
     }
   };
 
@@ -482,12 +483,13 @@ export default function Settings() {
           try {
             await GeofencingNative.clearGeofences();
           } catch (e) {
-            console.warn('[Settings] Failed to clear geofences on signout', e);
+            if (__DEV__) console.warn('[Settings] Failed to clear geofences on signout', e);
           }
 
           await clearCache();
           await AsyncStorage.removeItem('app_user_id');
           await supabase.auth.signOut();
+          await EncryptedStorage.clear();
           Toast.show({
             type: 'success',
             text1: 'Signed Out',
@@ -548,7 +550,7 @@ export default function Settings() {
         text2: 'Name updated successfully',
       });
     } catch (error) {
-      console.error('Error updating name:', error);
+      if (__DEV__) console.error('Error updating name:', error);
       Toast.show({
         type: 'error',
         text1: 'Error',
@@ -600,7 +602,7 @@ export default function Settings() {
         text2: 'Password updated successfully',
       });
     } catch (error) {
-      console.error('Error updating password:', error);
+      if (__DEV__) console.error('Error updating password:', error);
       Toast.show({
         type: 'error',
         text1: 'Error',
@@ -759,7 +761,7 @@ export default function Settings() {
         setBugReports([]);
       }
     } catch (e) {
-      console.error(e);
+      if (__DEV__) console.error(e);
     }
   };
 
@@ -783,7 +785,7 @@ export default function Settings() {
           await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(updatedReports));
           Toast.show({ type: 'success', text1: 'Deleted', text2: 'Bug report removed' });
         } catch (error) {
-          console.error('Error deleting report:', error);
+          if (__DEV__) console.error('Error deleting report:', error);
           Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to delete report' });
         }
       }
@@ -824,7 +826,7 @@ export default function Settings() {
       }
       await Share.share({ title: 'VaultApp Bug Reports', message: sharePayload });
     } catch (error) {
-      console.error('Error sharing bug reports:', error);
+      if (__DEV__) console.error('Error sharing bug reports:', error);
       Toast.show({ type: 'error', text1: 'Error', text2: 'Could not export bug reports' });
     }
   };
@@ -843,7 +845,7 @@ export default function Settings() {
           setBugReports([]);
           Toast.show({ type: 'success', text1: 'Cleared', text2: 'All bug reports have been deleted' });
         } catch (error) {
-          console.error('Error clearing bug reports:', error);
+          if (__DEV__) console.error('Error clearing bug reports:', error);
           Toast.show({ type: 'error', text1: 'Error', text2: 'Could not clear bug reports' });
         }
       }

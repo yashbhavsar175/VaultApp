@@ -410,7 +410,7 @@ async function getProfileNameForSelfMatch(userId: string): Promise<string | null
       .single();
 
     if (error) {
-      console.warn('[SelfTransferPairing] Profile lookup unavailable', {
+      if (__DEV__) console.warn('[SelfTransferPairing] Profile lookup unavailable', {
         errorCode: safeErrorCode(error),
       });
       return null;
@@ -418,7 +418,7 @@ async function getProfileNameForSelfMatch(userId: string): Promise<string | null
 
     return typeof data?.full_name === 'string' ? data.full_name : null;
   } catch (error) {
-    console.warn('[SelfTransferPairing] Profile lookup failed', {
+    if (__DEV__) console.warn('[SelfTransferPairing] Profile lookup failed', {
       errorCode: safeErrorCode(error),
     });
     return null;
@@ -433,12 +433,12 @@ async function isCurrentUserCounterparty(userId: string, parsed: ParsedTransacti
 
 function eventDebugLog(message: string, details: Record<string, unknown>): void {
   if (!FINANCIAL_EVENT_DEBUG) return;
-  console.log(message, details);
+  if (__DEV__) console.log(message, details);
 }
 
 function eventDebugWarn(message: string, details: Record<string, unknown>): void {
   if (!FINANCIAL_EVENT_DEBUG) return;
-  console.warn(message, details);
+  if (__DEV__) console.warn(message, details);
 }
 
 async function resolveAutomaticPolicy(input: {
@@ -747,7 +747,7 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
 
     return { amount, type, reference, merchant, balance, source, rawSender: sender, accountLast4, cardLast4, upiId };
   } catch (error) {
-    console.error('Error parsing transaction:', error);
+    if (__DEV__) console.error('Error parsing transaction:', error);
     return null;
   }
 }
@@ -938,7 +938,7 @@ async function findAndSyncBankAccount(
 
     const matches = data || [];
     if (matches.length > 1) {
-      console.warn('[TransactionProcessors] Ambiguous bank account match; leaving transaction unlinked', {
+      if (__DEV__) console.warn('[TransactionProcessors] Ambiguous bank account match; leaving transaction unlinked', {
         matches: matches.length,
       });
       return null;
@@ -957,12 +957,12 @@ async function findAndSyncBankAccount(
       const prevBalance = prevData?.balance !== undefined ? prevData.balance : 'Unknown';
       const bankName = prevData?.name || accountLast4 || accountId;
 
-      console.log('================================================================');
-      console.log(`[BalanceSync] 💳 Bank Account: ${bankName}`);
-      console.log(`[BalanceSync] 📝 Exact Balance Found in SMS/Notification`);
-      console.log(`[BalanceSync] 💰 Previous Balance: ₹${prevBalance}`);
-      console.log(`[BalanceSync] 💵 New Updated Balance: ₹${balance}`);
-      console.log('================================================================');
+      if (__DEV__) console.log('================================================================');
+      if (__DEV__) console.log(`[BalanceSync] 💳 Bank Account: ${bankName}`);
+      if (__DEV__) console.log(`[BalanceSync] 📝 Exact Balance Found in SMS/Notification`);
+      if (__DEV__) console.log(`[BalanceSync] 💰 Previous Balance: ₹${prevBalance}`);
+      if (__DEV__) console.log(`[BalanceSync] 💵 New Updated Balance: ₹${balance}`);
+      if (__DEV__) console.log('================================================================');
 
       const { error } = await supabase
         .from('bank_accounts')
@@ -971,7 +971,7 @@ async function findAndSyncBankAccount(
         .eq('user_id', userId);
 
       if (error) {
-        console.warn('[TransactionProcessors] Failed to sync bank balance from SMS:', error.message);
+        if (__DEV__) console.warn('[TransactionProcessors] Failed to sync bank balance from SMS:', error.message);
       }
 
       await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
@@ -981,7 +981,7 @@ async function findAndSyncBankAccount(
 
     return accountId;
   } catch (error) {
-    console.warn('[TransactionProcessors] Failed to find matched bank account:', error);
+    if (__DEV__) console.warn('[TransactionProcessors] Failed to find matched bank account:', error);
     return null;
   }
 }
@@ -1022,7 +1022,7 @@ async function recordBalanceSignalSafely(input: {
   try {
     const result = await recordBalanceSignalForUser(input);
     if (result.parsed.isBalanceSignal) {
-      console.log('[BalanceSignal] Recorded parsed balance signal', {
+      if (__DEV__) console.log('[BalanceSignal] Recorded parsed balance signal', {
         sourceType: input.sourceType,
         hash: result.parsed.redactedSource.hash,
         snapshots: result.snapshots.length,
@@ -1043,7 +1043,7 @@ async function recordBalanceSignalSafely(input: {
       return changed;
     }
   } catch (error) {
-    console.warn('[BalanceSignal] Failed to record parsed balance signal', {
+    if (__DEV__) console.warn('[BalanceSignal] Failed to record parsed balance signal', {
       sourceType: input.sourceType,
       message: error instanceof Error ? error.message : 'unknown_error',
     });
@@ -1085,7 +1085,7 @@ async function recordEstimatedBalanceMovementSafely(input: {
     });
 
     if (snapshot) {
-      console.log('[BalanceSignal] Recorded estimated balance movement', {
+      if (__DEV__) console.log('[BalanceSignal] Recorded estimated balance movement', {
         sourceType: input.sourceType,
         direction: input.parsed.type,
         balanceKind: snapshot.balance_kind,
@@ -1097,7 +1097,7 @@ async function recordEstimatedBalanceMovementSafely(input: {
       return true;
     }
   } catch (error) {
-    console.warn('[BalanceSignal] Failed to record estimated balance movement', {
+    if (__DEV__) console.warn('[BalanceSignal] Failed to record estimated balance movement', {
       sourceType: input.sourceType,
       message: error instanceof Error ? error.message : 'unknown_error',
     });
@@ -1114,7 +1114,7 @@ async function resolvePaymentAppBankAccountSafely(input: {
   try {
     return await resolvePaymentAppBankAccountForUser(input);
   } catch {
-    console.warn('[PaymentAppMapping] Failed to resolve account hint', {
+    if (__DEV__) console.warn('[PaymentAppMapping] Failed to resolve account hint', {
       sourcePackagePresent: Boolean(input.sourcePackage),
     });
     return null;
@@ -1126,7 +1126,7 @@ async function resolvePaymentAppBankAccountSafely(input: {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const processSms = async (taskData: SmsData) => {
-  console.log('SMS Processor Started', {
+  if (__DEV__) console.log('SMS Processor Started', {
     sender: summarizeSenderForLog(taskData.sender),
     bodyLength: taskData.body?.length ?? 0,
     timestamp: taskData.timestamp,
@@ -1134,23 +1134,23 @@ export const processSms = async (taskData: SmsData) => {
 
   try {
     if (isBlockedSender(taskData.sender)) {
-      console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(taskData.sender));
+      if (__DEV__) console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(taskData.sender));
       return;
     }
 
     if (!isLegitimateFinancialSender(taskData.sender)) {
-      console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(taskData.sender));
+      if (__DEV__) console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(taskData.sender));
       return;
     }
 
     if (isSpamMessage(taskData.body)) {
-      console.log('⚠️ Spam SMS - skipping');
+      if (__DEV__) console.log('⚠️ Spam SMS - skipping');
       return;
     }
 
     const userId = await getProcessorUserId();
     if (!userId) {
-      console.log('No user ID found');
+      if (__DEV__) console.log('No user ID found');
       return;
     }
 
@@ -1164,7 +1164,7 @@ export const processSms = async (taskData: SmsData) => {
 
     const parsed = parseTransaction(taskData.body, taskData.sender);
     if (!parsed) {
-      console.log('SMS not recognized as financial transaction');
+      if (__DEV__) console.log('SMS not recognized as financial transaction');
       eventDebugLog('[AutoTransactionDebug] Route decision', {
         sourceKind: 'sms',
         routeDecision: balanceChanged ? 'balance_only' : 'ignored',
@@ -1180,7 +1180,7 @@ export const processSms = async (taskData: SmsData) => {
       return;
     }
 
-    console.log('Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
+    if (__DEV__) console.log('Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
     const automaticPolicy = await resolveAutomaticPolicy({
       userId,
@@ -1268,7 +1268,7 @@ export const processSms = async (taskData: SmsData) => {
         (duplicate.type !== 'transfer' && dbType === 'transfer')
       ) {
         // If they are opposing types (income vs expense) or one is explicitly transfer
-        console.log('Self-transfer pair detected - upgrading existing transaction to transfer');
+        if (__DEV__) console.log('Self-transfer pair detected - upgrading existing transaction to transfer');
         const transferPatch = await buildPendingTransferPatch({
           userId,
           incomingType: parsed.type,
@@ -1294,11 +1294,11 @@ export const processSms = async (taskData: SmsData) => {
           dbType = 'transfer'; // Update local type for notification
           confirmationAccountLast4 = duplicate.account_last4 || parsed.accountLast4;
         } else {
-          console.error('Failed to upgrade transaction to transfer:', upgradeError);
+          if (__DEV__) console.error('Failed to upgrade transaction to transfer:', upgradeError);
           return;
         }
       } else {
-        console.log('Duplicate transaction detected - skipping');
+        if (__DEV__) console.log('Duplicate transaction detected - skipping');
         recordSmsEvidenceWithDebug({
           text: taskData.body,
           sender: taskData.sender,
@@ -1425,12 +1425,12 @@ export const processSms = async (taskData: SmsData) => {
       }
     } catch (error) {
       if (isDuplicateInsertError(error)) {
-        console.log('Duplicate transaction detected by database - skipping');
+        if (__DEV__) console.log('Duplicate transaction detected by database - skipping');
         return;
       }
 
       // Network call failed unexpectedly — queue offline
-      console.error('Database operation failed, queuing offline:', error);
+      if (__DEV__) console.error('Database operation failed, queuing offline:', error);
       const tempId = Date.now().toString();
       const offlineTx = {
         user_id: userId,
@@ -1493,19 +1493,19 @@ export const processSms = async (taskData: SmsData) => {
           })
         );
       } catch (notificationError) {
-        console.error('Failed to show transaction notification (non-critical):', notificationError);
+        if (__DEV__) console.error('Failed to show transaction notification (non-critical):', notificationError);
         // Don't fail the whole operation for notification issues
       }
     }
 
     // Log success - this should not fail the whole operation
     try {
-      console.log('Transaction processed successfully:', transactionId);
+      if (__DEV__) console.log('Transaction processed successfully:', transactionId);
     } catch {
       // Swallow logging errors - they're not critical
     }
   } catch (error) {
-    console.error('Error in SMS processor:', error);
+    if (__DEV__) console.error('Error in SMS processor:', error);
   }
 };
 
@@ -1514,16 +1514,16 @@ export const processSms = async (taskData: SmsData) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const processNotification = async (taskData: any) => {
-  console.log('🔔 Notification Processor Started:', {
+  if (__DEV__) console.log('🔔 Notification Processor Started:', {
     payloadLength: getNotificationPayloadLength(taskData),
   });
 
   try {
     const notif = normalizeNotificationPayload(taskData);
-    console.log('Parsed notification:', summarizeNotificationForLog(notif));
+    if (__DEV__) console.log('Parsed notification:', summarizeNotificationForLog(notif));
 
     if (!ALLOWED_PACKAGES.includes(notif.app)) {
-      console.log('Notification from non-financial app - ignoring:', notif.app);
+      if (__DEV__) console.log('Notification from non-financial app - ignoring:', notif.app);
       return;
     }
 
@@ -1539,25 +1539,25 @@ export const processNotification = async (taskData: any) => {
       .trim();
     
     if (isSpamMessage(combinedText)) {
-      console.log('⚠️ Spam notification - skipping');
+      if (__DEV__) console.log('⚠️ Spam notification - skipping');
       return;
     }
 
     const sender = PACKAGE_TO_SENDER[notif.app] || 'UNKNOWN';
 
     if (isBlockedSender(sender)) {
-      console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(sender));
+      if (__DEV__) console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(sender));
       return;
     }
 
     if (!isLegitimateFinancialSender(sender)) {
-      console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(sender));
+      if (__DEV__) console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(sender));
       return;
     }
 
     const userId = await getProcessorUserId();
     if (!userId) {
-      console.log('No user ID found');
+      if (__DEV__) console.log('No user ID found');
       return;
     }
 
@@ -1601,7 +1601,7 @@ export const processNotification = async (taskData: any) => {
     ];
     
     if (NON_TRANSACTION_PATTERNS.some(pattern => pattern.test(combinedText))) {
-      console.log('⚠️ Reminder notification - skipping');
+      if (__DEV__) console.log('⚠️ Reminder notification - skipping');
       return;
     }
 
@@ -1617,14 +1617,14 @@ export const processNotification = async (taskData: any) => {
                                textLower.includes('rs.');
       
       if (!hasUPIReference || !hasPaymentKeyword) {
-        console.log('⚠️ WhatsApp notification not a valid payment - skipping');
+        if (__DEV__) console.log('⚠️ WhatsApp notification not a valid payment - skipping');
         return;
       }
     }
 
     const parsed = parseTransaction(combinedText, sender);
     if (!parsed) {
-      console.log('Notification not recognized as financial transaction');
+      if (__DEV__) console.log('Notification not recognized as financial transaction');
       eventDebugLog('[AutoTransactionDebug] Route decision', {
         sourceKind: 'notification',
         routeDecision: balanceChanged ? 'balance_only' : 'ignored',
@@ -1659,7 +1659,7 @@ export const processNotification = async (taskData: any) => {
       return;
     }
 
-    console.log('✅ Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
+    if (__DEV__) console.log('✅ Parsed Transaction:', summarizeParsedTransactionForLog(parsed));
 
     const automaticPolicy = await resolveAutomaticPolicy({
       userId,
@@ -1756,7 +1756,7 @@ export const processNotification = async (taskData: any) => {
         (duplicate.type === 'expense' && dbType === 'income') ||
         (duplicate.type !== 'transfer' && dbType === 'transfer')
       ) {
-        console.log('Self-transfer pair detected - upgrading existing transaction to transfer');
+        if (__DEV__) console.log('Self-transfer pair detected - upgrading existing transaction to transfer');
         const transferPatch = await buildPendingTransferPatch({
           userId,
           incomingType: parsed.type,
@@ -1781,11 +1781,11 @@ export const processNotification = async (taskData: any) => {
           transactionId = duplicate.id;
           dbType = 'transfer';
         } else {
-          console.error('Failed to upgrade transaction to transfer:', upgradeError);
+          if (__DEV__) console.error('Failed to upgrade transaction to transfer:', upgradeError);
           return;
         }
       } else {
-        console.log('Duplicate transaction detected - skipping');
+        if (__DEV__) console.log('Duplicate transaction detected - skipping');
         recordNotificationEvidenceWithDebug({
           text: combinedText,
           sourcePackage: notif.app,
@@ -1912,12 +1912,12 @@ export const processNotification = async (taskData: any) => {
       }
     } catch (error) {
       if (isDuplicateInsertError(error)) {
-        console.log('Duplicate transaction detected by database - skipping');
+        if (__DEV__) console.log('Duplicate transaction detected by database - skipping');
         return;
       }
 
       // Network call failed unexpectedly — queue offline
-      console.error('Database operation failed, queuing offline:', error);
+      if (__DEV__) console.error('Database operation failed, queuing offline:', error);
       const tempId = Date.now().toString();
       const offlineTx = {
         user_id: userId,
@@ -1981,19 +1981,19 @@ export const processNotification = async (taskData: any) => {
           })
         );
       } catch (notificationError) {
-        console.error('Failed to show transaction notification (non-critical):', notificationError);
+        if (__DEV__) console.error('Failed to show transaction notification (non-critical):', notificationError);
         // Don't fail the whole operation for notification issues
       }
     }
 
     // Log success - this should not fail the whole operation
     try {
-      console.log('Transaction processed successfully:', transactionId);
+      if (__DEV__) console.log('Transaction processed successfully:', transactionId);
     } catch {
       // Swallow logging errors - they're not critical
     }
   } catch (error) {
-    console.error('Error in notification processor:', error);
+    if (__DEV__) console.error('Error in notification processor:', error);
   }
 };
 

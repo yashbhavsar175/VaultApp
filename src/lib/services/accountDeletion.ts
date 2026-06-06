@@ -125,6 +125,7 @@ export async function deletePlacePhotosForUser(userId: string): Promise<void> {
 }
 
 export async function deleteCurrentUserAppData(): Promise<void> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new AccountDataDeletionError('session');
 
@@ -143,8 +144,8 @@ export async function deleteCurrentUserAppData(): Promise<void> {
   try {
     try {
       await GeofencingNative.clearGeofences();
-    } catch (e) {
-      console.warn('[AccountDeletion] Failed to clear geofences', e);
+    } catch {
+      // Geofence cleanup is best-effort during account deletion.
     }
     await clearLocalAccountDataAfterDeletion(user.id);
   } catch {
@@ -154,4 +155,7 @@ export async function deleteCurrentUserAppData(): Promise<void> {
   const signOutResult = await supabase.auth.signOut();
   if (localCleanupFailed) throw new AccountDataDeletionError('local-cleanup');
   if (signOutResult?.error) throw new AccountDataDeletionError('sign-out');
-}
+
+  } catch (err) {
+    throw err;
+  }}

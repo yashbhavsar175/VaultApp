@@ -143,7 +143,11 @@ export default function MapPickerModal({
 
         {/* Top bar */}
         <View style={[styles.topBar, { backgroundColor: 'rgba(0,0,0,0.6)' }]}>
-          <TouchableOpacity onPress={onCancel} style={styles.topButton}>
+          <TouchableOpacity
+            onPress={onCancel}
+            style={styles.topButton}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel map picker">
             <MaterialCommunityIcons name="arrow-left" size={24} color="#fff" />
           </TouchableOpacity>
           <View style={styles.topTitleContainer}>
@@ -160,6 +164,8 @@ export default function MapPickerModal({
             style={[styles.controlButton, { backgroundColor: colors.card }]}
             onPress={cycleMapType}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Change map type"
           >
             <MaterialCommunityIcons name={getMapTypeIcon()} size={22} color={colors.accent} />
             <Text style={[styles.controlLabel, { color: colors.text }]}>{getMapTypeLabel()}</Text>
@@ -170,6 +176,8 @@ export default function MapPickerModal({
             style={[styles.controlButton, { backgroundColor: colors.card }]}
             onPress={recenterMap}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Recenter map"
           >
             <MaterialCommunityIcons name="crosshairs-gps" size={22} color={colors.accent} />
           </TouchableOpacity>
@@ -187,6 +195,8 @@ export default function MapPickerModal({
             style={[styles.confirmButton, { backgroundColor: colors.accent, borderRadius: borderRadius.md }]}
             onPress={() => onConfirm(markerCoord.latitude, markerCoord.longitude)}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Confirm selected location"
           >
             <MaterialCommunityIcons name="check" size={20} color="#fff" style={{ marginRight: 6 }} />
             <Text style={styles.confirmText}>Confirm Location</Text>

@@ -63,10 +63,15 @@ function assertRemovableOwnerType(ownerType: string): asserts ownerType is Remov
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] accountRemoval.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 async function countRows(
   table: string,
@@ -85,6 +90,7 @@ async function getOwnerInfo(
   ownerId: string,
   userId: string
 ): Promise<OwnerInfo> {
+  try {
   assertRemovableOwnerType(ownerType);
 
   if (ownerType === 'bank_account') {
@@ -143,7 +149,11 @@ async function getOwnerInfo(
     canArchive: true,
     hasStoredBalance: false,
   };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] accountRemoval.ts:getOwnerInfo failed:', err);
+    throw err;
+  }}
 
 async function countLinkedTransactions(owner: OwnerInfo, userId: string): Promise<number> {
   if (owner.ownerType === 'bank_account') {
@@ -272,6 +282,7 @@ export async function forceDeleteOwnerCascade(
   ownerType: RemovableOwnerType,
   ownerId: string
 ): Promise<AccountRemovalResult> {
+  try {
   const userId = await getCurrentUserId();
   const owner = await getOwnerInfo(ownerType, ownerId, userId);
   const impact = await buildImpact(owner, userId);
@@ -284,7 +295,11 @@ export async function forceDeleteOwnerCascade(
   if (error) throw error;
   emitFinanceDataChanged({ areas: ['accounts'], source: 'account_removal:delete' });
   return { action: 'deleted', impact };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] accountRemoval.ts:forceDeleteOwnerCascade failed:', err);
+    throw err;
+  }}
 
 export async function removeOrArchiveOwner(
   ownerType: RemovableOwnerType,

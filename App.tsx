@@ -16,6 +16,7 @@ import { initializeForegroundListener } from './src/lib/services/notifications';
 import { initPorterDistanceCalculator } from './src/lib/services/porter';
 import { startLocationMonitoring, stopLocationMonitoring } from './src/lib/services/placeReminders';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { CACHE_KEYS, getCached, prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
 
@@ -138,30 +139,6 @@ function App() {
     configureGoogleSignIn();
   }, []);
 
-  // One-time cleanup script for dirty transaction notes
-  useEffect(() => {
-    const cleanNames = async () => {
-      if (!session?.user) return;
-      try {
-        const { data } = await supabase.from('transactions').select('id, note').eq('user_id', session.user.id);
-        if (data) {
-          let count = 0;
-          for (const tx of data) {
-            if (tx.note && /\b(?:deposited|credited|received)\b/i.test(tx.note)) {
-              const newNote = tx.note.replace(/\b(?:deposited|credited|received)\b/ig, '').replace(/\s+/g, ' ').trim();
-              await supabase.from('transactions').update({ note: newNote }).eq('id', tx.id);
-              count++;
-            }
-          }
-          if (count > 0) console.log(`✅ [Cleanup] Cleaned ${count} old transaction names!`);
-        }
-      } catch (e) {
-        console.error('[Cleanup] Error cleaning names:', e);
-      }
-    };
-    cleanNames();
-  }, [session]);
-
   // Initialize native background helpers on app start
   useEffect(() => {
     initPorterDistanceCalculator();
@@ -170,8 +147,12 @@ function App() {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
         syncOfflineTransactions()
-          .then(() => console.log('✅ [OfflineSync] Foreground sync complete'))
-          .catch(e => console.error('❌ [OfflineSync] Foreground sync error:', e));
+          .then(() => {
+            if (__DEV__) console.log('✅ [OfflineSync] Foreground sync complete');
+          })
+          .catch(e => {
+            if (__DEV__) console.error('❌ [OfflineSync] Foreground sync error:', e);
+          });
       }
     });
 
@@ -187,8 +168,12 @@ function App() {
     const unsubscribe = NetInfo.addEventListener(state => {
       if (state.isConnected) {
         syncOfflineTransactions()
-          .then(() => console.log('✅ [OfflineSync] Network reconnect sync complete'))
-          .catch(e => console.error('❌ [OfflineSync] Network reconnect sync error:', e));
+          .then(() => {
+            if (__DEV__) console.log('✅ [OfflineSync] Network reconnect sync complete');
+          })
+          .catch(e => {
+            if (__DEV__) console.error('❌ [OfflineSync] Network reconnect sync error:', e);
+          });
       }
     });
     return () => unsubscribe();
@@ -196,7 +181,7 @@ function App() {
 
   // Initialize foreground listener for notifee events
   useEffect(() => {
-    console.log('🚀 [App] Initializing foreground listener for notifications...');
+    if (__DEV__) console.log('🚀 [App] Initializing foreground listener for notifications...');
     const unsubscribe = initializeForegroundListener();
     return () => {
       unsubscribe();
@@ -251,7 +236,7 @@ function App() {
         // Only a successful profile response with no usable name is treated as incomplete.
         return 'incomplete';
       } catch (error) {
-        console.warn('[AuthStartup] Live profile lookup failed', {
+        if (__DEV__) console.warn('[AuthStartup] Live profile lookup failed', {
           error: summarizeStartupError(error),
         });
         return await getCachedProfileStatus(nextSession) ?? 'error';
@@ -314,7 +299,7 @@ function App() {
           })
           .catch(error => {
             if (routeRevision === undefined || routeRevision === authRouteRevisionRef.current) {
-              console.warn('[AuthStartup] Cached profile route kept; live profile verification failed', {
+              if (__DEV__) console.warn('[AuthStartup] Cached profile route kept; live profile verification failed', {
                 error: summarizeStartupError(error),
               });
             }
@@ -348,7 +333,7 @@ function App() {
               setProfileStatus(lateStatus);
             });
           } else {
-            console.warn('[AuthStartup] Profile check unavailable', {
+            if (__DEV__) console.warn('[AuthStartup] Profile check unavailable', {
               error: summarizeStartupError(error),
             });
           }
@@ -375,7 +360,7 @@ function App() {
           }
 
           sessionLoadTimedOut = isStartupTimeout(error, 'Supabase session load', AUTH_STARTUP_TIMEOUT_MS);
-          console.warn(sessionLoadTimedOut
+          if (__DEV__) console.warn(sessionLoadTimedOut
             ? '[AuthStartup] Session load timed out; waiting for late recovery'
             : '[AuthStartup] Session load fallback shows logged-out route', {
             error: summarizeStartupError(error),
@@ -403,7 +388,7 @@ function App() {
               markAuthReady();
             })
             .catch(lateError => {
-              console.warn('[AuthStartup] Late session recovery failed', {
+              if (__DEV__) console.warn('[AuthStartup] Late session recovery failed', {
                 error: summarizeStartupError(lateError),
               });
             });
@@ -436,7 +421,7 @@ function App() {
           setSession(null);
         }
       } catch (error) {
-        console.warn('[AuthStartup] Falling back to logged-out route', {
+        if (__DEV__) console.warn('[AuthStartup] Falling back to logged-out route', {
           error: summarizeStartupError(error),
         });
         if (!isMounted) return;
@@ -477,7 +462,7 @@ function App() {
         deferredAuthTimers.delete(deferredTimer);
         void applyAuthStateChange(nextSession).catch(error => {
           if (!isMounted) return;
-          console.warn('[AuthStartup] Auth change route unavailable', {
+          if (__DEV__) console.warn('[AuthStartup] Auth change route unavailable', {
             error: summarizeStartupError(error),
           });
           if (nextSession?.user) {
@@ -520,11 +505,11 @@ function App() {
       const cachedStatus = await getCachedProfileStatus(session);
       if (routeRevision === authRouteRevisionRef.current) {
         if (cachedStatus) {
-          console.warn('[AuthStartup] Profile retry unavailable; using cached profile route', {
+          if (__DEV__) console.warn('[AuthStartup] Profile retry unavailable; using cached profile route', {
             error: summarizeStartupError(error),
           });
         } else {
-          console.warn('[AuthStartup] Profile retry unavailable', {
+          if (__DEV__) console.warn('[AuthStartup] Profile retry unavailable', {
             error: summarizeStartupError(error),
           });
         }
@@ -550,7 +535,7 @@ function App() {
       STARTUP_CACHE_CLEAR_TIMEOUT_MS,
       'Startup profile cache clear',
     ).catch(error => {
-      console.warn('[AuthStartup] Local startup cache clear unavailable', {
+      if (__DEV__) console.warn('[AuthStartup] Local startup cache clear unavailable', {
         error: summarizeStartupError(error),
       });
     });
@@ -566,23 +551,25 @@ function App() {
       {authReady && (
         <ThemeProvider>
           <SafeAreaProvider>
-            <NavigationContainer theme={navigationTheme}>
-              {startupRepairRequired ? (
-                <StartupRepairScreen onRetry={retryStartup} onClearLocalCache={clearLocalStartupCache} />
-              ) : session ? (
-                profileStatus === 'complete' ? (
-                  <RootNavigator />
-                ) : profileStatus === 'incomplete' ? (
-                  <ProfileScreen onProfileComplete={handleProfileComplete} />
+            <ErrorBoundary>
+              <NavigationContainer theme={navigationTheme}>
+                {startupRepairRequired ? (
+                  <StartupRepairScreen onRetry={retryStartup} onClearLocalCache={clearLocalStartupCache} />
+                ) : session ? (
+                  profileStatus === 'complete' ? (
+                    <RootNavigator />
+                  ) : profileStatus === 'incomplete' ? (
+                    <ProfileScreen onProfileComplete={handleProfileComplete} />
+                  ) : (
+                    <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
+                  )
+                ) : showSignup ? (
+                  <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
                 ) : (
-                  <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
-                )
-              ) : showSignup ? (
-                <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
-              ) : (
-                <LoginScreen onNavigateToSignup={() => setShowSignup(true)} />
-              )}
-            </NavigationContainer>
+                  <LoginScreen onNavigateToSignup={() => setShowSignup(true)} />
+                )}
+              </NavigationContainer>
+            </ErrorBoundary>
             <Toast
               config={toastConfig}
               autoHide

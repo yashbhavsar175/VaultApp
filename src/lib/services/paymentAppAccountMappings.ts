@@ -120,6 +120,7 @@ export function extractPaymentAppBankHint(
 }
 
 async function getBankAccountForUser(userId: string, accountId: string): Promise<BankAccount | null> {
+  try {
   const { data, error } = await supabase
     .from('bank_accounts')
     .select('*')
@@ -133,9 +134,14 @@ async function getBankAccountForUser(userId: string, accountId: string): Promise
   return account && (account.account_type === 'savings' || account.account_type === 'current')
     ? account
     : null;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] paymentAppAccountMappings.ts:getBankAccountForUser failed:', err);
+    throw err;
+  }}
 
 async function getUniqueBankAccountForHint(userId: string, bankHint: string): Promise<BankAccount | null> {
+  try {
   const { data, error } = await supabase
     .from('bank_accounts')
     .select('*')
@@ -150,13 +156,18 @@ async function getUniqueBankAccountForHint(userId: string, bankHint: string): Pr
   );
 
   return matches.length === 1 ? matches[0] : null;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] paymentAppAccountMappings.ts:getUniqueBankAccountForHint failed:', err);
+    throw err;
+  }}
 
 export async function resolvePaymentAppBankAccountForUser(input: {
   userId: string;
   text: string;
   sourcePackage?: string | null;
 }): Promise<PaymentAppBankAccountMatch | null> {
+  try {
   const hint = extractPaymentAppBankHint(input.text, input.sourcePackage);
   if (!hint) return null;
 
@@ -206,7 +217,11 @@ export async function resolvePaymentAppBankAccountForUser(input: {
     mappedBankAccountLast4: safeLast4(account.account_last4),
     mappedBankName: account.bank_name,
   };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] paymentAppAccountMappings.ts:resolvePaymentAppBankAccountForUser failed:', err);
+    throw err;
+  }}
 
 export async function confirmPaymentAppBankAccountMapping(input: {
   sourcePackage: string;
@@ -214,6 +229,7 @@ export async function confirmPaymentAppBankAccountMapping(input: {
   bankHint: string;
   bankAccountId: string;
 }): Promise<PaymentAppBankAccountMatch> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
 
@@ -247,7 +263,11 @@ export async function confirmPaymentAppBankAccountMapping(input: {
     mappedBankAccountLast4: safeLast4(account.account_last4),
     mappedBankName: account.bank_name,
   };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] paymentAppAccountMappings.ts:confirmPaymentAppBankAccountMapping failed:', err);
+    throw err;
+  }}
 
 export async function recordMappedPaymentAppBalanceEstimateForCurrentUser(input: {
   bankAccountId: string;
@@ -257,6 +277,7 @@ export async function recordMappedPaymentAppBalanceEstimateForCurrentUser(input:
   sourceHash?: string | null;
   timestamp?: number;
 }): Promise<boolean> {
+  try {
   if (
     !Number.isFinite(input.amount) ||
     !input.amount ||
@@ -287,4 +308,8 @@ export async function recordMappedPaymentAppBalanceEstimateForCurrentUser(input:
     source: 'review_queue:app_mapping_balance_estimate',
   });
   return true;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] paymentAppAccountMappings.ts:recordMappedPaymentAppBalanceEstimateForCurrentUser failed:', err);
+    throw err;
+  }}

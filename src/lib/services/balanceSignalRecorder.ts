@@ -131,6 +131,7 @@ async function fetchBankAccountMatches(
   userId: string,
   accountLast4?: string | null
 ): Promise<BankAccountMatch[]> {
+  try {
   const last4 = normalizeLast4(accountLast4);
   if (!last4) return [];
 
@@ -144,7 +145,11 @@ async function fetchBankAccountMatches(
   if (error) throw error;
   return ((data || []) as BankAccountMatch[])
     .filter(account => account.account_type === 'savings' || account.account_type === 'current');
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:fetchBankAccountMatches failed:', err);
+    throw err;
+  }}
 
 async function matchBankAccount(
   userId: string,
@@ -169,6 +174,7 @@ async function fetchCreditCardMatches(
   userId: string,
   cardLast4?: string | null
 ): Promise<CreditCardMatch[]> {
+  try {
   const last4 = normalizeLast4(cardLast4);
   if (!last4) return [];
 
@@ -203,7 +209,11 @@ async function fetchCreditCardMatches(
       last_4_digits: card.account_last4,
     })),
   ];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:fetchCreditCardMatches failed:', err);
+    throw err;
+  }}
 
 async function matchCreditCard(
   userId: string,
@@ -284,6 +294,7 @@ async function createOrReuseDetectedCandidate(
   detectedAt: string,
   confidenceOverride?: 'exact' | 'estimated' | 'low'
 ): Promise<DetectedAccount> {
+  try {
   const existing = await findExistingDetectedCandidate(userId, parsed, detectionType, detectedAt);
   if (existing?.id) {
     const { data, error } = await supabase
@@ -325,7 +336,11 @@ async function createOrReuseDetectedCandidate(
 
   if (error) throw error;
   return data as DetectedAccount;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:createOrReuseDetectedCandidate failed:', err);
+    throw err;
+  }}
 
 async function findRecentSimilarSnapshot(
   userId: string,
@@ -370,6 +385,7 @@ async function createSnapshotIfNew(
   ownerId: string | null,
   detectedAt: string
 ): Promise<BalanceSnapshot | null> {
+  try {
   const existing = await findRecentSimilarSnapshot(userId, parsed, balance, ownerType, ownerId, detectedAt);
   if (existing?.id) return existing;
 
@@ -396,7 +412,11 @@ async function createSnapshotIfNew(
 
   if (error) throw error;
   return data as BalanceSnapshot;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:createSnapshotIfNew failed:', err);
+    throw err;
+  }}
 
 async function createOrUpdateDetectedDebitCard(
   userId: string,
@@ -404,6 +424,7 @@ async function createOrUpdateDetectedDebitCard(
   bankAccountId: string,
   detectedAt: string
 ): Promise<DebitCard | null> {
+  try {
   const cardLast4 = normalizeLast4(parsed.debitCardLast4);
   if (!cardLast4) return null;
 
@@ -451,7 +472,11 @@ async function createOrUpdateDetectedDebitCard(
 
   if (error) throw error;
   return data as DebitCard;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:createOrUpdateDetectedDebitCard failed:', err);
+    throw err;
+  }}
 
 async function findExistingCreditCardStatement(
   userId: string,
@@ -486,6 +511,7 @@ async function createOrUpdateStatementIfNeeded(
   creditCardId: string,
   sourceSnapshotId: string | null
 ): Promise<CreditCardStatement | null> {
+  try {
   if (!parsed.statement) return null;
 
   const existing = await findExistingCreditCardStatement(userId, creditCardId, parsed);
@@ -523,7 +549,11 @@ async function createOrUpdateStatementIfNeeded(
 
   if (error) throw error;
   return data as CreditCardStatement;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:createOrUpdateStatementIfNeeded failed:', err);
+    throw err;
+  }}
 
 async function resolveOwner(
   userId: string,
@@ -532,6 +562,7 @@ async function resolveOwner(
   detectedCandidates: DetectedAccount[],
   bankAccountIdHint?: string | null
 ): Promise<MatchedOwner | null> {
+  try {
   if (parsed.instrumentHint === 'credit_card') {
     const match = await matchCreditCard(userId, parsed);
     if (match) return match;
@@ -568,7 +599,11 @@ async function resolveOwner(
   const candidate = await createOrReuseDetectedCandidate(userId, parsed, 'bank_account', detectedAt, 'low');
   detectedCandidates.push(candidate);
   return { ownerType: 'detected_account', ownerId: candidate.id, confidence: 'low' };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:resolveOwner failed:', err);
+    throw err;
+  }}
 
 export async function recordBalanceSignalForUser(
   input: RecordBalanceSignalInput
@@ -646,6 +681,7 @@ async function fetchLatestKnownBankBalance(
   userId: string,
   bankAccountId: string
 ): Promise<BankAccountBalanceBasis | null> {
+  try {
   const { data: snapshots, error: snapshotError } = await supabase
     .from('balance_snapshots')
     .select('balance_kind, amount, account_last4, detected_bank_name')
@@ -704,13 +740,18 @@ async function fetchLatestKnownBankBalance(
     accountLast4: account.account_last4,
     detectedBankName: account.bank_name,
   };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:fetchLatestKnownBankBalance failed:', err);
+    throw err;
+  }}
 
 async function findExistingEstimatedMovementSnapshot(
   userId: string,
   bankAccountId: string,
   sourceHash?: string | null
 ): Promise<BalanceSnapshot | null> {
+  try {
   const hash = sourceHash?.trim().toLowerCase();
   if (!hash || !/^[a-f0-9]{8,64}$/.test(hash)) return null;
 
@@ -727,11 +768,16 @@ async function findExistingEstimatedMovementSnapshot(
 
   if (error) throw error;
   return (data as BalanceSnapshot | null) || null;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:findExistingEstimatedMovementSnapshot failed:', err);
+    throw err;
+  }}
 
 export async function recordEstimatedBankBalanceMovementForUser(
   input: RecordEstimatedBankBalanceMovementInput
 ): Promise<BalanceSnapshot | null> {
+  try {
   if (!input.bankAccountId?.trim()) return null;
   if (!Number.isFinite(input.amount) || input.amount <= 0) return null;
 
@@ -745,12 +791,12 @@ export async function recordEstimatedBankBalanceMovementForUser(
   const nextAmount = previous.amount + delta;
   if (!Number.isFinite(nextAmount) || nextAmount < 0) return null;
 
-  console.log('================================================================');
-  console.log(`[BalanceEstimate] 💳 Bank Account: ${previous.detectedBankName || input.bankAccountId}`);
-  console.log(`[BalanceEstimate] 📉 Transaction Amount: ₹${input.amount} (${input.direction})`);
-  console.log(`[BalanceEstimate] 💰 Previous Balance: ₹${previous.amount}`);
-  console.log(`[BalanceEstimate] 💵 New Estimated Balance: ₹${nextAmount}`);
-  console.log('================================================================');
+  if (__DEV__) console.log('================================================================');
+  if (__DEV__) console.log(`[BalanceEstimate] 💳 Bank Account: ${previous.detectedBankName || input.bankAccountId}`);
+  if (__DEV__) console.log(`[BalanceEstimate] 📉 Transaction Amount: ₹${input.amount} (${input.direction})`);
+  if (__DEV__) console.log(`[BalanceEstimate] 💰 Previous Balance: ₹${previous.amount}`);
+  if (__DEV__) console.log(`[BalanceEstimate] 💵 New Estimated Balance: ₹${nextAmount}`);
+  if (__DEV__) console.log('================================================================');
 
   const detectedAt = toDetectedAt(input.timestamp);
   const senderOrPackage = input.senderOrPackage?.trim() || null;
@@ -787,4 +833,8 @@ export async function recordEstimatedBankBalanceMovementForUser(
 
   if (error) throw error;
   return data as BalanceSnapshot;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSignalRecorder.ts:recordEstimatedBankBalanceMovementForUser failed:', err);
+    throw err;
+  }}

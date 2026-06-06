@@ -63,11 +63,13 @@ async function mapRow(row: any): Promise<VaultItemDB> {
 }
 
 export async function getVaultItems(): Promise<VaultItemDB[]> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
   const { data, error } = await supabase
     .from('vault_items')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false });
@@ -77,11 +79,16 @@ export async function getVaultItems(): Promise<VaultItemDB[]> {
   // Decrypt all items
   const decryptedItems = await Promise.all((data || []).map(mapRow));
   return decryptedItems;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] vaultDb.ts:getVaultItems failed:', err);
+    throw err;
+  }}
 
 export async function addVaultItem(
   item: Omit<VaultItemDB, 'id' | 'createdAt' | 'updatedAt'>
 ): Promise<VaultItemDB> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -103,12 +110,17 @@ export async function addVaultItem(
 
   if (error) throw new Error(error.message);
   return await mapRow(data);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] vaultDb.ts:addVaultItem failed:', err);
+    throw err;
+  }}
 
 export async function updateVaultItem(
   id: string,
   updates: Partial<Omit<VaultItemDB, 'id' | 'createdAt' | 'updatedAt'>>
 ): Promise<VaultItemDB> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -135,9 +147,14 @@ export async function updateVaultItem(
 
   if (error) throw new Error(error.message);
   return await mapRow(data);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] vaultDb.ts:updateVaultItem failed:', err);
+    throw err;
+  }}
 
 export async function deleteVaultItem(id: string): Promise<void> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -148,4 +165,8 @@ export async function deleteVaultItem(id: string): Promise<void> {
     .eq('user_id', user.id);
 
   if (error) throw new Error(error.message);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] vaultDb.ts:deleteVaultItem failed:', err);
+    throw err;
+  }}

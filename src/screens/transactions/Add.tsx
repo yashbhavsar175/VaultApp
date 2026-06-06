@@ -282,10 +282,19 @@ export default function Add() {
 
   const handleUseParsedReview = () => {
     if (!parsedReview) return;
+    let parsedType = parsedReview.type;
+    if (parsedType === 'transfer') {
+      parsedType = 'expense';
+      Toast.show({
+        type: 'info',
+        text1: 'Transfer detected',
+        text2: 'Please use the Transfer feature instead',
+      });
+    }
     setAmount(formatAmountInput(parsedReview.amount.toString()));
     setNote(parsedReview.note);
-    setSelectedType(parsedReview.type);
-    setCategory(parsedReview.category);
+    setSelectedType(parsedType);
+    setCategory(parsedType === 'expense' ? 'general' : parsedReview.category);
     setMode('manual');
     setAiInput('');
     setParsedReview(null);

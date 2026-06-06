@@ -14,7 +14,7 @@ export default function EditPlaceReminderScreen() {
   const { colors, typography, spacing } = useTheme();
   
   const existingReminder = route.params?.reminder as PlaceReminder | undefined;
-  console.log('[EditPlaceReminderScreen] Rendered', { 
+  if (__DEV__) console.log('[EditPlaceReminderScreen] Rendered', {
     existingReminderId: existingReminder?.id, 
     hasSelectedLocation: !!route.params?.selectedLocation,
     params: route.params 
@@ -44,7 +44,7 @@ export default function EditPlaceReminderScreen() {
     if (appliedLocationRef.current === locationKey) return;
     appliedLocationRef.current = locationKey;
 
-    console.log('[EditPlaceReminderScreen] 📍 REMINDER LOCATION SET (from map):', {
+    if (__DEV__) console.log('[EditPlaceReminderScreen] 📍 REMINDER LOCATION SET (from map):', {
       lat: loc.latitude.toFixed(6),
       lon: loc.longitude.toFixed(6),
       label: loc.label,
@@ -58,13 +58,13 @@ export default function EditPlaceReminderScreen() {
   }, [route.params?.selectedLocation]);
 
   const handleUseCurrentLocation = () => {
-    console.log('[EditPlaceReminderScreen] handleUseCurrentLocation called');
+    if (__DEV__) console.log('[EditPlaceReminderScreen] handleUseCurrentLocation called');
     Geolocation.getCurrentPosition(
       (position) => {
         const userLat = position.coords.latitude;
         const userLon = position.coords.longitude;
         const acc = position.coords.accuracy;
-        console.log('[EditPlaceReminderScreen] 📍 USER CURRENT LOCATION captured:', {
+        if (__DEV__) console.log('[EditPlaceReminderScreen] 📍 USER CURRENT LOCATION captured:', {
           lat: userLat.toFixed(6),
           lon: userLon.toFixed(6),
           accuracy: Math.round(acc) + 'm',
@@ -78,7 +78,7 @@ export default function EditPlaceReminderScreen() {
         Alert.alert('Location Captured', 'Current location has been captured successfully.');
       },
       (error) => {
-        console.warn('[EditPlaceReminderScreen] Location fetch error:', error.code, error.message);
+        if (__DEV__) console.warn('[EditPlaceReminderScreen] Location fetch error:', error.code, error.message);
         Alert.alert('Location Error', 'Unable to fetch current location. Please ensure location permissions are granted.');
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
@@ -86,12 +86,12 @@ export default function EditPlaceReminderScreen() {
   };
 
   const handleSave = async () => {
-    console.log('[EditPlaceReminderScreen] handleSave called with state:', { title, address, latitude, longitude, radiusOption, customRadius, triggerType, intensity, isOneTime });
+    if (__DEV__) console.log('[EditPlaceReminderScreen] handleSave called with state:', { title, address, latitude, longitude, radiusOption, customRadius, triggerType, intensity, isOneTime });
     let finalRadius = parseInt(radiusOption, 10);
     if (radiusOption === 'custom') {
       finalRadius = parseInt(customRadius, 10);
     }
-    console.log('[EditPlaceReminderScreen] Calculated finalRadius:', finalRadius);
+    if (__DEV__) console.log('[EditPlaceReminderScreen] Calculated finalRadius:', finalRadius);
 
     if (!title.trim()) {
       Alert.alert('Missing Field', 'Add a reminder title.');
@@ -106,7 +106,7 @@ export default function EditPlaceReminderScreen() {
       return;
     }
 
-    console.log('[EditPlaceReminderScreen] Validation passed. Starting save...');
+    if (__DEV__) console.log('[EditPlaceReminderScreen] Validation passed. Starting save...');
     setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -131,7 +131,7 @@ export default function EditPlaceReminderScreen() {
       };
 
       await savePlaceReminder(reminder);
-      console.log('[EditPlaceReminderScreen] ✅ Reminder saved! Target location:', {
+      if (__DEV__) console.log('[EditPlaceReminderScreen] ✅ Reminder saved! Target location:', {
         reminderLat: latitude?.toFixed(6),
         reminderLon: longitude?.toFixed(6),
         radius: finalRadius + 'm',
@@ -142,7 +142,7 @@ export default function EditPlaceReminderScreen() {
         (pos) => {
           const userLat = pos.coords.latitude;
           const userLon = pos.coords.longitude;
-          console.log('[EditPlaceReminderScreen] 📍 USER vs REMINDER location at save time:', {
+          if (__DEV__) console.log('[EditPlaceReminderScreen] 📍 USER vs REMINDER location at save time:', {
             userLat: userLat.toFixed(6),
             userLon: userLon.toFixed(6),
             reminderLat: latitude?.toFixed(6),
@@ -156,7 +156,7 @@ export default function EditPlaceReminderScreen() {
       );
       navigation.goBack();
     } catch (error) {
-      console.warn('[EditPlaceReminderScreen] Save error:', error);
+      if (__DEV__) console.warn('[EditPlaceReminderScreen] Save error:', error);
       Alert.alert('Error', 'Failed to save reminder.');
     } finally {
       setLoading(false);

@@ -266,6 +266,7 @@ async function writeThroughManualBalanceCorrection(
   input: ManualBalanceCorrectionInput,
   snapshot: BalanceSnapshot
 ): Promise<void> {
+  try {
   if (input.owner_type !== 'bank_account' && input.owner_type !== 'loan') return;
 
   const userId = await getCurrentUserId();
@@ -291,17 +292,27 @@ async function writeThroughManualBalanceCorrection(
     if (!current) return current;
     return current.map(account => account.id === input.owner_id ? { ...account, balance: amount } : account);
   });
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSnapshots.ts:writeThroughManualBalanceCorrection failed:', err);
+    throw err;
+  }}
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSnapshots.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 export async function createBalanceSnapshot(
   input: CreateBalanceSnapshotInput
 ): Promise<BalanceSnapshot> {
+  try {
   const userId = await getCurrentUserId();
   const payload = buildBalanceSnapshotInsert(userId, input);
 
@@ -313,7 +324,11 @@ export async function createBalanceSnapshot(
 
   if (error) throw error;
   return data as BalanceSnapshot;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] balanceSnapshots.ts:createBalanceSnapshot failed:', err);
+    throw err;
+  }}
 
 export async function getLatestBalanceSnapshot(
   ownerType: BalanceOwnerType,

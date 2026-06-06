@@ -42,7 +42,7 @@ describe('GeofenceProcessorTask', () => {
     await GeofenceProcessorTask({ geofenceIds: ['r1'], transitionType: 'arriving' });
 
     expect(notifee.createChannel).toHaveBeenCalledWith(
-      expect.objectContaining({ importance: 3 }) // DEFAULT
+      expect.objectContaining({ importance: 4 }) // HIGH alarm channel
     );
     expect(notifee.displayNotification).toHaveBeenCalled();
   });

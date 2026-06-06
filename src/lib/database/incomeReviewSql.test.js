@@ -9,7 +9,9 @@ const SQL_FILES = [
 ];
 
 function readSqlFile(fileName) {
-  return fs.readFileSync(path.join(__dirname, '..', '..', '..', fileName), 'utf8');
+  const rootPath = path.join(__dirname, '..', '..', '..', fileName);
+  const archivePath = path.join(__dirname, '..', '..', '..', 'docs', 'sql-archive', fileName);
+  return fs.readFileSync(fs.existsSync(rootPath) ? rootPath : archivePath, 'utf8');
 }
 
 describe('income review decisions SQL', () => {

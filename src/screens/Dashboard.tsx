@@ -14,6 +14,7 @@ import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../lib/s
 import {
   computeMonthlyTransactionTotals,
 } from '../utils/financeSummary';
+import { getISTDate } from '../utils/dateHelpers';
 import { runWhenIdle } from '../utils/runWhenIdle';
 
 
@@ -120,9 +121,10 @@ export default function Dashboard() {
   };
 
   const isCurrentMonth = () => {
-    const now = new Date();
-    return selectedDate.getMonth() === now.getMonth() && 
-           selectedDate.getFullYear() === now.getFullYear();
+    const now = getISTDate(new Date());
+    const selected = getISTDate(selectedDate);
+    return selected.getMonth() === now.getMonth() &&
+           selected.getFullYear() === now.getFullYear();
   };
 
   // Helper to compute people summary from ledger data
@@ -513,7 +515,11 @@ export default function Dashboard() {
       >
         {/* Month Selector */}
         <View style={[styles.monthSelector, { paddingHorizontal: spacing.lg, paddingVertical: spacing.md }]}>
-          <TouchableOpacity onPress={() => navigateMonth('prev')} style={styles.monthArrow}>
+          <TouchableOpacity
+            onPress={() => navigateMonth('prev')}
+            style={styles.monthArrow}
+            accessibilityRole="button"
+            accessibilityLabel="Previous month">
             <MaterialCommunityIcons name="chevron-left" size={28} color={colors.text} />
           </TouchableOpacity>
           <Text style={[typography.h3, { color: colors.text, fontWeight: 'bold' }]}>
@@ -523,6 +529,8 @@ export default function Dashboard() {
             onPress={isCurrentMonth() ? undefined : () => navigateMonth('next')} 
             style={styles.monthArrow}
             disabled={isCurrentMonth()}
+            accessibilityRole="button"
+            accessibilityLabel="Next month"
           >
             <MaterialCommunityIcons 
               name="chevron-right" 
@@ -573,6 +581,8 @@ export default function Dashboard() {
           <View style={{ marginBottom: spacing.md }}>
             <TouchableOpacity 
               onPress={() => toggleSection('incomeExpense')}
+              accessibilityRole="button"
+              accessibilityLabel={openSections.incomeExpense ? 'Collapse income and expense' : 'Expand income and expense'}
               style={styles.accordionHeader}>
               <Text style={[typography.h3, { color: colors.text, fontWeight: 'bold' }]}>
                 Income & Expense
@@ -635,6 +645,8 @@ export default function Dashboard() {
             <View style={{ marginBottom: spacing.md }}>
               <TouchableOpacity 
                 onPress={() => toggleSection('people')}
+                accessibilityRole="button"
+                accessibilityLabel={openSections.people ? 'Collapse people section' : 'Expand people section'}
                 style={styles.accordionHeader}>
                 <Text style={[typography.h3, { color: colors.text, fontWeight: 'bold' }]}>
                   People
@@ -713,6 +725,8 @@ export default function Dashboard() {
           <View style={{ marginBottom: spacing.lg }}>
             <TouchableOpacity 
               onPress={() => toggleSection('investedEmi')}
+              accessibilityRole="button"
+              accessibilityLabel={openSections.investedEmi ? 'Collapse invested and EMI' : 'Expand invested and EMI'}
               style={styles.accordionHeader}>
               <Text style={[typography.h3, { color: colors.text, fontWeight: 'bold' }]}>
                 Invested & EMI

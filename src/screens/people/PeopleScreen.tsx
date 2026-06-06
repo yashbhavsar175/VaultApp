@@ -33,6 +33,7 @@ import {
 } from '../../lib/database/userdata';
 import { PeopleLedger, PeopleLedgerPayment } from '../../types';
 import { scheduleLedgerNotifications } from '../../lib/services/scheduledNotifications';
+import { formatDateForDisplay } from '../../utils/dateHelpers';
 import { CACHE_KEYS, getCached, scopedCacheKey, setCache, updateCache } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 
@@ -516,7 +517,11 @@ const SettledRow = React.memo(({
             : 'Cleared'}
         </Text>
       </View>
-      <TouchableOpacity onPress={() => onDelete(item)} style={{ padding: spacing.xs }}>
+      <TouchableOpacity
+        onPress={() => onDelete(item)}
+        style={{ padding: spacing.xs }}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete ${item.person_name} entry`}>
         <MaterialCommunityIcons name="delete" size={20} color={colors.danger} />
       </TouchableOpacity>
     </View>
@@ -631,7 +636,7 @@ const LedgerCard = React.memo(({
 
       {item.repayment_type === 'one_time' && item.due_date && (
         <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.sm }]}>
-          Due: {new Date(item.due_date).toLocaleDateString()}
+          Due: {formatDateForDisplay(item.due_date)}
           {daysUntilDue !== null && ` (${daysUntilDue > 0 ? `${daysUntilDue} days left` : `${Math.abs(daysUntilDue)} days overdue`})`}
         </Text>
       )}
@@ -676,6 +681,8 @@ const LedgerCard = React.memo(({
             {/* WhatsApp Remind button */}
             <TouchableOpacity
               onPress={() => onRemind(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`Remind ${item.person_name} on WhatsApp`}
               style={{
                 padding: spacing.sm,
                 justifyContent: 'center',
@@ -690,6 +697,8 @@ const LedgerCard = React.memo(({
         )}
         <TouchableOpacity
           onPress={() => onDelete(item)}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${item.person_name} entry`}
           style={{
             padding: spacing.sm,
             justifyContent: 'center',
@@ -748,7 +757,10 @@ function AddEntryModal({ visible, onClose, onSuccess }: { visible: boolean; onCl
         <View style={[styles.modalContent, { backgroundColor: colors.background, borderRadius: borderRadius.lg }]}>
           <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
             <Text style={[typography.h3, { color: colors.text }]}>Add Entry</Text>
-            <TouchableOpacity onPress={handleClose}>
+            <TouchableOpacity
+              onPress={handleClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close add entry">
               <MaterialCommunityIcons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -892,7 +904,10 @@ function PaymentModal({ visible, entry, onClose, onSuccess }: { visible: boolean
         <View style={[styles.modalContent, { backgroundColor: colors.background, borderRadius: borderRadius.lg }]}>
           <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
             <Text style={[typography.h3, { color: colors.text }]}>Add Payment</Text>
-            <TouchableOpacity onPress={onClose}>
+            <TouchableOpacity
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close add payment">
               <MaterialCommunityIcons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -977,7 +992,10 @@ function PaymentHistoryModal({ visible, entry, onClose }: { visible: boolean; en
         <View style={[styles.modalContent, { backgroundColor: colors.background, borderRadius: borderRadius.lg }]}>
           <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
             <Text style={[typography.h3, { color: colors.text }]}>Payment History</Text>
-            <TouchableOpacity onPress={onClose}>
+            <TouchableOpacity
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close payment history">
               <MaterialCommunityIcons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>

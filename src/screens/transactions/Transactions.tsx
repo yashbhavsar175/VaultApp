@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  ActivityIndicator,
   RefreshControl,
   ScrollView,
   Pressable,
@@ -44,6 +45,7 @@ import {
 import { getTransactionDisplayName } from '../../utils/transactionPresentation';
 
 type FilterType = 'all' | TransactionType;
+const TRANSACTIONS_PAGE_SIZE = 30;
 
 type DashboardStackParamList = {
   DashboardHome: undefined;
@@ -194,6 +196,9 @@ export default function Transactions() {
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
   const [filter, setFilter] = useState<FilterType>('all');
 
   // Select mode state — use a plain object for O(1) lookup instead of Set
@@ -223,6 +228,9 @@ export default function Transactions() {
   // Deep equality tracking to prevent re-renders
   const lastDataStringRef = useRef<string | null>(null);
   const eventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transactionsRef = useRef<Transaction[]>([]);
+  const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
 
   // 120 FPS smooth bottom bar animation
   const bottomBarAnim = useRef(new Animated.Value(0)).current;
@@ -235,14 +243,29 @@ export default function Transactions() {
     }
   }, []);
 
-  const loadTransactions = useCallback(async () => {
+  const loadTransactions = useCallback(async (pageToLoad = 0, append = false) => {
+    if (append) {
+      if (loadingMoreRef.current || !hasMoreRef.current) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    }
+
     try {
-      const data = await getTransactions();
-      const dataStr = JSON.stringify(data);
+      const data = await getTransactions(undefined, pageToLoad, TRANSACTIONS_PAGE_SIZE);
+      const nextData = append
+        ? [
+            ...transactionsRef.current,
+            ...data.filter(tx => !transactionsRef.current.some(existing => existing.id === tx.id)),
+          ]
+        : data;
+      const dataStr = JSON.stringify(nextData);
 
 
       // Prevent unnecessary state updates and re-renders that drop touches!
-      if (lastDataStringRef.current === dataStr) {
+      if (!append && lastDataStringRef.current === dataStr) {
+        hasMoreRef.current = data.length === TRANSACTIONS_PAGE_SIZE;
+        setHasMore(hasMoreRef.current);
+        setPage(pageToLoad);
         return;
       }
 
@@ -250,10 +273,14 @@ export default function Transactions() {
       lastDataStringRef.current = dataStr;
 
 
-      setTransactions(data);
-      applyFilter(data, filter);
+      transactionsRef.current = nextData;
+      setTransactions(nextData);
+      applyFilter(nextData, filter);
+      setPage(pageToLoad);
+      hasMoreRef.current = data.length === TRANSACTIONS_PAGE_SIZE;
+      setHasMore(hasMoreRef.current);
       // Cache for instant load next time
-      setCache(CACHE_KEYS.TRANSACTIONS, data);
+      setCache(CACHE_KEYS.TRANSACTIONS, nextData);
     } catch {
       Toast.show({
         type: 'error',
@@ -263,6 +290,8 @@ export default function Transactions() {
     } finally {
       setRefreshing(false);
       setLoading(false);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
   }, [filter, applyFilter]);
 
@@ -294,6 +323,7 @@ export default function Transactions() {
       // Try cache for instant display (getCached returns { data, isStale } | null)
       const cached = await getCached<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
       if (cached) {
+        transactionsRef.current = cached.data;
         setTransactions(cached.data);
         applyFilter(cached.data, filter);
         setLoading(false);
@@ -366,8 +396,16 @@ export default function Transactions() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    loadTransactions();
+    hasMoreRef.current = true;
+    setHasMore(true);
+    loadTransactions(0, false);
   }, [loadTransactions]);
+
+  const handleLoadMore = useCallback(() => {
+    if (!loading && !refreshing && hasMore && !loadingMore) {
+      loadTransactions(page + 1, true);
+    }
+  }, [hasMore, loadTransactions, loading, loadingMore, page, refreshing]);
 
   // Select mode functions — instant updates with object spread
   const enterSelectMode = useCallback((id: string) => {
@@ -711,6 +749,13 @@ export default function Transactions() {
         extraData={selectedMap}
         contentContainerStyle={listContentStyle}
         ListEmptyComponent={renderEmptyState}
+        ListFooterComponent={loadingMore ? (
+          <View style={{ paddingVertical: 16 }}>
+            <ActivityIndicator color={colors.accent} />
+          </View>
+        ) : null}
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.4}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

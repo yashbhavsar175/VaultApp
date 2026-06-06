@@ -243,12 +243,18 @@ function sanitizeDecisionInput(input: IncomeReviewDecisionInput) {
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 async function ensureTransactionOwner(userId: string, transactionId: string): Promise<void> {
+  try {
   const { error } = await supabase
     .from('transactions')
     .select('id')
@@ -256,9 +262,14 @@ async function ensureTransactionOwner(userId: string, transactionId: string): Pr
     .eq('user_id', userId)
     .single();
   if (error) throw error;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:ensureTransactionOwner failed:', err);
+    throw err;
+  }}
 
 async function ensureEvidenceOwner(userId: string, evidenceId: string): Promise<void> {
+  try {
   const { error } = await supabase
     .from('transaction_evidence')
     .select('id')
@@ -266,9 +277,14 @@ async function ensureEvidenceOwner(userId: string, evidenceId: string): Promise<
     .eq('user_id', userId)
     .single();
   if (error) throw error;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:ensureEvidenceOwner failed:', err);
+    throw err;
+  }}
 
 async function fetchTransactionsForUser(userId: string, limit: number): Promise<Transaction[]> {
+  try {
   const { data, error } = await supabase
     .from('transactions')
     .select(TRANSACTION_COLUMNS)
@@ -277,9 +293,14 @@ async function fetchTransactionsForUser(userId: string, limit: number): Promise<
     .limit(limit);
   if (error) throw error;
   return (data || []) as unknown as Transaction[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:fetchTransactionsForUser failed:', err);
+    throw err;
+  }}
 
 async function fetchEvidenceForUser(userId: string, limit: number): Promise<TransactionEvidence[]> {
+  try {
   const { data, error } = await supabase
     .from('transaction_evidence')
     .select(EVIDENCE_COLUMNS)
@@ -289,7 +310,11 @@ async function fetchEvidenceForUser(userId: string, limit: number): Promise<Tran
     .limit(limit);
   if (error) throw error;
   return (data || []) as unknown as TransactionEvidence[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:fetchEvidenceForUser failed:', err);
+    throw err;
+  }}
 
 function decisionMatchesCandidate(
   decision: IncomeReviewDecision,
@@ -604,6 +629,7 @@ export function buildIncomeReviewCandidatesFromRows(
 }
 
 export async function getIncomeReviewDecisions(): Promise<IncomeReviewDecision[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('income_review_decisions')
@@ -616,12 +642,17 @@ export async function getIncomeReviewDecisions(): Promise<IncomeReviewDecision[]
     throw error;
   }
   return (data || []) as unknown as IncomeReviewDecision[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:getIncomeReviewDecisions failed:', err);
+    throw err;
+  }}
 
 async function getIncomeReviewDecisionsWithStatus(userId: string): Promise<{
   decisions: IncomeReviewDecision[];
   storageStatus: IncomeReviewStorageStatus;
 }> {
+  try {
   const { data, error } = await supabase
     .from('income_review_decisions')
     .select(DECISION_COLUMNS)
@@ -633,7 +664,11 @@ async function getIncomeReviewDecisionsWithStatus(userId: string): Promise<{
     throw error;
   }
   return { decisions: (data || []) as unknown as IncomeReviewDecision[], storageStatus: 'ready' };
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:getIncomeReviewDecisionsWithStatus failed:', err);
+    throw err;
+  }}
 
 export async function getIncomeReviewCandidates(
   options: GetIncomeReviewCandidatesOptions = {}
@@ -687,6 +722,7 @@ async function findExistingDecision(
   userId: string,
   payload: ReturnType<typeof sanitizeDecisionInput>
 ): Promise<IncomeReviewDecision | null> {
+  try {
   const lookups: Array<[string, string | null]> = [
     ['transaction_id', payload.transaction_id],
     ['evidence_id', payload.evidence_id],
@@ -706,7 +742,11 @@ async function findExistingDecision(
   }
 
   return null;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:findExistingDecision failed:', err);
+    throw err;
+  }}
 
 export async function upsertIncomeReviewDecision(
   input: IncomeReviewDecisionInput
@@ -743,6 +783,7 @@ export async function upsertIncomeReviewDecision(
 }
 
 export async function deleteIncomeReviewDecision(id: string): Promise<void> {
+  try {
   const userId = await getCurrentUserId();
   const { error } = await supabase
     .from('income_review_decisions')
@@ -751,7 +792,11 @@ export async function deleteIncomeReviewDecision(id: string): Promise<void> {
     .eq('user_id', userId);
   if (error) throw error;
   emitFinanceDataChanged({ areas: ['review'], source: 'income_review:changed' });
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:deleteIncomeReviewDecision failed:', err);
+    throw err;
+  }}
 
 function reviewedIncomeTransactionMatchesEvidence(
   transaction: Transaction,
@@ -773,6 +818,7 @@ function reviewedIncomeTransactionMatchesEvidence(
 }
 
 async function fetchOwnedEvidence(userId: string, evidenceId: string): Promise<TransactionEvidence> {
+  try {
   const { data, error } = await supabase
     .from('transaction_evidence')
     .select(EVIDENCE_COLUMNS)
@@ -782,7 +828,11 @@ async function fetchOwnedEvidence(userId: string, evidenceId: string): Promise<T
   if (error) throw error;
   if (!data) throw new Error('Income review evidence was not found');
   return data as unknown as TransactionEvidence;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] incomeReview.ts:fetchOwnedEvidence failed:', err);
+    throw err;
+  }}
 
 async function resolveReviewedIncomeTransactionId(
   userId: string,

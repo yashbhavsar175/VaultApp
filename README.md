@@ -7,7 +7,7 @@ A React Native CLI app for tracking income, expenses, investments, and EMI payme
 - React Native CLI (TypeScript)
 - Supabase (Authentication & Database)
 - React Navigation v6 (Bottom Tab Navigator)
-- AsyncStorage (Auth token persistence)
+- EncryptedStorage (Auth token persistence)
 - react-native-vector-icons (MaterialCommunityIcons)
 - react-native-toast-message (Notifications)
 - OpenAI GPT-4o-mini / Gemini 1.5 Flash (AI parsing)
@@ -20,10 +20,9 @@ VaultApp/
 │   ├── components/        # Reusable components (empty for now)
 │   ├── hooks/            # Custom hooks (empty for now)
 │   ├── lib/
-│   │   ├── aiParser.ts   # AI transaction parsing logic
-│   │   ├── config.ts     # API keys (gitignored)
-│   │   ├── db.ts         # Supabase database functions
-│   │   └── supabase.ts   # Supabase client setup
+│   │   ├── core.ts       # Supabase client, auth, transactions
+│   │   ├── database/     # Supabase database functions
+│   │   └── services/     # Cache, notifications, native helpers
 │   ├── navigation/
 │   │   └── BottomTabNavigator.tsx
 │   ├── screens/
@@ -35,9 +34,13 @@ VaultApp/
 │   │   └── Transactions.tsx  # Transaction list with filters
 │   └── types/
 │       └── index.ts      # TypeScript types
-├── supabase-setup.sql    # Database schema & RLS policies
+├── docs/                 # Project notes and archived setup docs
+├── docs/sql-archive/     # Archived standalone SQL snippets
+├── supabase-fresh-setup.sql # Canonical database schema & RLS policies
 └── App.tsx              # Root component
 ```
+
+Additional project documentation lives in `docs/`. Archived standalone SQL files live in `docs/sql-archive/`; use `supabase-fresh-setup.sql` as the canonical fresh database setup unless a task explicitly calls for an archived snippet.
 
 ## Setup Instructions
 
@@ -50,8 +53,8 @@ npm install
 ### 2. Configure Supabase
 
 1. Create a Supabase project at https://supabase.com
-2. Run the SQL in `supabase-setup.sql` in your Supabase SQL Editor
-3. Update `src/lib/supabase.ts` with your Supabase URL and Anon Key
+2. Run the SQL in `supabase-fresh-setup.sql` in your Supabase SQL Editor
+3. Configure Supabase URL and anon key through `.env` / `react-native-config`
 
 ### 3. Configure AI Provider
 

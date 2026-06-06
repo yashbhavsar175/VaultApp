@@ -15,15 +15,21 @@ export interface CreateOrUpdateDebitCardInput {
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debitCards.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 async function assertBankAccountBelongsToUser(
   bankAccountId: string | null,
   userId: string
 ): Promise<void> {
+  try {
   if (!bankAccountId) return;
 
   const { data, error } = await supabase
@@ -35,7 +41,11 @@ async function assertBankAccountBelongsToUser(
 
   if (error) throw error;
   if (!data?.id) throw new Error('Debit card bank account must belong to the current user');
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debitCards.ts:assertBankAccountBelongsToUser failed:', err);
+    throw err;
+  }}
 
 function buildDebitCardPayload(userId: string, input: CreateOrUpdateDebitCardInput) {
   const cardLast4 = normalizeLast4(input.card_last4);
@@ -61,6 +71,7 @@ function buildDebitCardPayload(userId: string, input: CreateOrUpdateDebitCardInp
 export async function createOrUpdateDebitCard(
   input: CreateOrUpdateDebitCardInput
 ): Promise<DebitCard> {
+  try {
   const userId = await getCurrentUserId();
   const payload = buildDebitCardPayload(userId, input);
   await assertBankAccountBelongsToUser(payload.bank_account_id, userId);
@@ -99,9 +110,14 @@ export async function createOrUpdateDebitCard(
 
   if (error) throw error;
   return data as DebitCard;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debitCards.ts:createOrUpdateDebitCard failed:', err);
+    throw err;
+  }}
 
 export async function getDebitCardsForBankAccount(bankAccountId: string): Promise<DebitCard[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('debit_cards')
@@ -112,9 +128,14 @@ export async function getDebitCardsForBankAccount(bankAccountId: string): Promis
 
   if (error) throw error;
   return (data || []) as DebitCard[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debitCards.ts:getDebitCardsForBankAccount failed:', err);
+    throw err;
+  }}
 
 export async function getDebitCards(): Promise<DebitCard[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('debit_cards')
@@ -124,4 +145,8 @@ export async function getDebitCards(): Promise<DebitCard[]> {
 
   if (error) throw error;
   return (data || []) as DebitCard[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] debitCards.ts:getDebitCards failed:', err);
+    throw err;
+  }}

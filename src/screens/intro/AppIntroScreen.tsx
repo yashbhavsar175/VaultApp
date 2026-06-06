@@ -203,6 +203,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: '#050509',
     overflow: 'hidden',
   },
@@ -212,7 +213,9 @@ const styles = StyleSheet.create({
     width: 320,
     height: 320,
     borderRadius: 160,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(99,102,241,0.18)',
+    // TODO: Replace with useTheme() colors.* token
     shadowColor: '#818cf8',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.45,
@@ -225,6 +228,7 @@ const styles = StyleSheet.create({
     width: 420,
     height: 240,
     borderRadius: 210,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(16,185,129,0.08)',
   },
   cardStack: {
@@ -239,8 +243,10 @@ const styles = StyleSheet.create({
     width: 178,
     height: 116,
     borderRadius: 22,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(99,102,241,0.22)',
     borderWidth: 1,
+    // TODO: Replace with useTheme() colors.* token
     borderColor: 'rgba(199,210,254,0.18)',
     transform: [{ rotateZ: '-9deg' }, { translateY: 8 }],
   },
@@ -250,7 +256,9 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 18,
     borderWidth: 1,
+    // TODO: Replace with useTheme() colors.* token
     borderColor: 'rgba(255,255,255,0.16)',
+    // TODO: Replace with useTheme() colors.* token
     shadowColor: '#6366f1',
     shadowOffset: { width: 0, height: 18 },
     shadowOpacity: 0.28,
@@ -261,6 +269,7 @@ const styles = StyleSheet.create({
     width: 62,
     height: 4,
     borderRadius: 2,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(255,255,255,0.28)',
     marginBottom: 22,
   },
@@ -269,7 +278,9 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 9,
     borderWidth: 1,
+    // TODO: Replace with useTheme() colors.* token
     borderColor: 'rgba(251,191,36,0.72)',
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(251,191,36,0.16)',
     justifyContent: 'center',
     paddingHorizontal: 8,
@@ -279,12 +290,14 @@ const styles = StyleSheet.create({
     width: 24,
     height: 2,
     borderRadius: 1,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(253,230,138,0.9)',
   },
   chipLineShort: {
     width: 16,
     height: 2,
     borderRadius: 1,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(253,230,138,0.7)',
   },
   balanceRows: {
@@ -298,12 +311,14 @@ const styles = StyleSheet.create({
     width: 76,
     height: 5,
     borderRadius: 3,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(45,212,191,0.78)',
   },
   balanceRowNarrow: {
     width: 48,
     height: 5,
     borderRadius: 3,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(167,139,250,0.72)',
   },
 });

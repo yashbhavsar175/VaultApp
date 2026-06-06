@@ -320,7 +320,7 @@ function scheduleLegacySensitivePorterDebugPurge(): void {
   if (legacyDebugPurgeStarted) return;
   legacyDebugPurgeStarted = true;
   purgeLegacySensitivePorterDebugStorage().catch((error) => {
-    console.warn('[Porter] Failed to purge legacy debug storage:', error);
+    if (__DEV__) console.warn('[Porter] Failed to purge legacy debug storage:', error);
   });
 }
 
@@ -1501,7 +1501,7 @@ async function geocodeCandidate(candidate: GeocodeCandidate, timeoutMs: number =
       return { coords: null, reason: 'geocode_candidate_failed', candidateType: candidate.type };
     }
     if (!res.ok) {
-      console.warn('[Porter] Nominatim HTTP error:', res.status);
+      if (__DEV__) console.warn('[Porter] Nominatim HTTP error:', res.status);
       return { coords: null, reason: 'geocode_candidate_failed', candidateType: candidate.type };
     }
     
@@ -1509,7 +1509,7 @@ async function geocodeCandidate(candidate: GeocodeCandidate, timeoutMs: number =
     if (data.length > 0) {
       const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
       if (!isGeocodeResultInExpectedRegion(coords, candidate)) {
-        console.warn('[Porter] Nominatim rejected out-of-region result:', {
+        if (__DEV__) console.warn('[Porter] Nominatim rejected out-of-region result:', {
           type: candidate.type,
           regionHint: candidate.regionHint,
         });
@@ -1522,7 +1522,7 @@ async function geocodeCandidate(candidate: GeocodeCandidate, timeoutMs: number =
         score: scored.score,
         candidateType: candidate.type,
       });
-      console.log('[Porter] Nominatim geocoded candidate →', {
+      if (__DEV__) console.log('[Porter] Nominatim geocoded candidate →', {
         type: candidate.type,
         regionHint: candidate.regionHint,
         score: scored.score,
@@ -1535,10 +1535,10 @@ async function geocodeCandidate(candidate: GeocodeCandidate, timeoutMs: number =
         selectedReason: scored.selectedReason,
       };
     }
-    console.warn('[Porter] Nominatim: No results for candidate:', { type: candidate.type });
+    if (__DEV__) console.warn('[Porter] Nominatim: No results for candidate:', { type: candidate.type });
     return { coords: null, reason: 'geocode_candidate_failed', candidateType: candidate.type };
   } catch (error: any) {
-    console.warn('[Porter] Nominatim candidate error:', {
+    if (__DEV__) console.warn('[Porter] Nominatim candidate error:', {
       type: candidate.type,
       message: error.message,
     });
@@ -1936,7 +1936,7 @@ async function getDistancesKm(
 
   // API QUOTA PROTECTION: Reject clearly invalid addresses before making network calls
   if (!pickupCandidates.length || !dropCandidates.length) {
-    console.warn('[Porter] Invalid address strings — skipping API call:', {
+    if (__DEV__) console.warn('[Porter] Invalid address strings — skipping API call:', {
       pickup: summarizeSensitiveValue(pickup),
       drop: summarizeSensitiveValue(drop),
     });
@@ -2004,7 +2004,7 @@ async function getDistancesKm(
       let elementError = '';
       const candidateAttempts = usablePairs[0].confidence === 'low' ? usablePairs.slice(0, 2) : usablePairs.slice(0, 1);
       for (const pair of candidateAttempts) {
-        console.log('[Porter] Calling Google Maps API with:', {
+        if (__DEV__) console.log('[Porter] Calling Google Maps API with:', {
           origin: summarizeSensitiveValue(origin),
           pickup: summarizeSensitiveValue(pair.pickup.query),
           drop: summarizeSensitiveValue(pair.drop.query),
@@ -2024,7 +2024,7 @@ async function getDistancesKm(
             : getGoogleDistanceMatrixKm(origin, pair.pickup.query, timeoutMs),
         ]);
 
-        console.log('[Porter] Google Maps API Response:', {
+        if (__DEV__) console.log('[Porter] Google Maps API Response:', {
           toPickupStatus: pickupRoute.status,
           tripStatus: tripRoute.status,
           confidence: pair.confidence,
@@ -2110,13 +2110,13 @@ async function getDistancesKm(
         elementError = `Element status: toPickup=${pickupRoute.status}, trip=${tripRoute.status}`;
       }
 
-      console.warn('[Porter] Google Maps element error:', elementError);
+      if (__DEV__) console.warn('[Porter] Google Maps element error:', elementError);
       await AsyncStorage.setItem('debug_porter_api_error', elementError);
       diagnostics.push('address_string_route_failed');
       distanceApiFailed = true;
       distanceApiDetail = elementError;
     } catch (error: any) {
-      console.error('[Porter] Google Maps API exception:', error);
+      if (__DEV__) console.error('[Porter] Google Maps API exception:', error);
       await AsyncStorage.setItem('debug_porter_api_error', `Exception: ${error.message}`);
       diagnostics.push('address_string_route_failed');
       distanceApiFailed = true;
@@ -2138,7 +2138,7 @@ async function getDistancesKm(
   }
 
   // Fallback: Free Nominatim geocoding + Haversine
-  console.log('[Porter] Using Nominatim fallback for:', {
+  if (__DEV__) console.log('[Porter] Using Nominatim fallback for:', {
     pickup: summarizeSensitiveValue(pickup),
     drop: summarizeSensitiveValue(drop),
     pickupCandidates: pickupCandidates.length,
@@ -2152,7 +2152,7 @@ async function getDistancesKm(
   const pickupCoords = pickupLookup.coords;
   const dropCoords = dropLookup.coords;
   
-  console.log('[Porter] Nominatim results:', {
+  if (__DEV__) console.log('[Porter] Nominatim results:', {
     pickupFound: !!pickupCoords,
     dropFound: !!dropCoords,
     pickupCandidateType: pickupLookup.candidateType,
@@ -2998,7 +2998,7 @@ async function processPorterScreenEvent(event: PorterScreenEvent): Promise<void>
           });
         }
       } catch (geoError: any) {
-        console.log('Geolocation error in Porter calculator:', geoError);
+        if (__DEV__) console.log('Geolocation error in Porter calculator:', geoError);
         if (!isCurrentPorterResult({
           runId: rideRunId,
           signature: tripSig,
@@ -3054,7 +3054,7 @@ async function processPorterScreenEvent(event: PorterScreenEvent): Promise<void>
         });
       }
     } catch (e: any) {
-      console.error('Error in Porter distance calculation:', e);
+      if (__DEV__) console.error('Error in Porter distance calculation:', e);
       debugEvent.status = `Critical Error: ${e.message}`;
       AsyncStorage.setItem('debug_porter_status', debugEvent.status);
       await recordDeliveryDebugEvent({
@@ -3114,7 +3114,7 @@ export const initPorterDistanceCalculator = () => {
   if (subscription) return; // Already initialized
   scheduleLegacySensitivePorterDebugPurge();
 
-  console.log('🚛 [Porter] Distance calculator initialized');
+  if (__DEV__) console.log('🚛 [Porter] Distance calculator initialized');
 
   bubbleIssueSubscription = eventEmitter.addListener('onDeliveryIssueBubbleTap', async (event) => {
     let nativeSnapshot: NativeDeliveryDebugSnapshot | undefined;
@@ -3131,12 +3131,12 @@ export const initPorterDistanceCalculator = () => {
 
   subscription = eventEmitter.addListener('onPorterScreenChange', processPorterScreenEvent);
   consumeBufferedPorterEvent().catch((error) => {
-    console.warn('[Porter] Failed to pull buffered native event:', error);
+    if (__DEV__) console.warn('[Porter] Failed to pull buffered native event:', error);
   });
   appStateSubscription = AppState.addEventListener('change', (state) => {
     if (state === 'active') {
       consumeBufferedPorterEvent().catch((error) => {
-        console.warn('[Porter] Failed to pull buffered native event on resume:', error);
+        if (__DEV__) console.warn('[Porter] Failed to pull buffered native event on resume:', error);
       });
     }
   });

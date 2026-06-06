@@ -26,10 +26,15 @@ export interface CreateDetectedAccountCandidateInput {
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccounts.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 export function buildDetectedAccountInsert(
   userId: string,
@@ -61,6 +66,7 @@ export function buildDetectedAccountInsert(
 export async function createDetectedAccountCandidate(
   input: CreateDetectedAccountCandidateInput
 ): Promise<DetectedAccount> {
+  try {
   const userId = await getCurrentUserId();
   const payload = buildDetectedAccountInsert(userId, input);
 
@@ -72,9 +78,14 @@ export async function createDetectedAccountCandidate(
 
   if (error) throw error;
   return data as DetectedAccount;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccounts.ts:createDetectedAccountCandidate failed:', err);
+    throw err;
+  }}
 
 export async function getPendingDetectedAccounts(): Promise<DetectedAccount[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('detected_accounts')
@@ -85,9 +96,14 @@ export async function getPendingDetectedAccounts(): Promise<DetectedAccount[]> {
 
   if (error) throw error;
   return (data || []) as DetectedAccount[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccounts.ts:getPendingDetectedAccounts failed:', err);
+    throw err;
+  }}
 
 export async function markDetectedAccountIgnored(id: string): Promise<DetectedAccount> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('detected_accounts')
@@ -99,13 +115,18 @@ export async function markDetectedAccountIgnored(id: string): Promise<DetectedAc
 
   if (error) throw error;
   return data as DetectedAccount;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccounts.ts:markDetectedAccountIgnored failed:', err);
+    throw err;
+  }}
 
 export async function markDetectedAccountConfirmed(
   id: string,
   ownerType: BalanceOwnerType,
   ownerId: string
 ): Promise<DetectedAccount> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('detected_accounts')
@@ -122,4 +143,8 @@ export async function markDetectedAccountConfirmed(
 
   if (error) throw error;
   return data as DetectedAccount;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] detectedAccounts.ts:markDetectedAccountConfirmed failed:', err);
+    throw err;
+  }}

@@ -10,6 +10,7 @@
 import { Buffer } from 'buffer';
 import { supabase } from '../core';
 import { PeopleLedger, PeopleLedgerPayment, Place } from '../../types';
+import { parseLocalDate } from '../../utils/dateHelpers';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PEOPLE LEDGER
@@ -31,11 +32,13 @@ export interface AddLedgerEntryData {
  * Fetch all active (not settled) ledger entries for the current user
  */
 export async function getPeopleLedger(includeSettled = false): Promise<PeopleLedger[]> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
   let query = supabase
     .from('people_ledger')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false });
@@ -48,7 +51,11 @@ export async function getPeopleLedger(includeSettled = false): Promise<PeopleLed
 
   if (error) throw error;
   return data || [];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:getPeopleLedger failed:', err);
+    throw err;
+  }}
 
 /**
  * Get ledger entries by type
@@ -62,6 +69,7 @@ export async function getLedgerByType(type: 'lent' | 'borrowed', includeSettled 
  * Add a new ledger entry
  */
 export async function addLedgerEntry(data: AddLedgerEntryData): Promise<PeopleLedger> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
@@ -76,7 +84,11 @@ export async function addLedgerEntry(data: AddLedgerEntryData): Promise<PeopleLe
 
   if (error) throw error;
   return ledger;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:addLedgerEntry failed:', err);
+    throw err;
+  }}
 
 /**
  * Add a payment to a ledger entry
@@ -85,42 +97,31 @@ export async function addPayment(
   ledgerId: string,
   amount: number,
   notes?: string,
-  paidDate?: string
+  _paidDate?: string
 ): Promise<PeopleLedgerPayment> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  // Verify ownership before inserting payment
-  const { data: ledger, error: ownershipError } = await supabase
-    .from('people_ledger')
-    .select('id')
-    .eq('id', ledgerId)
-    .eq('user_id', user.id)
-    .single();
-
-  if (ownershipError || !ledger) {
-    throw new Error('Ledger entry not found or unauthorized');
-  }
-
-  const { data: payment, error } = await supabase
-    .from('people_ledger_payments')
-    .insert({
-      ledger_id: ledgerId,
-      amount,
-      notes,
-      paid_date: paidDate || new Date().toISOString().split('T')[0],
-    })
-    .select()
-    .single();
+  const { data: payment, error } = await supabase.rpc('record_ledger_payment', {
+    p_ledger_id: ledgerId,
+    p_amount: amount,
+    p_note: notes,
+  });
 
   if (error) throw error;
   return payment;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:addPayment failed:', err);
+    throw err;
+  }}
 
 /**
  * Get all payments for a ledger entry
  */
 export async function getPayments(ledgerId: string): Promise<PeopleLedgerPayment[]> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
@@ -138,18 +139,24 @@ export async function getPayments(ledgerId: string): Promise<PeopleLedgerPayment
 
   const { data, error } = await supabase
     .from('people_ledger_payments')
+    // TODO: narrow columns.
     .select('*')
     .eq('ledger_id', ledgerId)
     .order('paid_date', { ascending: false });
 
   if (error) throw error;
   return data || [];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:getPayments failed:', err);
+    throw err;
+  }}
 
 /**
  * Mark a ledger entry as settled
  */
 export async function markAsSettled(ledgerId: string): Promise<void> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
@@ -163,12 +170,17 @@ export async function markAsSettled(ledgerId: string): Promise<void> {
     .eq('user_id', user.id);
 
   if (error) throw error;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:markAsSettled failed:', err);
+    throw err;
+  }}
 
 /**
  * Delete a ledger entry
  */
 export async function deleteLedgerEntry(ledgerId: string): Promise<void> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
@@ -179,7 +191,11 @@ export async function deleteLedgerEntry(ledgerId: string): Promise<void> {
     .eq('user_id', user.id);
 
   if (error) throw error;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:deleteLedgerEntry failed:', err);
+    throw err;
+  }}
 
 /**
  * Calculate expected payment by today for installment type
@@ -191,7 +207,7 @@ export function calculateExpectedByToday(entry: PeopleLedger): number {
     return 0;
   }
 
-  const startDate = new Date(entry.start_date);
+  const startDate = parseLocalDate(entry.start_date);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   startDate.setHours(0, 0, 0, 0);
@@ -262,7 +278,7 @@ export function isOverdue(entry: PeopleLedger): boolean {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const dueDate = new Date(entry.due_date);
+  const dueDate = parseLocalDate(entry.due_date);
   dueDate.setHours(0, 0, 0, 0);
 
   return today > dueDate && entry.remaining_amount > 0;
@@ -276,7 +292,7 @@ export function isDueToday(entry: PeopleLedger): boolean {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const dueDate = new Date(entry.due_date);
+  const dueDate = parseLocalDate(entry.due_date);
   dueDate.setHours(0, 0, 0, 0);
 
   return today.getTime() === dueDate.getTime() && entry.remaining_amount > 0;
@@ -290,7 +306,7 @@ export function getDaysUntilDue(entry: PeopleLedger): number | null {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const dueDate = new Date(entry.due_date);
+  const dueDate = parseLocalDate(entry.due_date);
   dueDate.setHours(0, 0, 0, 0);
 
   const diffTime = dueDate.getTime() - today.getTime();
@@ -317,11 +333,13 @@ interface PlaceDBRow {
 }
 
 export async function getPlaces(): Promise<Place[]> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
   const { data, error } = await supabase
     .from('places')
+    // TODO: narrow columns.
     .select('*')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false });
@@ -329,7 +347,11 @@ export async function getPlaces(): Promise<Place[]> {
   if (error) throw new Error(error.message);
   
   return (data || []).map(row => mapRowToPlace(row));
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:getPlaces failed:', err);
+    throw err;
+  }}
 
 // Helper to map DB row to frontend Place type
 function mapRowToPlace(row: PlaceDBRow): Place {
@@ -351,6 +373,7 @@ function mapRowToPlace(row: PlaceDBRow): Place {
 export async function addPlace(
   place: Omit<Place, 'id' | 'created_at'>
 ): Promise<Place> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -371,9 +394,14 @@ export async function addPlace(
 
   if (error) throw new Error(error.message);
   return mapRowToPlace(data);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:addPlace failed:', err);
+    throw err;
+  }}
 
 export async function uploadPlacePhoto(base64Data?: string, localUri?: string): Promise<string> {
+  try {
   // Development-only logging helper
   const log = (...args: any[]) => {
     if (__DEV__) console.log(...args);
@@ -424,12 +452,17 @@ export async function uploadPlacePhoto(base64Data?: string, localUri?: string): 
   
   log('📸 [Upload] Step 4 ✅ Public URL generated');
   return publicData.publicUrl;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:uploadPlacePhoto failed:', err);
+    throw err;
+  }}
 
 export async function updatePlace(
   id: string,
   updates: Partial<Omit<Place, 'id' | 'created_at'>>
 ): Promise<Place> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -454,9 +487,14 @@ export async function updatePlace(
 
   if (error) throw new Error(error.message);
   return mapRowToPlace(data);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:updatePlace failed:', err);
+    throw err;
+  }}
 
 export async function deletePlace(id: string): Promise<void> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -467,4 +505,8 @@ export async function deletePlace(id: string): Promise<void> {
     .eq('user_id', user.id);
 
   if (error) throw new Error(error.message);
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] userdata.ts:deletePlace failed:', err);
+    throw err;
+  }}

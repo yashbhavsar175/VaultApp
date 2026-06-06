@@ -26,15 +26,21 @@ export interface CreateOrUpdateCreditCardStatementInput {
 }
 
 async function getCurrentUserId(): Promise<string> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user?.id) throw new Error('Not authenticated');
   return user.id;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] creditCardStatements.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 async function assertCreditCardBelongsToUser(
   creditCardId: string,
   userId: string
 ): Promise<void> {
+  try {
   const { data, error } = await supabase
     .from('credit_cards')
     .select('id')
@@ -44,12 +50,17 @@ async function assertCreditCardBelongsToUser(
 
   if (error) throw error;
   if (!data?.id) throw new Error('Credit card statement card must belong to the current user');
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] creditCardStatements.ts:assertCreditCardBelongsToUser failed:', err);
+    throw err;
+  }}
 
 async function assertBalanceSnapshotBelongsToUser(
   sourceSnapshotId: string | null,
   userId: string
 ): Promise<void> {
+  try {
   if (!sourceSnapshotId) return;
 
   const { data, error } = await supabase
@@ -61,7 +72,11 @@ async function assertBalanceSnapshotBelongsToUser(
 
   if (error) throw error;
   if (!data?.id) throw new Error('Credit card statement snapshot must belong to the current user');
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] creditCardStatements.ts:assertBalanceSnapshotBelongsToUser failed:', err);
+    throw err;
+  }}
 
 function assertNonNegative(value: number | null | undefined, field: string) {
   if (value !== undefined && value !== null && value < 0) {
@@ -98,6 +113,7 @@ export function buildCreditCardStatementPayload(
 export async function createOrUpdateCreditCardStatement(
   input: CreateOrUpdateCreditCardStatementInput
 ): Promise<CreditCardStatement> {
+  try {
   const userId = await getCurrentUserId();
   const payload = buildCreditCardStatementPayload(userId, input);
   await assertCreditCardBelongsToUser(payload.credit_card_id, userId);
@@ -124,9 +140,14 @@ export async function createOrUpdateCreditCardStatement(
 
   if (error) throw error;
   return data as CreditCardStatement;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] creditCardStatements.ts:createOrUpdateCreditCardStatement failed:', err);
+    throw err;
+  }}
 
 export async function getCreditCardStatements(creditCardId: string): Promise<CreditCardStatement[]> {
+  try {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('credit_card_statements')
@@ -137,4 +158,8 @@ export async function getCreditCardStatements(creditCardId: string): Promise<Cre
 
   if (error) throw error;
   return (data || []) as CreditCardStatement[];
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] creditCardStatements.ts:getCreditCardStatements failed:', err);
+    throw err;
+  }}

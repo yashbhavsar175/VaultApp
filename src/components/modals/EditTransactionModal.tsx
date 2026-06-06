@@ -31,7 +31,6 @@ const TRANSACTION_TYPES: { value: TransactionType; label: string; icon: string; 
   { value: 'expense', label: 'Expense', icon: 'arrow-up-circle', color: '#ef4444' },
   { value: 'investment', label: 'Investment', icon: 'chart-line', color: '#7c6af7' },
   { value: 'emi', label: 'EMI', icon: 'credit-card', color: '#f59e0b' },
-  { value: 'transfer', label: 'Transfer', icon: 'swap-horizontal', color: '#f97316' },
 ];
 
 export default function EditTransactionModal({
@@ -167,7 +166,11 @@ export default function EditTransactionModal({
               {/* Header - Fixed */}
               <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
                 <Text style={[typography.h2, { color: colors.text, fontSize: 20 }]}>Edit Transaction</Text>
-                <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <TouchableOpacity
+                  onPress={onClose}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close edit transaction">
                   <MaterialCommunityIcons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
@@ -510,6 +513,7 @@ export default function EditTransactionModal({
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
+    // TODO: Replace with useTheme() colors.* token
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'flex-end',
   },
@@ -572,6 +576,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     maxHeight: 200,
     elevation: 5,
+    // TODO: Replace with useTheme() colors.* token
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,

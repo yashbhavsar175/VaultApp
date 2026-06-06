@@ -30,9 +30,14 @@ export function dashboardSummaryCacheKey(userId: string, date: Date): string {
 }
 
 async function getCurrentUserId(): Promise<string | null> {
+  try {
   const { data: { user } } = await supabase.auth.getUser();
   return user?.id || null;
-}
+
+  } catch (err) {
+    if (__DEV__) console.error('[API] dashboardSummaryCache.ts:getCurrentUserId failed:', err);
+    throw err;
+  }}
 
 export async function getCachedDashboardSummary(date: Date): Promise<DashboardSummarySnapshot | null> {
   const userId = await getCurrentUserId();
