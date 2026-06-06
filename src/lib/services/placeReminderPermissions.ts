@@ -9,6 +9,7 @@ export async function requestPlaceReminderPermissions(): Promise<{
 }> {
   let locationStatus: PermissionStatus = 'unknown';
   let notificationStatus: PermissionStatus = 'unknown';
+  console.log('[PlaceReminderPermissions] requestPlaceReminderPermissions: starting...');
 
   try {
     // 1. Request Location Permissions
@@ -39,6 +40,7 @@ export async function requestPlaceReminderPermissions(): Promise<{
       // We will assume location status handled via other modules for iOS or return unknown for now
       locationStatus = 'granted'; // Defaulting for iOS since MVP is mainly Android focused based on Geofence request
     }
+    console.log('[PlaceReminderPermissions] Location permission result:', locationStatus);
 
     // 2. Request Notification Permissions via Notifee
     const settings = await notifee.requestPermission();
@@ -55,8 +57,9 @@ export async function requestPlaceReminderPermissions(): Promise<{
     });
 
   } catch (error) {
-    console.warn('[PlaceReminders] Error requesting permissions:', {
+    console.warn('[PlaceReminderPermissions] Error requesting permissions:', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
   }
 
@@ -66,14 +69,42 @@ export async function requestPlaceReminderPermissions(): Promise<{
   };
 }
 
+export async function requestBackgroundLocationPermission(): Promise<PermissionStatus> {
+  if (Platform.OS !== 'android') return 'granted';
+  
+  try {
+    console.log('[PlaceReminderPermissions] requestBackgroundLocationPermission: requesting (API', Platform.Version, ')');
+    if (Platform.Version >= 29) { // Q and above
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION
+      );
+      if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+        return 'granted';
+      } else if (granted === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        return 'blocked';
+      } else {
+        return 'denied';
+      }
+    }
+    console.log('[PlaceReminderPermissions] Background location: API < 29, auto-granted');
+    return 'granted';
+  } catch (error) {
+    console.warn('[PlaceReminderPermissions] Error requesting background permission:', error);
+    return 'denied';
+  }
+}
+
 export async function checkPlaceReminderPermissions(): Promise<{
   location: PermissionStatus;
+  backgroundLocation: PermissionStatus;
   notification: PermissionStatus;
 }> {
   let locationStatus: PermissionStatus = 'unknown';
+  let backgroundLocationStatus: PermissionStatus = 'unknown';
   let notificationStatus: PermissionStatus = 'unknown';
 
   try {
+    console.log('[PlaceReminderPermissions] checkPlaceReminderPermissions: checking...');
     if (Platform.OS === 'android') {
       const fineGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
       const coarseGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION);
@@ -82,6 +113,13 @@ export async function checkPlaceReminderPermissions(): Promise<{
         locationStatus = 'granted';
       } else {
         locationStatus = 'denied'; // Check cannot determine "blocked", assume denied
+      }
+
+      if (Platform.Version >= 29) {
+        const bgGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION);
+        backgroundLocationStatus = bgGranted ? 'granted' : 'denied';
+      } else {
+        backgroundLocationStatus = 'granted';
       }
     } else {
       locationStatus = 'granted';
@@ -95,13 +133,15 @@ export async function checkPlaceReminderPermissions(): Promise<{
     }
 
   } catch (error) {
-    console.warn('[PlaceReminders] Error checking permissions:', {
+    console.warn('[PlaceReminderPermissions] Error checking permissions:', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
   }
 
   return {
     location: locationStatus,
+    backgroundLocation: backgroundLocationStatus,
     notification: notificationStatus,
   };
 }

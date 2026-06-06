@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Geolocation from 'react-native-geolocation-service';
 import notifee, { AndroidImportance } from '@notifee/react-native';
 import { supabase } from '../core';
+import { GeofencingNative, NativeGeofenceReminder } from './geofencingNative';
 
 export type TriggerType = 'arriving' | 'leaving';
 export type ScheduleType = 'today' | 'tomorrow' | 'always';
@@ -17,6 +18,7 @@ export interface PlaceReminder {
   radius_meters: number;
   trigger_type: TriggerType;
   schedule_type: ScheduleType;
+  intensity?: 'normal' | 'important';
   is_one_time: boolean;
   is_enabled: boolean;
   created_at: string;
@@ -45,16 +47,25 @@ export function getDistanceMeters(lat1: number, lon1: number, lat2: number, lon2
 export async function getPlaceReminders(): Promise<PlaceReminder[]> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return [];
+    if (!user) {
+      console.log('[PlaceReminders] getPlaceReminders: no user logged in');
+      return [];
+    }
 
     const key = `${STORAGE_PREFIX}${user.id}`;
     const stored = await AsyncStorage.getItem(key);
-    if (!stored) return [];
+    if (!stored) {
+      console.log('[PlaceReminders] getPlaceReminders: no stored data found');
+      return [];
+    }
 
-    return JSON.parse(stored);
+    const parsed = JSON.parse(stored);
+    console.log('[PlaceReminders] getPlaceReminders: loaded', { count: parsed.length });
+    return parsed;
   } catch (error) {
     console.warn('[PlaceReminders] getPlaceReminders error', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
     return [];
   }
@@ -69,13 +80,20 @@ export async function savePlaceReminder(reminder: PlaceReminder): Promise<void> 
     const existing = await getPlaceReminders();
     
     const index = existing.findIndex(r => r.id === reminder.id);
-    if (index >= 0) {
+    const isUpdate = index >= 0;
+    if (isUpdate) {
+      console.log('[PlaceReminders] savePlaceReminder: updating existing', { idSuffix: reminder.id.slice(-6), isEnabled: reminder.is_enabled });
       existing[index] = reminder;
     } else {
+      console.log('[PlaceReminders] savePlaceReminder: creating new', { idSuffix: reminder.id.slice(-6), isEnabled: reminder.is_enabled });
       existing.push(reminder);
     }
 
     await AsyncStorage.setItem(key, JSON.stringify(existing));
+    
+    // Sync with native geofencing
+    console.log('[PlaceReminders] savePlaceReminder: syncing geofences after save...');
+    await syncAllGeofences();
     
     // Privacy log
     console.log('[PlaceReminders] Saved reminder', {
@@ -86,6 +104,7 @@ export async function savePlaceReminder(reminder: PlaceReminder): Promise<void> 
   } catch (error) {
     console.warn('[PlaceReminders] savePlaceReminder error', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
@@ -99,47 +118,102 @@ export async function deletePlaceReminder(id: string): Promise<void> {
     const key = `${STORAGE_PREFIX}${user.id}`;
     const existing = await getPlaceReminders();
     const filtered = existing.filter(r => r.id !== id);
+    console.log('[PlaceReminders] deletePlaceReminder:', { idSuffix: id.slice(-6), before: existing.length, after: filtered.length });
     
     await AsyncStorage.setItem(key, JSON.stringify(filtered));
+    console.log('[PlaceReminders] deletePlaceReminder: syncing geofences after delete...');
+    await syncAllGeofences();
   } catch (error) {
     console.warn('[PlaceReminders] deletePlaceReminder error', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function syncAllGeofences() {
+  try {
+    const reminders = await getPlaceReminders();
+    const activeGeofences: NativeGeofenceReminder[] = reminders
+      .filter(r => r.is_enabled && r.latitude && r.longitude)
+      .map(r => ({
+        id: r.id,
+        latitude: r.latitude!,
+        longitude: r.longitude!,
+        radius_meters: r.radius_meters,
+        triggerType: r.trigger_type
+      }));
+
+    console.log('[PlaceReminders] syncAllGeofences:', { totalReminders: reminders.length, activeGeofences: activeGeofences.length, activeIds: activeGeofences.map(g => g.id.slice(-6)) });
+
+    if (activeGeofences.length > 0) {
+      await GeofencingNative.syncGeofences(activeGeofences);
+      console.log('[PlaceReminders] syncAllGeofences: native sync done (registered)');
+    } else {
+      await GeofencingNative.clearGeofences();
+      console.log('[PlaceReminders] syncAllGeofences: native sync done (cleared all)');
+    }
+  } catch (error) {
+    console.warn('[PlaceReminders] syncAllGeofences error', {
+      errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
 async function triggerLocalNotification(reminder: PlaceReminder) {
   try {
+    const isImportant = reminder.intensity === 'important';
+    console.log('[PlaceReminders] triggerLocalNotification: firing ALARM for', { idSuffix: reminder.id.slice(-6), title: reminder.title, intensity: reminder.intensity });
+    
+    // Alarm-style channel: always HIGH importance for heads-up display
     const channelId = await notifee.createChannel({
-      id: 'place_reminders',
-      name: 'Place Reminders',
+      id: isImportant ? 'place_alarm_v3_important' : 'place_alarm_v3',
+      name: isImportant ? '📍 Important Place Alarms' : '📍 Place Alarms',
       importance: AndroidImportance.HIGH,
+      vibration: true,
+      vibrationPattern: isImportant ? [300, 400, 200, 400, 200, 400] : [300, 300, 200, 300],
+      sound: 'alarm',
     });
 
+    // Alarm-style notification: full-screen intent, ongoing, looping sound
     await notifee.displayNotification({
-      title: 'Place Reminder',
+      title: isImportant ? '🔔 Place Reminder!' : '📍 Place Reminder',
       body: reminder.title,
       android: {
         channelId,
+        sound: 'alarm',
+        loopSound: true,
+        ongoing: true,
+        autoCancel: false,
+        importance: AndroidImportance.HIGH,
         pressAction: {
           id: 'default',
         },
+        fullScreenAction: {
+          id: 'default',
+        },
+        timestamp: Date.now(),
+        showTimestamp: true,
       },
     });
+    console.log('[PlaceReminders] 🔔 ALARM notification displayed successfully');
 
     // Update last_triggered_at and potentially disable if one_time
     reminder.last_triggered_at = new Date().toISOString();
     if (reminder.is_one_time) {
+      console.log('[PlaceReminders] triggerLocalNotification: one-time reminder, disabling after trigger');
       reminder.is_enabled = false;
     }
     await savePlaceReminder(reminder);
 
-    console.log('[PlaceReminders] Notification triggered', {
+    console.log('[PlaceReminders] Alarm triggered', {
       reminderIdSuffix: reminder.id.slice(-6),
     });
   } catch (error) {
     console.warn('[PlaceReminders] triggerLocalNotification error', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
   }
 }
@@ -147,66 +221,125 @@ async function triggerLocalNotification(reminder: PlaceReminder) {
 export async function evaluateReminders(lat: number, lon: number, now: number = Date.now()) {
   try {
     const reminders = await getPlaceReminders();
+    const activeReminders = reminders.filter(r => r.is_enabled && r.latitude && r.longitude);
+    console.log('[PlaceReminders] evaluateReminders:', {
+      userLat: lat.toFixed(6),
+      userLon: lon.toFixed(6),
+      totalReminders: reminders.length,
+      activeReminders: activeReminders.length,
+    });
 
     for (const reminder of reminders) {
-      if (!reminder.is_enabled || !reminder.latitude || !reminder.longitude) continue;
+      if (!reminder.is_enabled || !reminder.latitude || !reminder.longitude) {
+        continue;
+      }
 
       // Check schedule
       const createdDate = new Date(reminder.created_at);
       const today = new Date(now);
       
       if (reminder.schedule_type === 'today') {
-        if (createdDate.toDateString() !== today.toDateString()) continue;
+        if (createdDate.toDateString() !== today.toDateString()) {
+          console.log('[PlaceReminders] evaluateReminders: skipping (schedule=today, not today)', { idSuffix: reminder.id.slice(-6) });
+          continue;
+        }
       } else if (reminder.schedule_type === 'tomorrow') {
         const tomorrow = new Date(createdDate);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        if (tomorrow.toDateString() !== today.toDateString()) continue;
+        if (tomorrow.toDateString() !== today.toDateString()) {
+          console.log('[PlaceReminders] evaluateReminders: skipping (schedule=tomorrow, not tomorrow)', { idSuffix: reminder.id.slice(-6) });
+          continue;
+        }
       }
 
       // Check cooldown
       if (reminder.last_triggered_at) {
         const lastTriggered = new Date(reminder.last_triggered_at).getTime();
         if (now - lastTriggered < COOLDOWN_MS) {
+          console.log('[PlaceReminders] evaluateReminders: skipping (cooldown active)', { idSuffix: reminder.id.slice(-6), cooldownRemaining: Math.round((COOLDOWN_MS - (now - lastTriggered)) / 1000) + 's' });
           continue; // In cooldown period
         }
       }
 
       const distance = getDistanceMeters(lat, lon, reminder.latitude, reminder.longitude);
+      const isInside = distance <= reminder.radius_meters;
+      console.log('[PlaceReminders] 📍 LOCATION COMPARISON:', {
+        idSuffix: reminder.id.slice(-6),
+        title: reminder.title,
+        userLocation: { lat: lat.toFixed(6), lon: lon.toFixed(6) },
+        reminderLocation: { lat: reminder.latitude.toFixed(6), lon: reminder.longitude.toFixed(6) },
+        distance: Math.round(distance) + 'm',
+        radius: reminder.radius_meters + 'm',
+        status: isInside ? '🟢 INSIDE RADIUS' : '🔴 OUTSIDE RADIUS (' + Math.round(distance - reminder.radius_meters) + 'm away)',
+        triggerType: reminder.trigger_type,
+      });
       
-      // Arriving logic MVP:
-      // For this MVP, if within radius and 'arriving' trigger, we trigger. Cooldown prevents spam.
-      if (reminder.trigger_type === 'arriving' && distance <= reminder.radius_meters) {
+      // Arriving: trigger when user enters the radius
+      if (reminder.trigger_type === 'arriving' && isInside) {
+        console.log('[PlaceReminders] 🔔 TRIGGERING ARRIVING reminder!', { idSuffix: reminder.id.slice(-6), title: reminder.title, distance: Math.round(distance) + 'm' });
+        await triggerLocalNotification(reminder);
+      }
+      
+      // Leaving: trigger when user exits the radius
+      if (reminder.trigger_type === 'leaving' && !isInside) {
+        console.log('[PlaceReminders] 🔔 TRIGGERING LEAVING reminder!', { idSuffix: reminder.id.slice(-6), title: reminder.title, distance: Math.round(distance) + 'm' });
         await triggerLocalNotification(reminder);
       }
     }
   } catch (error) {
     console.warn('[PlaceReminders] Error evaluating reminders', {
       errorCode: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
 let watchId: number | null = null;
+let positionUpdateCount = 0;
+let lastUserLat: number | null = null;
+let lastUserLon: number | null = null;
 
 export function startLocationMonitoring() {
-  if (watchId !== null) return; // Already watching
+  if (watchId !== null) {
+    console.log('[PlaceReminders] startLocationMonitoring: already watching, skipping');
+    return; // Already watching
+  }
 
   watchId = Geolocation.watchPosition(
     async (position) => {
       const lat = position.coords.latitude;
       const lon = position.coords.longitude;
+      const acc = position.coords.accuracy;
+      positionUpdateCount++;
+
+      // Calculate movement from last position
+      let movementInfo = 'first update';
+      if (lastUserLat !== null && lastUserLon !== null) {
+        const moved = getDistanceMeters(lastUserLat, lastUserLon, lat, lon);
+        movementInfo = `moved ${Math.round(moved)}m from last`;
+      }
+      lastUserLat = lat;
+      lastUserLon = lon;
+
+      console.log('[PlaceReminders] 📍 USER POSITION UPDATE #' + positionUpdateCount + ':', {
+        lat: lat.toFixed(6),
+        lon: lon.toFixed(6),
+        accuracy: Math.round(acc) + 'm',
+        movement: movementInfo,
+      });
       await evaluateReminders(lat, lon);
     },
     (error) => {
       console.warn('[PlaceReminders] Geolocation error', {
         errorCode: error.code,
+        message: error.message,
       });
     },
     {
-      enableHighAccuracy: false, // Save battery
-      distanceFilter: 100, // Update every 100 meters
-      interval: 60000, // Android only: 1 minute
-      fastestInterval: 30000,
+      enableHighAccuracy: true, // Improved for testing
+      distanceFilter: 10, // Update every 10 meters
+      interval: 10000, // Android only: 10 seconds
+      fastestInterval: 5000,
     }
   );
 

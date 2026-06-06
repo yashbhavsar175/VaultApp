@@ -4,6 +4,12 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import 'react-native-url-polyfill/auto';
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORE UTILITIES MODULE
+// Consolidated: supabase + aiParser + googleAuth + db
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
@@ -11,6 +17,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config
 import { Transaction, TransactionType } from '../types';
 import { showTransactionConfirmation } from './services/notifications';
 import { emitFinanceDataChanged } from './services/dataEvents';
+import { GeofencingNative } from './services/geofencingNative';
 import { sanitizeTransactionRawSmsForPrivacy } from './privacy/rawText';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
@@ -168,6 +175,11 @@ export const signInWithGoogle = async () => {
 
 export const signOutFromGoogle = async () => {
   try {
+    try {
+      await GeofencingNative.clearGeofences();
+    } catch (e) {
+      console.warn('[Core] Failed to clear geofences on sign out', e);
+    }
     await GoogleSignin.signOut();
     await supabase.auth.signOut();
   } catch (error) {

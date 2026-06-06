@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 
@@ -9,35 +9,76 @@ import { PlaceReminder, savePlaceReminder, TriggerType, ScheduleType } from '../
 import { supabase } from '../../lib/core';
 
 export default function EditPlaceReminderScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { colors, typography, spacing } = useTheme();
   
   const existingReminder = route.params?.reminder as PlaceReminder | undefined;
+  console.log('[EditPlaceReminderScreen] Rendered', { 
+    existingReminderId: existingReminder?.id, 
+    hasSelectedLocation: !!route.params?.selectedLocation,
+    params: route.params 
+  });
 
   const [title, setTitle] = useState(existingReminder?.title || '');
   const [note, setNote] = useState(existingReminder?.note || '');
   const [address, setAddress] = useState(existingReminder?.address || '');
-  const [radius, setRadius] = useState(existingReminder?.radius_meters.toString() || '100');
+  const [radiusOption, setRadiusOption] = useState<string>(existingReminder ? existingReminder.radius_meters.toString() : '100');
+  const [customRadius, setCustomRadius] = useState<string>('');
   const [triggerType, setTriggerType] = useState<TriggerType>(existingReminder?.trigger_type || 'arriving');
   const [scheduleType] = useState<ScheduleType>(existingReminder?.schedule_type || 'always');
+  const [intensity, setIntensity] = useState<'normal' | 'important'>(existingReminder?.intensity || 'normal');
   const [isOneTime, setIsOneTime] = useState(existingReminder ? existingReminder.is_one_time : true);
   const [latitude, setLatitude] = useState<number | null>(existingReminder?.latitude || null);
   const [longitude, setLongitude] = useState<number | null>(existingReminder?.longitude || null);
+  const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const appliedLocationRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const loc = route.params?.selectedLocation;
+    if (!loc) return;
+
+    // Deduplicate: skip if we already applied this exact location
+    const locationKey = `${loc.latitude},${loc.longitude}`;
+    if (appliedLocationRef.current === locationKey) return;
+    appliedLocationRef.current = locationKey;
+
+    console.log('[EditPlaceReminderScreen] 📍 REMINDER LOCATION SET (from map):', {
+      lat: loc.latitude.toFixed(6),
+      lon: loc.longitude.toFixed(6),
+      label: loc.label,
+    });
+    setLatitude(loc.latitude);
+    setLongitude(loc.longitude);
+    setLocationAccuracy(null); // Map pins don't have accuracy
+    if (loc.label && loc.label !== 'Selected location') {
+      setAddress(loc.label);
+    }
+  }, [route.params?.selectedLocation]);
 
   const handleUseCurrentLocation = () => {
+    console.log('[EditPlaceReminderScreen] handleUseCurrentLocation called');
     Geolocation.getCurrentPosition(
       (position) => {
-        setLatitude(position.coords.latitude);
-        setLongitude(position.coords.longitude);
+        const userLat = position.coords.latitude;
+        const userLon = position.coords.longitude;
+        const acc = position.coords.accuracy;
+        console.log('[EditPlaceReminderScreen] 📍 USER CURRENT LOCATION captured:', {
+          lat: userLat.toFixed(6),
+          lon: userLon.toFixed(6),
+          accuracy: Math.round(acc) + 'm',
+        });
+        setLatitude(userLat);
+        setLongitude(userLon);
+        setLocationAccuracy(acc);
         if (!address) {
           setAddress('Current Location');
         }
         Alert.alert('Location Captured', 'Current location has been captured successfully.');
       },
       (error) => {
-        console.warn(error.code, error.message);
+        console.warn('[EditPlaceReminderScreen] Location fetch error:', error.code, error.message);
         Alert.alert('Location Error', 'Unable to fetch current location. Please ensure location permissions are granted.');
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
@@ -45,11 +86,27 @@ export default function EditPlaceReminderScreen() {
   };
 
   const handleSave = async () => {
-    if (!title.trim() || !address.trim() || !radius || !latitude || !longitude) {
-      Alert.alert('Missing Fields', 'Please fill in title, address, and capture a location.');
+    console.log('[EditPlaceReminderScreen] handleSave called with state:', { title, address, latitude, longitude, radiusOption, customRadius, triggerType, intensity, isOneTime });
+    let finalRadius = parseInt(radiusOption, 10);
+    if (radiusOption === 'custom') {
+      finalRadius = parseInt(customRadius, 10);
+    }
+    console.log('[EditPlaceReminderScreen] Calculated finalRadius:', finalRadius);
+
+    if (!title.trim()) {
+      Alert.alert('Missing Field', 'Add a reminder title.');
+      return;
+    }
+    if (!latitude || !longitude) {
+      Alert.alert('Missing Field', 'Choose or capture a location.');
+      return;
+    }
+    if (isNaN(finalRadius) || finalRadius < 50 || finalRadius > 50000) {
+      Alert.alert('Invalid Radius', 'Radius must be between 50 m and 50 km.');
       return;
     }
 
+    console.log('[EditPlaceReminderScreen] Validation passed. Starting save...');
     setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -63,9 +120,10 @@ export default function EditPlaceReminderScreen() {
         address: address.trim(),
         latitude,
         longitude,
-        radius_meters: parseInt(radius, 10),
+        radius_meters: finalRadius,
         trigger_type: triggerType,
         schedule_type: scheduleType,
+        intensity,
         is_one_time: isOneTime,
         is_enabled: existingReminder ? existingReminder.is_enabled : true,
         created_at: existingReminder?.created_at || new Date().toISOString(),
@@ -73,9 +131,32 @@ export default function EditPlaceReminderScreen() {
       };
 
       await savePlaceReminder(reminder);
+      console.log('[EditPlaceReminderScreen] ✅ Reminder saved! Target location:', {
+        reminderLat: latitude?.toFixed(6),
+        reminderLon: longitude?.toFixed(6),
+        radius: finalRadius + 'm',
+        triggerType,
+      });
+      // Fetch user's current GPS to compare with reminder location
+      Geolocation.getCurrentPosition(
+        (pos) => {
+          const userLat = pos.coords.latitude;
+          const userLon = pos.coords.longitude;
+          console.log('[EditPlaceReminderScreen] 📍 USER vs REMINDER location at save time:', {
+            userLat: userLat.toFixed(6),
+            userLon: userLon.toFixed(6),
+            reminderLat: latitude?.toFixed(6),
+            reminderLon: longitude?.toFixed(6),
+            radius: finalRadius + 'm',
+            approxDistanceNote: 'Check evaluateReminders logs for exact distance',
+          });
+        },
+        () => { /* ignore error, this is just a debug log */ },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
       navigation.goBack();
     } catch (error) {
-      console.warn(error);
+      console.warn('[EditPlaceReminderScreen] Save error:', error);
       Alert.alert('Error', 'Failed to save reminder.');
     } finally {
       setLoading(false);
@@ -98,14 +179,24 @@ export default function EditPlaceReminderScreen() {
   );
 
   return (
-    <ScreenWrapper>
+    <ScreenWrapper keyboardAvoiding>
       <AppHeader title={existingReminder ? 'Edit Reminder' : 'New Place Reminder'} showBack />
       
       <ScrollView contentContainerStyle={{ padding: spacing.md, paddingBottom: 100 }}>
         <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
           <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Details</Text>
+          
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.md }}>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {renderOption('Take something', title === 'Take ', () => setTitle('Take '))}
+              {renderOption('Buy something', title === 'Buy ', () => setTitle('Buy '))}
+              {renderOption('Do something', title === 'Do ', () => setTitle('Do '))}
+              {renderOption('Custom', title === '', () => setTitle(''))}
+            </View>
+          </ScrollView>
+
           <AppInput
-            placeholder="E.g., Hospital file, Buy milk"
+            placeholder="E.g., Take hospital file, Buy milk"
             value={title}
             onChangeText={setTitle}
             containerStyle={{ marginBottom: spacing.md }}
@@ -122,23 +213,36 @@ export default function EditPlaceReminderScreen() {
         <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
           <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Location</Text>
           <AppInput
-            placeholder="Place name or address"
+            placeholder="Place name or address (Optional)"
             value={address}
             onChangeText={setAddress}
             containerStyle={{ marginBottom: spacing.md }}
           />
           <View style={styles.locationCapture}>
             <View style={{ flex: 1, marginRight: spacing.md }}>
-              <Text style={[typography.caption, { color: colors.subtext }]}>
-                {latitude && longitude ? `Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)}` : 'No coordinates captured'}
+              <Text style={[typography.caption, { color: colors.text }]}>
+                {latitude && longitude ? 'Location saved' : 'No coordinates captured'}
               </Text>
+              {locationAccuracy && (
+                <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
+                  Accuracy: approx. {Math.round(locationAccuracy)} m
+                </Text>
+              )}
             </View>
-            <AppButton
-              title={latitude ? "Update" : "Capture Here"}
-              variant="secondary"
-              onPress={handleUseCurrentLocation}
-              style={{ minWidth: 100 }}
-            />
+            <View style={{ gap: spacing.sm }}>
+              <AppButton
+                title={latitude ? "Update current" : "Use current"}
+                variant="secondary"
+                onPress={handleUseCurrentLocation}
+                style={{ minWidth: 140 }}
+              />
+              <AppButton
+                title="Choose on map"
+                variant="secondary"
+                onPress={() => navigation.navigate('PlaceReminderMapPicker', { latitude, longitude })}
+                style={{ minWidth: 140 }}
+              />
+            </View>
           </View>
         </Card>
 
@@ -147,14 +251,36 @@ export default function EditPlaceReminderScreen() {
           
           <Text style={[typography.caption, { color: colors.text, marginBottom: 8 }]}>Radius (meters)</Text>
           <View style={styles.optionsRow}>
-            {renderOption('100m', radius === '100', () => setRadius('100'))}
-            {renderOption('500m', radius === '500', () => setRadius('500'))}
-            {renderOption('1km', radius === '1000', () => setRadius('1000'))}
+            {renderOption('100m', radiusOption === '100', () => setRadiusOption('100'))}
+            {renderOption('500m', radiusOption === '500', () => setRadiusOption('500'))}
+            {renderOption('1km', radiusOption === '1000', () => setRadiusOption('1000'))}
+            {renderOption('Custom', radiusOption === 'custom', () => setRadiusOption('custom'))}
           </View>
+          
+          {radiusOption === 'custom' && (
+            <AppInput
+              placeholder="Custom radius (50 to 50000 meters)"
+              value={customRadius}
+              onChangeText={setCustomRadius}
+              keyboardType="numeric"
+              containerStyle={{ marginTop: spacing.sm }}
+            />
+          )}
+
+          <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, fontSize: 11 }]}>
+            Smaller radius is useful for home or office. Larger radius is better for shops or areas.
+          </Text>
 
           <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>When</Text>
           <View style={styles.optionsRow}>
-            {renderOption('Arriving', triggerType === 'arriving', () => setTriggerType('arriving'))}
+            {renderOption('Arriving near this place', triggerType === 'arriving', () => setTriggerType('arriving'))}
+            {renderOption('Leaving this place', triggerType === 'leaving', () => setTriggerType('leaving'))}
+          </View>
+
+          <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>Intensity</Text>
+          <View style={styles.optionsRow}>
+            {renderOption('Normal', intensity === 'normal', () => setIntensity('normal'))}
+            {renderOption('Important', intensity === 'important', () => setIntensity('important'))}
           </View>
 
           <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>Repeat</Text>
@@ -162,6 +288,12 @@ export default function EditPlaceReminderScreen() {
             {renderOption('Once', isOneTime, () => setIsOneTime(true))}
             {renderOption('Repeat', !isOneTime, () => setIsOneTime(false))}
           </View>
+          
+          {!isOneTime && (
+            <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, fontSize: 11 }]}>
+              Won't repeat for 30 minutes after alert.
+            </Text>
+          )}
         </Card>
       </ScrollView>
 
@@ -196,5 +328,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     borderTopWidth: 1,
+    elevation: 10,
+    zIndex: 10,
   },
 });

@@ -20,6 +20,10 @@ class BootReceiver : BroadcastReceiver() {
                 
                 // SMS receiver is already registered in manifest and will work automatically
                 
+                // Start BootProcessorService to re-register Geofences
+                val serviceIntent = Intent(context, BootProcessorService::class.java)
+                context.startService(serviceIntent)
+                
                 Log.d("BootReceiver", "Background services initialized after boot")
             } catch (e: Exception) {
                 Log.e("BootReceiver", "Error initializing services after boot", e)

@@ -9,6 +9,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   removeItem: jest.fn(),
 }));
 
+jest.mock('../src/lib/services/geofencingNative', () => ({
+  GeofencingNative: {
+    syncGeofences: jest.fn().mockResolvedValue(true),
+    clearGeofences: jest.fn().mockResolvedValue(true),
+  },
+}));
+
 jest.mock('../src/lib/core', () => ({
   supabase: {
     auth: {
@@ -28,6 +35,8 @@ jest.mock('react-native-geolocation-service', () => ({
   watchPosition: jest.fn(),
   clearWatch: jest.fn(),
 }));
+
+import { GeofencingNative } from '../src/lib/services/geofencingNative';
 
 describe('PlaceReminders Service', () => {
   const MOCK_USER_ID = 'test-user-123';
@@ -51,6 +60,7 @@ describe('PlaceReminders Service', () => {
     radius_meters: 100,
     trigger_type: 'arriving',
     schedule_type: 'always',
+    intensity: 'normal',
     is_one_time,
     is_enabled: true,
     created_at: new Date().toISOString(),
@@ -67,7 +77,7 @@ describe('PlaceReminders Service', () => {
     it('returns reminders from storage scoped to user', async () => {
       const mockData = [createMockReminder('r1')];
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify(mockData));
-      
+
       const result = await getPlaceReminders();
       expect(result).toEqual(mockData);
     });
@@ -81,28 +91,36 @@ describe('PlaceReminders Service', () => {
 
   describe('savePlaceReminder', () => {
     it('adds a new reminder', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify([]));
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(JSON.stringify([]))
+        .mockResolvedValueOnce(JSON.stringify([createMockReminder('r1')]));
+
       const reminder = createMockReminder('r1');
-      
+
       await savePlaceReminder(reminder);
-      
+
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         STORAGE_KEY,
         JSON.stringify([reminder])
       );
+      expect(GeofencingNative.syncGeofences).toHaveBeenCalled();
     });
 
     it('updates an existing reminder', async () => {
       const oldReminder = createMockReminder('r1');
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify([oldReminder]));
-      
       const updatedReminder = { ...oldReminder, title: 'Updated' };
+
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(JSON.stringify([oldReminder]))
+        .mockResolvedValueOnce(JSON.stringify([updatedReminder]));
+
       await savePlaceReminder(updatedReminder);
-      
+
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         STORAGE_KEY,
         JSON.stringify([updatedReminder])
       );
+      expect(GeofencingNative.syncGeofences).toHaveBeenCalled();
     });
   });
 
@@ -110,14 +128,18 @@ describe('PlaceReminders Service', () => {
     it('removes the reminder from storage', async () => {
       const r1 = createMockReminder('r1');
       const r2 = createMockReminder('r2');
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify([r1, r2]));
-      
+
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(JSON.stringify([r1, r2]))
+        .mockResolvedValueOnce(JSON.stringify([r2]));
+
       await deletePlaceReminder('r1');
-      
+
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         STORAGE_KEY,
         JSON.stringify([r2])
       );
+      expect(GeofencingNative.syncGeofences).toHaveBeenCalled();
     });
   });
 });

@@ -15,11 +15,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Biometric authentication for Secure Vault -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
+    <!-- Alarm-style notifications for place reminders -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- Overlay permission for floating debug bubble -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -84,9 +88,25 @@
         android:name="com.lesimoes.androidnotificationlistener.BootUpReceiver"
         tools:node="remove" />
 
-      <!-- Headless JS Service -->
+      <!-- Headless JS Service for SMS -->
       <service
         android:name=".SmsProcessorService"
+        android:enabled="true"
+        android:exported="false" />
+
+      <!-- Geofencing -->
+      <receiver
+        android:name=".GeofenceBroadcastReceiver"
+        android:enabled="true"
+        android:exported="true" />
+
+      <service
+        android:name=".GeofenceProcessorService"
+        android:enabled="true"
+        android:exported="false" />
+
+      <service
+        android:name=".BootProcessorService"
         android:enabled="true"
         android:exported="false" />
 

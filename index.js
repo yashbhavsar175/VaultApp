@@ -10,6 +10,7 @@ import { RNAndroidNotificationListenerHeadlessJsName } from 'react-native-androi
 import { enqueueSms, enqueueNotification } from './src/lib/processors/TransactionQueue';
 import notifee from '@notifee/react-native';
 import { onBackgroundEvent } from './src/lib/services/notifications';
+import { GeofenceProcessorTask, BootProcessorTask } from './src/lib/services/geofenceProcessor';
 
 console.log('📱 [Index] Registering app components...');
 
@@ -33,3 +34,8 @@ AppRegistry.registerHeadlessTask(
   () => enqueueNotification
 );
 console.log('✅ [Index] Notification Processor Task registered successfully');
+
+// Register Geofencing Tasks
+AppRegistry.registerHeadlessTask('GeofenceProcessorTask', () => GeofenceProcessorTask);
+AppRegistry.registerHeadlessTask('BootProcessorTask', () => BootProcessorTask);
+console.log('✅ [Index] Geofencing Tasks registered successfully');

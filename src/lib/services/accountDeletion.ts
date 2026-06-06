@@ -5,6 +5,7 @@ import {
   OFFLINE_TX_QUEUE_BASE_KEY,
   clearFinancialQueuesForUser,
 } from './userScopedQueues';
+import { GeofencingNative } from './geofencingNative';
 
 export const PLACE_PHOTOS_BUCKET = 'place-photos';
 export const AUTH_USER_DELETION_IMPLEMENTED = false;
@@ -140,6 +141,11 @@ export async function deleteCurrentUserAppData(): Promise<void> {
 
   let localCleanupFailed = false;
   try {
+    try {
+      await GeofencingNative.clearGeofences();
+    } catch (e) {
+      console.warn('[AccountDeletion] Failed to clear geofences', e);
+    }
     await clearLocalAccountDataAfterDeletion(user.id);
   } catch {
     localCleanupFailed = true;

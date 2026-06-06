@@ -1,25 +1,28 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, Linking, Platform, AppState, AppStateStatus } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card, AppButton } from '../../components';
-import { getPlaceReminders, deletePlaceReminder, PlaceReminder, savePlaceReminder } from '../../lib/services/placeReminders';
-import { requestPlaceReminderPermissions } from '../../lib/services/placeReminderPermissions';
+import { getPlaceReminders, deletePlaceReminder, PlaceReminder, savePlaceReminder, syncAllGeofences } from '../../lib/services/placeReminders';
+import { requestPlaceReminderPermissions, requestBackgroundLocationPermission, checkPlaceReminderPermissions } from '../../lib/services/placeReminderPermissions';
 
 export default function PlaceRemindersScreen() {
   const navigation = useNavigation<any>();
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [reminders, setReminders] = useState<PlaceReminder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasBackgroundPermission, setHasBackgroundPermission] = useState(false);
 
   const loadReminders = useCallback(async () => {
+    console.log('[PlaceRemindersScreen] loadReminders called');
     setLoading(true);
     try {
       const data = await getPlaceReminders();
+      console.log('[PlaceRemindersScreen] Loaded reminders:', { count: data.length, ids: data.map(r => r.id.slice(-6)), enabledCount: data.filter(r => r.is_enabled).length });
       setReminders(data);
     } catch (e) {
-      console.warn(e);
+      console.warn('[PlaceRemindersScreen] loadReminders error:', e);
     } finally {
       setLoading(false);
     }
@@ -27,20 +30,79 @@ export default function PlaceRemindersScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      console.log('[PlaceRemindersScreen] Screen focused — reloading reminders & checking permissions');
       loadReminders();
       // Check permissions silently on focus
-      requestPlaceReminderPermissions();
+      requestPlaceReminderPermissions().then(async () => {
+        const status = await checkPlaceReminderPermissions();
+        console.log('[PlaceRemindersScreen] Permission check result:', status);
+        setHasBackgroundPermission(status.backgroundLocation === 'granted');
+      });
     }, [loadReminders])
   );
 
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      console.log('[PlaceRemindersScreen] AppState changed to:', nextAppState);
+      if (nextAppState === 'active') {
+        const status = await checkPlaceReminderPermissions();
+        console.log('[PlaceRemindersScreen] AppState active — permission recheck:', status);
+        setHasBackgroundPermission(status.backgroundLocation === 'granted');
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  const handleEnableBackground = async () => {
+    console.log('[PlaceRemindersScreen] handleEnableBackground — requesting background location');
+    const status = await requestBackgroundLocationPermission();
+    console.log('[PlaceRemindersScreen] Background location result:', status);
+    if (status === 'granted') {
+      setHasBackgroundPermission(true);
+      await syncAllGeofences();
+      Alert.alert('Success', 'Background reminders are now active.');
+    } else {
+      Alert.alert(
+        'Location Permission Needed',
+        'To wake the app in the background, please tap "Open Settings" below, then go to:\n\n1. Permissions\n2. Location\n3. Select "Allow all the time"',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Open Settings', 
+            onPress: async () => {
+              if (Platform.OS === 'android') {
+                try {
+                  await Linking.sendIntent('android.intent.action.MANAGE_APP_PERMISSIONS', [
+                    { key: 'android.intent.extra.PACKAGE_NAME', value: 'com.spendsense' }
+                  ]);
+                } catch {
+                  Linking.openSettings();
+                }
+              } else {
+                Linking.openSettings();
+              }
+            } 
+          }
+        ]
+      );
+    }
+  };
+
   const handleDelete = (id: string) => {
+    console.log('[PlaceRemindersScreen] handleDelete tapped for id suffix:', id.slice(-6));
     Alert.alert('Delete Reminder', 'Are you sure you want to delete this reminder?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
+          console.log('[PlaceRemindersScreen] Deleting reminder:', id.slice(-6));
           await deletePlaceReminder(id);
+          console.log('[PlaceRemindersScreen] Deleted. Reloading list.');
           loadReminders();
         },
       },
@@ -48,11 +110,14 @@ export default function PlaceRemindersScreen() {
   };
 
   const handleToggle = async (reminder: PlaceReminder) => {
+    const newState = !reminder.is_enabled;
+    console.log('[PlaceRemindersScreen] handleToggle:', { idSuffix: reminder.id.slice(-6), title: reminder.title, from: reminder.is_enabled, to: newState });
     try {
-      await savePlaceReminder({ ...reminder, is_enabled: !reminder.is_enabled });
+      await savePlaceReminder({ ...reminder, is_enabled: newState });
+      console.log('[PlaceRemindersScreen] Toggle saved. Reloading list.');
       loadReminders();
     } catch (error) {
-      console.warn(error);
+      console.warn('[PlaceRemindersScreen] Toggle error:', error);
     }
   };
 
@@ -103,9 +168,21 @@ export default function PlaceRemindersScreen() {
       <View style={{ backgroundColor: colors.accent + '20', padding: spacing.sm, marginHorizontal: spacing.md, marginTop: spacing.md, borderRadius: borderRadius.md, flexDirection: 'row', alignItems: 'center' }}>
         <MaterialCommunityIcons name="information-outline" size={20} color={colors.accent} style={{ marginRight: spacing.sm }} />
         <Text style={[typography.caption, { color: colors.text, flex: 1 }]}>
-          Note: Place reminders are currently in a foreground-only MVP phase and will only trigger while the app is open and active.
+          {hasBackgroundPermission
+            ? 'Note: Place reminders work when the app is closed (Background Mode Active).'
+            : 'Note: Place reminders are currently in a foreground-only MVP phase and will only trigger while the app is open and active.'}
         </Text>
       </View>
+      
+      {!hasBackgroundPermission && (
+        <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}>
+          <AppButton 
+            title="Enable Background Reminders" 
+            variant="secondary" 
+            onPress={handleEnableBackground} 
+          />
+        </View>
+      )}
       
       {reminders.length === 0 && !loading ? (
         <View style={styles.emptyContainer}>

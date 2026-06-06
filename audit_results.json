@@ -1,0 +1,2664 @@
+{
+  "critical": [],
+  "high": [
+    {
+      "file": "src\\config\\env.example.ts",
+      "line": 13,
+      "category": "Security",
+      "desc": "Hardcoded Supabase URL",
+      "fix": "Move to .env"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 1153,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 1560,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    },
+    {
+      "file": "src\\lib\\services\\placeReminders.ts",
+      "line": 51,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    },
+    {
+      "file": "src\\lib\\services\\placeReminders.ts",
+      "line": 324,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 447,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    },
+    {
+      "file": "src\\screens\\reminders\\EditPlaceReminderScreen.tsx",
+      "line": 67,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    },
+    {
+      "file": "src\\screens\\reminders\\EditPlaceReminderScreen.tsx",
+      "line": 145,
+      "category": "Security",
+      "desc": "Logging sensitive data",
+      "fix": "Remove console.log for sensitive data"
+    }
+  ],
+  "medium": [
+    {
+      "file": "src\\components\\BalanceCorrectionModal.tsx",
+      "line": 200,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\EditTransactionModal.tsx",
+      "line": 30,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\EditTransactionModal.tsx",
+      "line": 31,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\EditTransactionModal.tsx",
+      "line": 32,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\EditTransactionModal.tsx",
+      "line": 33,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\EditTransactionModal.tsx",
+      "line": 34,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\EditTransactionModal.tsx",
+      "line": 499,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\MapPickerModal.tsx",
+      "line": 239,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\MapPickerModal.tsx",
+      "line": 299,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\QuickAddModal.tsx",
+      "line": 322,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\components\\modals\\QuickAddModal.tsx",
+      "line": 338,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 50,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 51,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 52,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 53,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 54,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 55,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 56,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 57,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 58,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 59,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 60,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 61,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 62,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 63,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 64,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 65,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 66,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 67,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 68,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 69,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 70,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 71,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 72,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 73,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 74,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 75,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 76,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\config\\index.ts",
+      "line": 77,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionQueue.ts",
+      "line": 56,
+      "category": "Code Quality",
+      "desc": "@ts-ignore used",
+      "fix": "Fix the underlying TypeScript error instead of ignoring"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionQueue.ts",
+      "line": 59,
+      "category": "Code Quality",
+      "desc": "@ts-ignore used",
+      "fix": "Fix the underlying TypeScript error instead of ignoring"
+    },
+    {
+      "file": "src\\lib\\services\\scheduledNotifications.ts",
+      "line": 42,
+      "category": "Code Quality",
+      "desc": "@ts-ignore used",
+      "fix": "Fix the underlying TypeScript error instead of ignoring"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 332,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 333,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 334,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 335,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 766,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\auth\\AuthScreens.tsx",
+      "line": 772,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 545,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 552,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 559,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 166,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 183,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 187,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 214,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 221,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 254,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 333,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 107,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 115,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 710,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 733,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 930,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 1341,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\DebtFreedomScreen.tsx",
+      "line": 605,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\DebtFreedomScreen.tsx",
+      "line": 663,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\DebtFreedomScreen.tsx",
+      "line": 679,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\DebtFreedomScreen.tsx",
+      "line": 855,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 0,
+      "category": "Bug",
+      "desc": "Possible FlatList inside ScrollView causing VirtualizedList errors",
+      "fix": "Remove ScrollView wrapper or use map"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 801,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 892,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 953,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 957,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 995,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1061,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1148,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1297,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1773,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1776,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1781,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1801,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1802,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1803,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1804,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2108,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2109,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2110,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2111,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2112,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2122,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2123,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2124,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2125,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2126,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2127,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2180,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2225,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2226,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2228,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2229,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2230,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 2537,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\SMSTestScreen.tsx",
+      "line": 167,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\SMSTestScreen.tsx",
+      "line": 171,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\SMSTestScreen.tsx",
+      "line": 243,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\financial\\SMSTestScreen.tsx",
+      "line": 291,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\people\\PeopleScreen.tsx",
+      "line": 0,
+      "category": "Bug",
+      "desc": "Possible FlatList inside ScrollView causing VirtualizedList errors",
+      "fix": "Remove ScrollView wrapper or use map"
+    },
+    {
+      "file": "src\\screens\\people\\PeopleScreen.tsx",
+      "line": 473,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\people\\PeopleScreen.tsx",
+      "line": 561,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 0,
+      "category": "Bug",
+      "desc": "Possible FlatList inside ScrollView causing VirtualizedList errors",
+      "fix": "Remove ScrollView wrapper or use map"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 29,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 30,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 31,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 32,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 33,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 34,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 344,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 475,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 556,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 539,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 554,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 555,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 604,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 621,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 702,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 718,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 756,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 762,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 784,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 796,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 868,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 906,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 998,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 31,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 32,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 33,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 34,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 35,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 509,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 516,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 798,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 954,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\transactions\\Transactions.tsx",
+      "line": 750,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\ProfileScreen.tsx",
+      "line": 244,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\ProfileScreen.tsx",
+      "line": 255,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\ProfileScreen.tsx",
+      "line": 266,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 981,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1406,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1422,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1428,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 31,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 32,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 33,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 34,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 35,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 36,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 493,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 710,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 100,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 101,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 109,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 110,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 118,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 119,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 677,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 684,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 698,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 708,
+      "category": "UI/UX",
+      "desc": "Hardcoded color hex used",
+      "fix": "Use theme colors from useTheme() to support dark mode consistently"
+    }
+  ],
+  "low": [
+    {
+      "file": "src\\lib\\core.ts",
+      "line": 591,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 79,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 95,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 293,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 309,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 327,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 405,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 485,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 579,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 594,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 670,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 813,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\userdata.ts",
+      "line": 39,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\userdata.ts",
+      "line": 141,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\userdata.ts",
+      "line": 325,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\database\\vaultDb.ts",
+      "line": 71,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 776,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 790,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 807,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 834,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 857,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 893,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.ts",
+      "line": 248,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.ts",
+      "line": 340,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.ts",
+      "line": 412,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.ts",
+      "line": 463,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.ts",
+      "line": 719,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSnapshots.ts",
+      "line": 326,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSnapshots.ts",
+      "line": 351,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 803,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 827,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 847,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 856,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 889,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 898,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\creditCardStatements.ts",
+      "line": 133,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\debitCards.ts",
+      "line": 70,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\debitCards.ts",
+      "line": 108,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\debitCards.ts",
+      "line": 121,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.ts",
+      "line": 479,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.ts",
+      "line": 492,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.ts",
+      "line": 505,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.ts",
+      "line": 518,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.ts",
+      "line": 550,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccounts.ts",
+      "line": 81,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\paymentAppAccountMappings.ts",
+      "line": 125,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\paymentAppAccountMappings.ts",
+      "line": 141,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\paymentAppAccountMappings.ts",
+      "line": 165,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.ts",
+      "line": 284,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.ts",
+      "line": 299,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.ts",
+      "line": 417,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.ts",
+      "line": 465,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\screens\\transactions\\TransactionDetail.tsx",
+      "line": 463,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    },
+    {
+      "file": "src\\screens\\user\\ProfileScreen.tsx",
+      "line": 89,
+      "category": "Performance",
+      "desc": "Select * used in query (N+1 pattern or overfetching)",
+      "fix": "Select only required columns"
+    }
+  ],
+  "info": [
+    {
+      "file": "src\\components\\modals\\AppConfirmModal.tsx",
+      "line": 71,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\components\\modals\\MapPickerModal.tsx",
+      "line": 52,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\components\\modals\\MapPickerModal.tsx",
+      "line": 57,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\components\\modals\\QuickAddModal.tsx",
+      "line": 254,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\core.test.ts",
+      "line": 88,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\core.test.ts",
+      "line": 264,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\core.test.ts",
+      "line": 390,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\core.test.ts",
+      "line": 469,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\core.ts",
+      "line": 752,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\core.ts",
+      "line": 878,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.test.ts",
+      "line": 21,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.test.ts",
+      "line": 167,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 22,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 29,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 38,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 47,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\financial.ts",
+      "line": 631,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\userdata.ts",
+      "line": 378,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\userdata.ts",
+      "line": 436,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\vaultDb.test.ts",
+      "line": 25,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\vaultDb.ts",
+      "line": 47,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\database\\vaultDb.ts",
+      "line": 115,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.test.ts",
+      "line": 37,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 257,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 280,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 313,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionProcessors.ts",
+      "line": 1516,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionQueue.ts",
+      "line": 7,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionQueue.ts",
+      "line": 9,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\processors\\TransactionQueue.ts",
+      "line": 24,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\accountRemoval.ts",
+      "line": 73,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 13,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 28,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 35,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 46,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 56,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 58,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 62,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSignalRecorder.test.ts",
+      "line": 66,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSnapshots.manual.test.ts",
+      "line": 34,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSnapshots.manual.test.ts",
+      "line": 36,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSnapshots.test.ts",
+      "line": 55,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceSnapshots.test.ts",
+      "line": 72,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.test.ts",
+      "line": 17,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 930,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\balanceViewModel.ts",
+      "line": 939,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\bankAutoDetection.ts",
+      "line": 17,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\bankAutoDetection.ts",
+      "line": 221,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\cache.ts",
+      "line": 74,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\dataEvents.test.ts",
+      "line": 18,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\dataEvents.test.ts",
+      "line": 43,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\debtFreedomSettings.test.ts",
+      "line": 10,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\debtFreedomSettings.test.ts",
+      "line": 121,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\debtFreedomSettings.test.ts",
+      "line": 169,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 67,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 115,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 170,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 390,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 393,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 395,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 400,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 420,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 423,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\detectedAccountReview.test.ts",
+      "line": 978,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.privacy.test.ts",
+      "line": 15,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.privacy.test.ts",
+      "line": 16,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.privacy.test.ts",
+      "line": 202,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.ts",
+      "line": 118,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.ts",
+      "line": 477,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.ts",
+      "line": 589,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.ts",
+      "line": 874,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\notifications.ts",
+      "line": 875,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\paymentAppAccountMappings.test.ts",
+      "line": 32,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\paymentAppAccountMappings.test.ts",
+      "line": 50,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\paymentAppAccountMappings.test.ts",
+      "line": 61,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 44,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 45,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 46,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 679,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 918,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 1438,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 1445,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 1540,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 2118,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 2261,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 3000,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 3056,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\porter.ts",
+      "line": 3099,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 32,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 38,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 53,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 55,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 60,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 96,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\lib\\services\\transactionEvidence.test.ts",
+      "line": 341,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\navigation\\BottomTabNavigator.tsx",
+      "line": 36,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\navigation\\BottomTabNavigator.tsx",
+      "line": 41,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\navigation\\BottomTabNavigator.tsx",
+      "line": 64,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\navigation\\BottomTabNavigator.tsx",
+      "line": 76,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\navigation\\SettingsStack.tsx",
+      "line": 24,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 33,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 494,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 498,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\Dashboard.tsx",
+      "line": 701,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 80,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\financial\\BankAutoDetectScreen.tsx",
+      "line": 130,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\financial\\BankConfigScreen.tsx",
+      "line": 759,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 310,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 968,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\financial\\FinancialScreens.tsx",
+      "line": 1607,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\people\\PeopleScreen.tsx",
+      "line": 488,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\people\\PeopleScreen.tsx",
+      "line": 539,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 174,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 220,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\places\\PlacesScreen.tsx",
+      "line": 245,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 331,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 391,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 406,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\porter\\PorterTestScreen.tsx",
+      "line": 430,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\reminders\\PlaceReminderMapPickerScreen.tsx",
+      "line": 64,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\reminders\\PlaceReminderMapPickerScreen.tsx",
+      "line": 82,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 650,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\transactions\\Add.tsx",
+      "line": 866,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\transactions\\Transactions.tsx",
+      "line": 16,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\transactions\\Transactions.tsx",
+      "line": 77,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\transactions\\Transactions.tsx",
+      "line": 78,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\transactions\\Transactions.tsx",
+      "line": 79,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1062,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1078,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1095,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1121,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1132,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\user\\Settings.tsx",
+      "line": 1347,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.test.tsx",
+      "line": 22,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.test.tsx",
+      "line": 150,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.test.tsx",
+      "line": 151,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.test.tsx",
+      "line": 206,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 117,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 183,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 262,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 381,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 400,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 515,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 529,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 567,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "src\\screens\\vault\\SecureVaultScreen.tsx",
+      "line": 663,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 95,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 104,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    },
+    {
+      "file": "./App.tsx",
+      "line": 113,
+      "category": "Code Quality",
+      "desc": "any type used",
+      "fix": "Define proper TypeScript interface"
+    }
+  ]
+}

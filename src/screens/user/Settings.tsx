@@ -36,6 +36,7 @@ import {
   ACCOUNT_DELETION_COPY,
   deleteCurrentUserAppData,
 } from '../../lib/services/accountDeletion';
+import { GeofencingNative } from '../../lib/services/geofencingNative';
 
 interface CachedProfile {
   email?: string;
@@ -477,6 +478,13 @@ export default function Settings() {
         // Dismiss dialog instantly for a faster feel
         setConfirmDialog(null);
         try {
+          // Clear geofences natively before signing out
+          try {
+            await GeofencingNative.clearGeofences();
+          } catch (e) {
+            console.warn('[Settings] Failed to clear geofences on signout', e);
+          }
+
           await clearCache();
           await AsyncStorage.removeItem('app_user_id');
           await supabase.auth.signOut();
