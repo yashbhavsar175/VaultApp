@@ -267,7 +267,6 @@ export function BanksScreen() {
   const lastDataStringRef = useRef<string | null>(null);
   const bankDataRequestRef = useRef(0);
   const balanceViewsRequestRef = useRef(0);
-  const archivedOwnersRequestRef = useRef(0);
   const cardsAndAccountsReloadQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const loadBalanceViews = useCallback(async () => {
@@ -572,7 +571,7 @@ export function BanksScreen() {
           if (!canRemove) return;
 
           try {
-            const result = await removeOrArchiveOwner(target.ownerType, target.ownerId);
+            await removeOrArchiveOwner(target.ownerType, target.ownerId);
             await reloadCardsAndAccounts();
             Toast.show({
               type: 'success',

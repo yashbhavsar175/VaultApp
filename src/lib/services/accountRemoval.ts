@@ -1,6 +1,6 @@
 import { supabase } from '../core';
 import { emitFinanceDataChanged } from './dataEvents';
-import { getBankAccounts, getCreditCards, CreditCard } from '../database/financial';
+import type { CreditCard } from '../database/financial';
 import { BankAccount } from '../../types';
 
 export type RemovableOwnerType = 'bank_account' | 'credit_card' | 'debit_card';

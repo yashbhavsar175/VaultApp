@@ -25,7 +25,7 @@ describe('unified finance setup and review surfaces', () => {
     expect(accounts).toContain('Credit Cards');
     expect(accounts).toContain('Loans / EMI');
     expect(accounts).toContain('detected account');
-    expect(accounts).toContain('Restore');
+    expect(accounts).not.toContain('Restore');
   });
 
 

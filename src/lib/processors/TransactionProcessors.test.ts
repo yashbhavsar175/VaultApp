@@ -231,7 +231,13 @@ describe('background transaction processors', () => {
       'Bank to Bank',
       1,
       undefined,
-      expect.anything()
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.objectContaining({
+        classificationReason: 'self_transfer',
+        classificationStatus: 'ignored',
+      })
     );
     expect(emitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
       source: 'notification:transaction',
@@ -274,7 +280,13 @@ describe('background transaction processors', () => {
       'Bank of Baroda to Kotak',
       1,
       '1447',
-      expect.anything()
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.objectContaining({
+        classificationReason: 'self_transfer',
+        classificationStatus: 'ignored',
+      })
     );
   });
 
@@ -308,7 +320,75 @@ describe('background transaction processors', () => {
       'Bank to Bank',
       1,
       '1447',
-      expect.anything()
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.objectContaining({
+        classificationReason: 'self_transfer',
+        classificationStatus: 'ignored',
+      })
     );
+  });
+
+  it('saves a generic debit immediately but leaves it uncounted for detail classification', async () => {
+    await processSms({
+      sender: 'AD-HDFCBK',
+      body: 'Rs.20.00 debited from A/C XX0719. Ref 123456789.',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 20,
+      type: 'expense',
+      account_match_status: 'review_required',
+      account_match_reason: 'unverified_debit',
+    }));
+    expect(showTransactionConfirmation).toHaveBeenLastCalledWith(
+      mockDb.transactions[0].id,
+      'expense',
+      expect.any(String),
+      20,
+      '0719',
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.objectContaining({
+        classificationReason: 'unverified_debit',
+        classificationStatus: 'review_required',
+      })
+    );
+  });
+
+  it('saves a generic credit immediately but leaves it uncounted for detail classification', async () => {
+    await processSms({
+      sender: 'AD-HDFCBK',
+      body: 'Rs.20.00 credited to A/C XX0719. Ref 987654321.',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 20,
+      type: 'income',
+      account_match_status: 'review_required',
+      account_match_reason: 'unverified_credit',
+    }));
+  });
+
+  it('saves a clear merchant debit as a counted expense', async () => {
+    await processSms({
+      sender: 'AD-HDFCBK',
+      body: 'Rs.450.00 paid to Amazon via UPI from A/C XX0719. Ref 555555555.',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 450,
+      type: 'expense',
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'auto_confirmed_expense',
+    }));
   });
 });

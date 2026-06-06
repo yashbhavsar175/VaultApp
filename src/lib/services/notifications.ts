@@ -90,7 +90,7 @@ function safeLast4(value?: string | null): string | undefined {
 
 function formatSafeAmount(amount?: number | null): string {
   return typeof amount === 'number' && Number.isFinite(amount)
-    ? `Rs.${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    ? `₹${amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
     : 'Amount captured';
 }
 
@@ -281,13 +281,17 @@ const confirmationDebounceMap = new Map<string, ReturnType<typeof setTimeout>>()
 
 export async function showTransactionConfirmation(
   transactionId: string,
-  type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed',
+  type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed' | 'refund',
   _merchant: string,
   amount: number,
   accountName?: string,
   rawSms?: string,
   logicLog?: string,
-  sender?: string
+  sender?: string,
+  options?: {
+    classificationStatus?: 'manual_confirmed' | 'review_required' | 'ignored' | null;
+    classificationReason?: string | null;
+  }
 ): Promise<void> {
   // Clear any pending notification for this transaction
   const existingTimeout = confirmationDebounceMap.get(transactionId);
@@ -299,7 +303,7 @@ export async function showTransactionConfirmation(
     const timeoutId = setTimeout(async () => {
       confirmationDebounceMap.delete(transactionId);
       await executeShowTransactionConfirmation(
-        transactionId, type, _merchant, amount, accountName, rawSms, logicLog, sender
+        transactionId, type, _merchant, amount, accountName, rawSms, logicLog, sender, options
       );
       resolve();
     }, 500);
@@ -309,13 +313,17 @@ export async function showTransactionConfirmation(
 
 async function executeShowTransactionConfirmation(
   transactionId: string,
-  type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed',
+  type: 'income' | 'expense' | 'investment' | 'emi' | 'transfer' | 'lent' | 'borrowed' | 'refund',
   _merchant: string,
   amount: number,
   accountName?: string,
   rawSms?: string,
   logicLog?: string,
-  sender?: string
+  sender?: string,
+  options?: {
+    classificationStatus?: 'manual_confirmed' | 'review_required' | 'ignored' | null;
+    classificationReason?: string | null;
+  }
 ): Promise<void> {
   try {
     const permission = await getNotificationPermissionStatus();
@@ -341,15 +349,24 @@ async function executeShowTransactionConfirmation(
 
     let titleText = 'Transaction saved';
     let bodyText = '';
+    const formattedAmount = formatSafeAmount(amount);
+    const accountLast4 = safeLast4(accountName);
+    const accountSuffix = accountLast4 ? `\nAccount ending ${accountLast4}` : '';
 
-    if (type === 'transfer') {
-      titleText = 'Self transfer';
-      bodyText = _merchant || 'Bank to Bank';
+    if (options?.classificationStatus === 'review_required') {
+      if (type === 'income') {
+        bodyText = `${formattedAmount} saved. Review income status.${accountSuffix}`;
+      } else {
+        bodyText = `${formattedAmount} saved. Review classification in details.${accountSuffix}`;
+      }
+    } else if (type === 'transfer') {
+      titleText = options?.classificationReason === 'credit_card_bill_payment'
+        ? 'Card payment saved'
+        : 'Money movement saved';
+      bodyText = `${formattedAmount} saved.${accountSuffix}`;
     } else {
       const typeDisplay = type.charAt(0).toUpperCase() + type.slice(1);
-      const formattedAmount = formatSafeAmount(amount);
-      const accountLast4 = safeLast4(accountName);
-      bodyText = `${typeDisplay} ${formattedAmount}${accountLast4 ? `\nAccount ending ${accountLast4}` : ''}`;
+      bodyText = `${typeDisplay} ${formattedAmount}${accountSuffix}`;
     }
 
     const notificationRawText = ensureRedactedRawTextRecord(rawSms, {

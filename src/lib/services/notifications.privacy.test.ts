@@ -71,9 +71,34 @@ describe('notification privacy paths', () => {
 
     const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
 
-    expect(payload.title).toBe('Self transfer');
-    expect(payload.body).toBe('Yashbhavsar');
-    expect(payload.body).toContain('Yashbhavsar');
+    expect(payload.title).toBe('Money movement saved');
+    expect(payload.body).toContain('₹1');
+    expect(payload.body).not.toContain('Yashbhavsar');
+  });
+
+  it('does not label unconfirmed automatic rows as expense or income', async () => {
+    await showTransactionConfirmation(
+      'tx_uncertain_debit',
+      'expense',
+      'Unknown merchant',
+      20,
+      '0719',
+      'redacted_sms len=80 hash=abcdef12 sender=HDFC',
+      'test',
+      'HDFC',
+      {
+        classificationStatus: 'review_required',
+        classificationReason: 'unverified_debit',
+      }
+    );
+
+    const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
+
+    expect(payload.title).toBe('Transaction saved');
+    expect(payload.body).toContain('₹20 saved');
+    expect(payload.body).toContain('Review classification in details');
+    expect(payload.body).not.toContain('Expense');
+    expect(payload.body).not.toContain('Unknown merchant');
   });
 
   it('stores bug reports with redacted metadata even for legacy raw notification data', async () => {
@@ -155,7 +180,7 @@ describe('notification privacy paths', () => {
     const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
     const serializedPayload = JSON.stringify(payload);
     expect(payload.title).toBe('Balance updated');
-    expect(payload.body).toContain('Rs.1,250.00');
+    expect(payload.body).toContain('₹1,250');
     expect(serializedPayload).not.toContain('runtime:notification:test:abcdef12');
   });
 

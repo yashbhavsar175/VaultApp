@@ -31,11 +31,8 @@ import {
   recordSmsTransactionEvidence,
 } from '../services/runtimeTransactionEvidence';
 import {
-  AutomaticTransactionReviewReason,
   getAutomaticTransactionPolicy,
 } from '../services/automaticTransactionPolicy';
-// Removed autoTransactionReviewQueue import
-import { processSignal } from '../services/transactionIntelligence';
 import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../services/userScopedQueues';
 import {
   PaymentAppBankAccountMatch,
@@ -388,6 +385,17 @@ function normalizeNameParts(value?: string | null): string[] {
 function sameNameTokenSet(left?: string | null, right?: string | null): boolean {
   const leftParts = normalizeNameParts(left);
   const rightParts = normalizeNameParts(right);
+  if (leftParts.length >= 1 && rightParts.length >= 1) {
+    const hasStrongEmbeddedMatch = leftParts.some(leftPart =>
+      rightParts.some(rightPart =>
+        leftPart.length >= 5 &&
+        rightPart.length >= 5 &&
+        (leftPart.includes(rightPart) || rightPart.includes(leftPart))
+      )
+    );
+    if (hasStrongEmbeddedMatch) return true;
+  }
+
   if (leftParts.length < 2 || rightParts.length < 2) return false;
   if (leftParts.length !== rightParts.length) return false;
   return leftParts.every((part, index) => part === rightParts[index]);
@@ -417,8 +425,8 @@ async function getProfileNameForSelfMatch(userId: string): Promise<string | null
   }
 }
 
-async function isDebitToCurrentUser(userId: string, parsed: ParsedTransaction): Promise<boolean> {
-  if (parsed.type !== 'debit' || !parsed.merchant) return false;
+async function isCurrentUserCounterparty(userId: string, parsed: ParsedTransaction): Promise<boolean> {
+  if (!parsed.merchant) return false;
   const profileName = await getProfileNameForSelfMatch(userId);
   return sameNameTokenSet(parsed.merchant, profileName);
 }
@@ -439,7 +447,7 @@ async function resolveAutomaticPolicy(input: {
   text: string;
   sourceKind: 'sms' | 'notification';
 }): Promise<ReturnType<typeof getAutomaticTransactionPolicy> & { sameUserNameMatch?: boolean }> {
-  const sameUserNameMatch = await isDebitToCurrentUser(input.userId, input.parsed);
+  const sameUserNameMatch = await isCurrentUserCounterparty(input.userId, input.parsed);
   if (sameUserNameMatch) {
     eventDebugLog('[SelfTransferPairing] Policy check', {
       sourceKind: input.sourceKind,
@@ -451,7 +459,14 @@ async function resolveAutomaticPolicy(input: {
       routeDecision: 'post_transfer',
       reasonCode: 'self_transfer',
     });
-    return { action: 'post', type: 'transfer', sameUserNameMatch };
+    return {
+      action: 'post',
+      type: 'transfer',
+      accountMatchStatus: 'ignored',
+      accountMatchReason: 'self_transfer',
+      accountMatchConfidence: 'high',
+      sameUserNameMatch,
+    };
   }
 
   const policy = getAutomaticTransactionPolicy(input.parsed.type, input.text);
@@ -466,6 +481,102 @@ async function resolveAutomaticPolicy(input: {
     reasonCode: policy.type,
   });
   return { ...policy, sameUserNameMatch };
+}
+
+function transactionClassificationFields(
+  policy: ReturnType<typeof getAutomaticTransactionPolicy> & { sameUserNameMatch?: boolean }
+) {
+  return {
+    account_match_status: policy.accountMatchStatus,
+    account_match_reason: policy.accountMatchReason,
+    ...(policy.accountMatchConfidence ? { account_match_confidence: policy.accountMatchConfidence } : {}),
+  };
+}
+
+function notificationClassificationOptions(input: {
+  dbType: 'expense' | 'income' | 'transfer';
+  policy: ReturnType<typeof getAutomaticTransactionPolicy> & { sameUserNameMatch?: boolean };
+  upgradedTransfer?: boolean;
+}) {
+  if (input.dbType === 'transfer') {
+    return {
+      classificationStatus: 'ignored' as const,
+      classificationReason: input.upgradedTransfer ? 'self_transfer' : input.policy.accountMatchReason,
+    };
+  }
+
+  return {
+    classificationStatus: input.policy.accountMatchStatus,
+    classificationReason: input.policy.accountMatchReason,
+  };
+}
+
+type TransferPatch = {
+  type: 'transfer';
+  note: string;
+  category: 'Transfers';
+  account_id: string | null;
+  from_account_id: string | null;
+  to_account_id: string | null;
+  is_transfer_pending: true;
+};
+
+async function getBankAccountName(userId: string, accountId?: string | null): Promise<string | null> {
+  if (!accountId) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('bank_accounts')
+      .select('bank_name')
+      .eq('id', accountId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error) return null;
+    return typeof data?.bank_name === 'string' && data.bank_name.trim()
+      ? data.bank_name.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildPendingTransferPatch(input: {
+  userId: string;
+  incomingType: ParsedTransaction['type'];
+  incomingAccountId?: string | null;
+  existing?: Partial<Transaction> | null;
+}): Promise<TransferPatch> {
+  let fromAccountId = input.existing?.from_account_id || null;
+  let toAccountId = input.existing?.to_account_id || null;
+
+  if (!fromAccountId && input.existing?.type === 'expense') {
+    fromAccountId = input.existing.account_id || null;
+  }
+  if (!toAccountId && input.existing?.type === 'income') {
+    toAccountId = input.existing.account_id || null;
+  }
+
+  if (input.incomingType === 'debit' && input.incomingAccountId) {
+    fromAccountId = input.incomingAccountId;
+  }
+  if (input.incomingType === 'credit' && input.incomingAccountId) {
+    toAccountId = input.incomingAccountId;
+  }
+
+  const fromName = await getBankAccountName(input.userId, fromAccountId);
+  const toName = await getBankAccountName(input.userId, toAccountId);
+  const routeName = fromName && toName ? `${fromName} to ${toName}` : 'Bank to Bank';
+
+  return {
+    type: 'transfer',
+    note: routeName,
+    category: 'Transfers',
+    account_id: fromAccountId || toAccountId || input.existing?.account_id || input.incomingAccountId || null,
+    from_account_id: fromAccountId,
+    to_account_id: toAccountId,
+    is_transfer_pending: true,
+  };
 }
 
 function safeEventDetails(input: {
@@ -718,6 +829,28 @@ async function checkForDuplicates(
       return recentData[0];
     }
 
+    const { data: mirrorData, error: mirrorError } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('amount', amount)
+      .gte('created_at', oneMinuteAgo)
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    if (!mirrorError && mirrorData && mirrorData.length > 0) {
+      const mirror = mirrorData.find(existingTxn => {
+        const isOpposingMovement =
+          existingTxn.type === 'transfer' ||
+          (existingTxn.type === 'income' && type === 'expense') ||
+          (existingTxn.type === 'expense' && type === 'income') ||
+          (existingTxn.type !== 'transfer' && type === 'transfer');
+        const sourceDiffers = !smsSource || !existingTxn.sms_source || existingTxn.sms_source !== smsSource;
+        return isOpposingMovement && sourceDiffers;
+      });
+      if (mirror) return mirror;
+    }
+
     // Then check for older duplicates (within 5 minutes) - but be less aggressive
     let query = supabase
       .from('transactions')
@@ -854,13 +987,28 @@ async function findAndSyncBankAccount(
 }
 
 async function getProcessorUserId(): Promise<string | null> {
+  const storedUserId = await AsyncStorage.getItem('app_user_id');
+  if (!storedUserId) return null;
+
   try {
     const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user?.id) return session.user.id;
+    if (session?.user?.id && storedUserId === session.user.id) return session.user.id;
   } catch {}
 
-  const storedUserId = await AsyncStorage.getItem('app_user_id');
-  return storedUserId || null;
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.id) {
+      await AsyncStorage.removeItem('app_user_id');
+      return null;
+    }
+    if (storedUserId && storedUserId !== user.id) {
+      await AsyncStorage.removeItem('app_user_id');
+      return null;
+    }
+    return user.id;
+  } catch {
+    return null;
+  }
 }
 
 async function recordBalanceSignalSafely(input: {
@@ -1050,17 +1198,6 @@ export const processSms = async (taskData: SmsData) => {
       sender: parsed.rawSender,
       source: parsed.source,
     });
-    const duplicate = await checkForDuplicates(
-      userId,
-      parsed.amount,
-      taskData.timestamp,
-      dbType,
-      parsed.reference,
-      parsed.source,
-      redactedRawSms,
-      parsed.merchant
-    );
-
     const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
     void recordEstimatedBalanceMovementSafely({
       userId,
@@ -1072,26 +1209,90 @@ export const processSms = async (taskData: SmsData) => {
       timestamp: taskData.timestamp,
     });
 
+    const duplicate = await checkForDuplicates(
+      userId,
+      parsed.amount,
+      taskData.timestamp,
+      dbType,
+      parsed.reference,
+      parsed.source,
+      redactedRawSms,
+      parsed.merchant
+    );
+
     let transactionId: string | null = null;
     let isUpgradedTransfer = false;
+    let currentTransferPatch: TransferPatch | null = null;
+    let confirmationAccountLast4 = parsed.accountLast4;
 
     if (duplicate) {
-      if (
+      if (duplicate.type === 'transfer') {
+        const transferPatch = await buildPendingTransferPatch({
+          userId,
+          incomingType: parsed.type,
+          incomingAccountId: matchedAccountId,
+          existing: duplicate as Partial<Transaction>,
+        });
+        await supabase
+          .from('transactions')
+          .update({
+            ...transferPatch,
+            account_match_status: 'ignored',
+            account_match_reason: 'self_transfer',
+            account_match_confidence: 'high',
+          })
+          .eq('id', duplicate.id)
+          .select()
+          .single();
+        recordSmsEvidenceWithDebug({
+          text: taskData.body,
+          sender: taskData.sender,
+          parsed,
+          transactionId: duplicate.id || null,
+          timestamp: taskData.timestamp,
+        }, safeEventDetails({
+          sourceKind: 'sms',
+          parsed,
+          routeDecision: 'duplicate',
+          eventId: duplicate.id || null,
+        }));
+        emitFinanceDataChanged({
+          areas: ['transactions'],
+          source: 'sms:transaction_upgraded',
+          transactionId: duplicate.id,
+        });
+        return;
+      } else if (
         (duplicate.type === 'income' && dbType === 'expense') ||
         (duplicate.type === 'expense' && dbType === 'income') ||
         (duplicate.type !== 'transfer' && dbType === 'transfer')
       ) {
         // If they are opposing types (income vs expense) or one is explicitly transfer
         console.log('Self-transfer pair detected - upgrading existing transaction to transfer');
+        const transferPatch = await buildPendingTransferPatch({
+          userId,
+          incomingType: parsed.type,
+          incomingAccountId: matchedAccountId,
+          existing: duplicate as Partial<Transaction>,
+        });
+        currentTransferPatch = transferPatch;
         const { error: upgradeError } = await supabase
           .from('transactions')
-          .update({ type: 'transfer' })
-          .eq('id', duplicate.id);
+          .update({
+            ...transferPatch,
+            account_match_status: 'ignored',
+            account_match_reason: 'self_transfer',
+            account_match_confidence: 'high',
+          })
+          .eq('id', duplicate.id)
+          .select()
+          .single();
         
         if (!upgradeError) {
           isUpgradedTransfer = true;
           transactionId = duplicate.id;
           dbType = 'transfer'; // Update local type for notification
+          confirmationAccountLast4 = duplicate.account_last4 || parsed.accountLast4;
         } else {
           console.error('Failed to upgrade transaction to transfer:', upgradeError);
           return;
@@ -1113,11 +1314,18 @@ export const processSms = async (taskData: SmsData) => {
         return;
       }
     }
+    if (dbType === 'transfer' && !currentTransferPatch) {
+      currentTransferPatch = await buildPendingTransferPatch({
+        userId,
+        incomingType: parsed.type,
+        incomingAccountId: matchedAccountId,
+      });
+    }
     const presentation = {
       type: dbType,
-      merchant: parsed.merchant,
-      note: parsed.merchant,
-      category: parsed.merchant,
+      merchant: currentTransferPatch?.note || parsed.merchant,
+      note: currentTransferPatch?.note || parsed.merchant,
+      category: currentTransferPatch?.category || parsed.merchant,
       upi_id: parsed.upiId,
       raw_sms: taskData.body,
       sms_source: parsed.source,
@@ -1138,7 +1346,12 @@ export const processSms = async (taskData: SmsData) => {
           type: dbType,
           note: transactionNote,
           category: transactionCategory,
-          account_id: matchedAccountId,
+          account_id: currentTransferPatch?.account_id ?? matchedAccountId,
+          ...(currentTransferPatch ? {
+            from_account_id: currentTransferPatch.from_account_id,
+            to_account_id: currentTransferPatch.to_account_id,
+            is_transfer_pending: currentTransferPatch.is_transfer_pending,
+          } : {}),
           reference_number: parsed.reference,
           account_last4: parsed.accountLast4,
           balance: parsed.balance,
@@ -1146,6 +1359,7 @@ export const processSms = async (taskData: SmsData) => {
           sms_sender: parsed.rawSender,
           upi_id: parsed.upiId,
           raw_sms: redactedRawSms,
+          ...transactionClassificationFields(automaticPolicy),
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -1161,7 +1375,12 @@ export const processSms = async (taskData: SmsData) => {
             type: dbType,
             note: transactionNote,
             category: transactionCategory,
-            account_id: matchedAccountId,
+            account_id: currentTransferPatch?.account_id ?? matchedAccountId,
+            ...(currentTransferPatch ? {
+              from_account_id: currentTransferPatch.from_account_id,
+              to_account_id: currentTransferPatch.to_account_id,
+              is_transfer_pending: currentTransferPatch.is_transfer_pending,
+            } : {}),
             reference_number: parsed.reference,
             account_last4: parsed.accountLast4,
             balance: parsed.balance,
@@ -1169,6 +1388,7 @@ export const processSms = async (taskData: SmsData) => {
             sms_sender: parsed.rawSender,
             upi_id: parsed.upiId,
             raw_sms: redactedRawSms,
+            ...transactionClassificationFields(automaticPolicy),
           })
           .select()
           .single();
@@ -1188,7 +1408,14 @@ export const processSms = async (taskData: SmsData) => {
       } else if (isUpgradedTransfer) {
         // We upgraded an existing transaction, just update cache and emit
         await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => 
-          current ? current.map(tx => tx.id === transactionId ? { ...tx, type: 'transfer' } : tx) : current
+          current ? current.map(tx => tx.id === transactionId ? {
+            ...tx,
+            type: 'transfer',
+            ...(currentTransferPatch || {}),
+            account_match_status: 'ignored',
+            account_match_reason: 'self_transfer',
+            account_match_confidence: 'high',
+          } : tx) : current
         );
         emitFinanceDataChanged({
           areas: ['transactions'],
@@ -1211,7 +1438,12 @@ export const processSms = async (taskData: SmsData) => {
         type: dbType,
         note: transactionNote,
         category: transactionCategory,
-        account_id: matchedAccountId,
+        account_id: currentTransferPatch?.account_id ?? matchedAccountId,
+        ...(currentTransferPatch ? {
+          from_account_id: currentTransferPatch.from_account_id,
+          to_account_id: currentTransferPatch.to_account_id,
+          is_transfer_pending: currentTransferPatch.is_transfer_pending,
+        } : {}),
         reference_number: parsed.reference,
         account_last4: parsed.accountLast4,
         balance: parsed.balance,
@@ -1219,6 +1451,7 @@ export const processSms = async (taskData: SmsData) => {
         sms_sender: parsed.rawSender,
         upi_id: parsed.upiId,
         raw_sms: redactedRawSms,
+        ...transactionClassificationFields(automaticPolicy),
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -1249,8 +1482,15 @@ export const processSms = async (taskData: SmsData) => {
           dbType,
           transactionNote,
           parsed.amount,
-          parsed.accountLast4,
-          redactedRawSms
+          confirmationAccountLast4,
+          redactedRawSms,
+          undefined,
+          undefined,
+          notificationClassificationOptions({
+            dbType,
+            policy: automaticPolicy,
+            upgradedTransfer: isUpgradedTransfer,
+          })
         );
       } catch (notificationError) {
         console.error('Failed to show transaction notification (non-critical):', notificationError);
@@ -1439,17 +1679,6 @@ export const processNotification = async (taskData: any) => {
       source: parsed.source,
       app: notif.app,
     });
-    const duplicate = await checkForDuplicates(
-      userId,
-      parsed.amount,
-      notif.time || Date.now(),
-      dbType,
-      parsed.reference,
-      parsed.source,
-      redactedRawNotification,
-      parsed.merchant
-    );
-
     const mappedBankAccountId = paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
       ? paymentAppAccountMatch.mappedBankAccountId || null
       : null;
@@ -1469,20 +1698,83 @@ export const processNotification = async (taskData: any) => {
         : undefined,
     });
 
+    const duplicate = await checkForDuplicates(
+      userId,
+      parsed.amount,
+      notif.time || Date.now(),
+      dbType,
+      parsed.reference,
+      parsed.source,
+      redactedRawNotification,
+      parsed.merchant
+    );
+
     let transactionId: string | null = null;
     let isUpgradedTransfer = false;
+    let currentTransferPatch: TransferPatch | null = null;
 
     if (duplicate) {
-      if (
+      if (duplicate.type === 'transfer') {
+        const transferPatch = await buildPendingTransferPatch({
+          userId,
+          incomingType: parsed.type,
+          incomingAccountId: matchedAccountId,
+          existing: duplicate as Partial<Transaction>,
+        });
+        await supabase
+          .from('transactions')
+          .update({
+            ...transferPatch,
+            account_match_status: 'ignored',
+            account_match_reason: 'self_transfer',
+            account_match_confidence: 'high',
+          })
+          .eq('id', duplicate.id)
+          .select()
+          .single();
+        recordNotificationEvidenceWithDebug({
+          text: combinedText,
+          sourcePackage: notif.app,
+          sender,
+          parsed,
+          transactionId: duplicate.id || null,
+          timestamp: notif.time || Date.now(),
+        }, safeEventDetails({
+          sourceKind: 'notification',
+          parsed,
+          routeDecision: 'duplicate',
+          eventId: duplicate.id || null,
+        }));
+        emitFinanceDataChanged({
+          areas: ['transactions'],
+          source: 'notification:transaction_upgraded',
+          transactionId: duplicate.id,
+        });
+        return;
+      } else if (
         (duplicate.type === 'income' && dbType === 'expense') ||
         (duplicate.type === 'expense' && dbType === 'income') ||
         (duplicate.type !== 'transfer' && dbType === 'transfer')
       ) {
         console.log('Self-transfer pair detected - upgrading existing transaction to transfer');
+        const transferPatch = await buildPendingTransferPatch({
+          userId,
+          incomingType: parsed.type,
+          incomingAccountId: matchedAccountId,
+          existing: duplicate as Partial<Transaction>,
+        });
+        currentTransferPatch = transferPatch;
         const { error: upgradeError } = await supabase
           .from('transactions')
-          .update({ type: 'transfer' })
-          .eq('id', duplicate.id);
+          .update({
+            ...transferPatch,
+            account_match_status: 'ignored',
+            account_match_reason: 'self_transfer',
+            account_match_confidence: 'high',
+          })
+          .eq('id', duplicate.id)
+          .select()
+          .single();
         
         if (!upgradeError) {
           isUpgradedTransfer = true;
@@ -1510,11 +1802,18 @@ export const processNotification = async (taskData: any) => {
         return;
       }
     }
+    if (dbType === 'transfer' && !currentTransferPatch) {
+      currentTransferPatch = await buildPendingTransferPatch({
+        userId,
+        incomingType: parsed.type,
+        incomingAccountId: matchedAccountId,
+      });
+    }
     const presentation = {
       type: dbType,
-      merchant: parsed.merchant,
-      note: parsed.merchant,
-      category: parsed.merchant,
+      merchant: currentTransferPatch?.note || parsed.merchant,
+      note: currentTransferPatch?.note || parsed.merchant,
+      category: currentTransferPatch?.category || parsed.merchant,
       upi_id: parsed.upiId,
       raw_sms: combinedText,
       sms_source: parsed.source,
@@ -1535,7 +1834,12 @@ export const processNotification = async (taskData: any) => {
           type: dbType,
           note: transactionNote,
           category: transactionCategory,
-          account_id: matchedAccountId,
+          account_id: currentTransferPatch?.account_id ?? matchedAccountId,
+          ...(currentTransferPatch ? {
+            from_account_id: currentTransferPatch.from_account_id,
+            to_account_id: currentTransferPatch.to_account_id,
+            is_transfer_pending: currentTransferPatch.is_transfer_pending,
+          } : {}),
           reference_number: parsed.reference,
           account_last4: matchedAccountLast4,
           balance: parsed.balance,
@@ -1543,12 +1847,13 @@ export const processNotification = async (taskData: any) => {
           sms_sender: senderLabel,
           upi_id: parsed.upiId,
           raw_sms: redactedRawNotification,
+          ...transactionClassificationFields(automaticPolicy),
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
         await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, userId, offlineTx);
         transactionId = tempId;
-      } else {
+      } else if (!isUpgradedTransfer) {
         // Online — insert to Supabase
         const { data: newTxn, error } = await supabase
           .from('transactions')
@@ -1558,7 +1863,12 @@ export const processNotification = async (taskData: any) => {
             type: dbType,
             note: transactionNote,
             category: transactionCategory,
-            account_id: matchedAccountId,
+            account_id: currentTransferPatch?.account_id ?? matchedAccountId,
+            ...(currentTransferPatch ? {
+              from_account_id: currentTransferPatch.from_account_id,
+              to_account_id: currentTransferPatch.to_account_id,
+              is_transfer_pending: currentTransferPatch.is_transfer_pending,
+            } : {}),
             reference_number: parsed.reference,
             account_last4: matchedAccountLast4,
             balance: parsed.balance,
@@ -1566,6 +1876,7 @@ export const processNotification = async (taskData: any) => {
             sms_sender: senderLabel,
             upi_id: parsed.upiId,
             raw_sms: redactedRawNotification,
+            ...transactionClassificationFields(automaticPolicy),
           })
           .select()
           .single();
@@ -1581,6 +1892,22 @@ export const processNotification = async (taskData: any) => {
           areas: parsed.accountLast4 ? ['transactions', 'accounts'] : ['transactions'],
           source: 'notification:transaction',
           transactionId: newTxn.id,
+        });
+      } else if (isUpgradedTransfer) {
+        await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+          current ? current.map(tx => tx.id === transactionId ? {
+            ...tx,
+            type: 'transfer',
+            ...(currentTransferPatch || {}),
+            account_match_status: 'ignored',
+            account_match_reason: 'self_transfer',
+            account_match_confidence: 'high',
+          } : tx) : current
+        );
+        emitFinanceDataChanged({
+          areas: ['transactions'],
+          source: 'notification:transaction_upgraded',
+          transactionId: transactionId!,
         });
       }
     } catch (error) {
@@ -1598,7 +1925,12 @@ export const processNotification = async (taskData: any) => {
         type: dbType,
         note: transactionNote,
         category: transactionCategory,
-        account_id: matchedAccountId,
+        account_id: currentTransferPatch?.account_id ?? matchedAccountId,
+        ...(currentTransferPatch ? {
+          from_account_id: currentTransferPatch.from_account_id,
+          to_account_id: currentTransferPatch.to_account_id,
+          is_transfer_pending: currentTransferPatch.is_transfer_pending,
+        } : {}),
         reference_number: parsed.reference,
         account_last4: matchedAccountLast4,
         balance: parsed.balance,
@@ -1606,6 +1938,7 @@ export const processNotification = async (taskData: any) => {
         sms_sender: senderLabel,
         upi_id: parsed.upiId,
         raw_sms: redactedRawNotification,
+        ...transactionClassificationFields(automaticPolicy),
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -1638,7 +1971,14 @@ export const processNotification = async (taskData: any) => {
           transactionNote,
           parsed.amount,
           parsed.accountLast4,
-          redactedRawNotification
+          redactedRawNotification,
+          undefined,
+          undefined,
+          notificationClassificationOptions({
+            dbType,
+            policy: automaticPolicy,
+            upgradedTransfer: isUpgradedTransfer,
+          })
         );
       } catch (notificationError) {
         console.error('Failed to show transaction notification (non-critical):', notificationError);

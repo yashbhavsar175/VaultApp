@@ -14,13 +14,17 @@ export interface MonthlyTransactionTotals {
 export function isDashboardIncome(
   transaction: Transaction
 ): boolean {
+  if (transaction.account_match_status === 'ignored' || transaction.account_match_status === 'review_required') {
+    return false;
+  }
+
   return transaction.type === 'income';
 }
 
 export function isDashboardExpense(transaction: Transaction): boolean {
   if (transaction.type !== 'expense') return false;
   
-  if (transaction.account_match_status === 'ignored') {
+  if (transaction.account_match_status === 'ignored' || transaction.account_match_status === 'review_required') {
     return false;
   }
   

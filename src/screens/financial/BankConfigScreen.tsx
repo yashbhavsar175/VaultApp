@@ -16,7 +16,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card, AppConfirmModal } from '../../components';
 import BalanceCorrectionModal, { BalanceCorrectionKindOption } from '../../components/BalanceCorrectionModal';
 import BalanceHistoryModal from '../../components/BalanceHistoryModal';
-import { CreditCard, getBankAccounts, addBankAccount, updateBankAccount } from '../../lib/database/financial';
+import { getBankAccounts, addBankAccount, updateBankAccount } from '../../lib/database/financial';
 import { getAllBankNames } from '../../lib/services/smsParser';
 import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
@@ -33,7 +33,6 @@ import {
   BankAccountBalanceView,
   BankAccountDetailView,
   CreditCardBalanceView,
-  buildCreditCardBalanceViewModelsForRows,
   getAccountBalanceViewModels,
   getBalanceFreshnessLabel,
   getBalanceKindLabel,
@@ -217,7 +216,6 @@ export default function BankConfigScreen() {
   const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);
 
   const [removalImpacts, setRemovalImpacts] = useState<Record<string, AccountRemovalImpact | null>>({});
-  const [showArchived, setShowArchived] = useState(false);
   const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>({});
   const [pendingDetectedSummary, setPendingDetectedSummary] = useState<PendingDetectedBalanceSummary>(emptyPendingDetectedSummary);
   const [loading, setLoading] = useState(true);
@@ -257,7 +255,6 @@ export default function BankConfigScreen() {
   const lastDataStringRef = useRef<string | null>(null);
   const accountsRequestRef = useRef(0);
   const balanceViewsRequestRef = useRef(0);
-  const archivedOwnersRequestRef = useRef(0);
   const removalImpactsRequestRef = useRef(0);
 
   const loadBalanceViews = useCallback(async () => {
@@ -361,38 +358,6 @@ export default function BankConfigScreen() {
     cardsAndAccountsReloadQueueRef.current = reload.catch(() => undefined);
     return reload;
   }, [loadAccountsSilently]);
-
-  const applySuccessfulOwnerRemoval = useCallback((target: RemovalTarget, action: 'deleted' | 'archived') => {
-    accountsRequestRef.current += 1;
-    balanceViewsRequestRef.current += 1;
-    removalImpactsRequestRef.current += 1;
-
-    if (target.ownerType === 'bank_account') {
-      setAccounts(prev => prev.filter(account => account.id !== target.ownerId));
-      setRemovalImpacts(prev => {
-        const next = { ...prev };
-        delete next[removalImpactKey(target.ownerType, target.ownerId)];
-        return next;
-      });
-      setBalanceViews(prev => {
-        const next = { ...prev };
-        delete next[target.ownerId];
-        return next;
-      });
-      return;
-    }
-
-    if (target.ownerType === 'credit_card') {
-      setCreditCardViews(prev => prev.filter(card => card.creditCardId !== target.ownerId));
-      setRemovalImpacts(prev => {
-        const next = { ...prev };
-        delete next[removalImpactKey(target.ownerType, target.ownerId)];
-        return next;
-      });
-    }
-  }, []);
-
-
 
   // Load data with cache support
   const loadAccounts = useCallback(async () => {

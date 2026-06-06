@@ -264,6 +264,7 @@ function formatReviewDecisionSource(transaction: Transaction, sourceType: string
 
 function dashboardStatus(transaction: Transaction): string {
   if (transaction.account_match_status === 'ignored') return 'Not counted';
+  if (transaction.account_match_status === 'review_required') return 'Not counted: needs classification';
   if (transaction.is_transfer_pending) return 'Not counted: waiting for matching transfer';
   if (transaction.type === 'income') return 'Counted as income';
   if (transaction.type === 'expense') return 'Counted as expense';
@@ -586,6 +587,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
     try {
       const updatedTransaction = await updateTransaction(transaction.id, countAsExpense
         ? {
+          type: 'expense',
           account_match_status: 'manual_confirmed',
           account_match_reason: 'review_detail_expense_confirmed',
           ...(transaction.account_match_confidence
@@ -619,6 +621,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
     try {
       const updatedTransaction = await updateTransaction(transaction.id, countAsIncome
         ? {
+          type: 'income',
           account_match_status: 'manual_confirmed',
           account_match_reason: 'review_detail_income_confirmed',
           ...(transaction.account_match_confidence
@@ -636,6 +639,37 @@ export default function TransactionDetail({ route, navigation }: Props) {
       Toast.show({
         type: 'success',
         text1: countAsIncome ? 'Counted as income' : 'Marked as not income',
+      });
+    } catch {
+      Toast.show({
+        type: 'error',
+        text1: 'Failed to update review decision',
+      });
+    }
+  };
+
+  const handleNeutralCountedState = async (
+    reason: 'review_detail_transfer_confirmed' | 'credit_card_bill_payment' | 'review_detail_not_counted'
+  ) => {
+    if (!transaction) return;
+
+    try {
+      const updatedTransaction = await updateTransaction(transaction.id, {
+        type: reason === 'review_detail_transfer_confirmed' || reason === 'credit_card_bill_payment'
+          ? 'transfer'
+          : transaction.type,
+        account_match_status: 'ignored',
+        account_match_reason: reason,
+        account_match_confidence: 'high',
+      });
+      setTransaction(updatedTransaction);
+      Toast.show({
+        type: 'success',
+        text1: reason === 'review_detail_transfer_confirmed'
+          ? 'Marked as transfer'
+          : reason === 'credit_card_bill_payment'
+            ? 'Marked as card payment'
+            : 'Marked not counted',
       });
     } catch {
       Toast.show({
@@ -913,36 +947,63 @@ export default function TransactionDetail({ route, navigation }: Props) {
               isLast
             />
             <View style={styles.decisionActions}>
-              {transaction.type === 'expense' && (
+              {(transaction.type === 'expense' || transaction.account_match_status === 'review_required') && (
                 <TouchableOpacity
                   style={[styles.controlButton, { borderColor: colors.border }]}
-                  onPress={() => handleExpenseCountedState(transaction.account_match_status === 'ignored')}
+                  onPress={() => handleExpenseCountedState(transaction.account_match_status !== 'manual_confirmed' || transaction.type !== 'expense')}
                 >
                   <MaterialCommunityIcons
-                    name={transaction.account_match_status === 'ignored' ? 'cash-check' : 'cash-remove'}
+                    name={transaction.type === 'expense' && transaction.account_match_status === 'manual_confirmed' ? 'cash-remove' : 'cash-check'}
                     size={18}
                     color={colors.accent}
                   />
                   <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
-                    {transaction.account_match_status === 'ignored' ? 'Mark as expense' : 'Mark not expense'}
+                    {transaction.type === 'expense' && transaction.account_match_status === 'manual_confirmed' ? 'Mark not expense' : 'Count as expense'}
                   </Text>
                 </TouchableOpacity>
               )}
-              {transaction.type === 'income' && (
+              {(transaction.type === 'income' || transaction.account_match_status === 'review_required') && (
                 <TouchableOpacity
                   style={[styles.controlButton, { borderColor: colors.border }]}
-                  onPress={() => handleIncomeCountedState(transaction.account_match_status !== 'manual_confirmed')}
+                  onPress={() => handleIncomeCountedState(transaction.account_match_status !== 'manual_confirmed' || transaction.type !== 'income')}
                 >
                   <MaterialCommunityIcons
-                    name={transaction.account_match_status === 'manual_confirmed' ? 'cash-remove' : 'cash-check'}
+                    name={transaction.type === 'income' && transaction.account_match_status === 'manual_confirmed' ? 'cash-remove' : 'cash-check'}
                     size={18}
                     color={colors.accent}
                   />
                   <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
-                    {transaction.account_match_status === 'manual_confirmed' ? 'Mark not income' : 'Mark as income'}
+                    {transaction.type === 'income' && transaction.account_match_status === 'manual_confirmed' ? 'Mark not income' : 'Count as income'}
                   </Text>
                 </TouchableOpacity>
               )}
+              <TouchableOpacity
+                style={[styles.controlButton, { borderColor: colors.border }]}
+                onPress={() => handleNeutralCountedState('review_detail_transfer_confirmed')}
+              >
+                <MaterialCommunityIcons name="swap-horizontal-circle-outline" size={18} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                  Mark as transfer
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.controlButton, { borderColor: colors.border }]}
+                onPress={() => handleNeutralCountedState('credit_card_bill_payment')}
+              >
+                <MaterialCommunityIcons name="credit-card-check-outline" size={18} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                  Confirm card payment
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.controlButton, { borderColor: colors.border }]}
+                onPress={() => handleNeutralCountedState('review_detail_not_counted')}
+              >
+                <MaterialCommunityIcons name="cash-remove" size={18} color={colors.accent} />
+                <Text style={[typography.caption, { color: colors.text, marginLeft: spacing.xs, fontWeight: '600' }]}>
+                  Mark not counted
+                </Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.controlButton, { borderColor: colors.border }]}
                 onPress={() => setIsEditModalVisible(true)}
