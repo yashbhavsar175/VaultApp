@@ -773,6 +773,7 @@ export async function processTransactionSMS(
         created_at: new Date().toISOString(),
       })
       .select()
+      .eq('user_id', user.id)
       .single();
 
     if (error) {

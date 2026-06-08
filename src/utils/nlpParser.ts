@@ -17,7 +17,7 @@ const INCOME_PHRASES = [
 ];
 // "I gave/give SOMEONE" = Expense (money going OUT)
 const EXPENSE_PHRASES = [
-  'i gave', 'i paid', 'i spent', 'i spend', 'i sent',
+  'i gave', 'i give', 'i paid', 'i pay', 'i spent', 'i spend', 'i sent', 'i send',
   'maine diya', 'mene diya', 'ko diya', 'usko diya', 'usse diya',
   'unko diya', 'diya ko', 'pay kiya', 'bheja ko',
 ];
@@ -36,8 +36,7 @@ const INCOME_KEYWORDS = [
 const LENT_KEYWORDS = ['udhar diya', 'lent'];
 const BORROWED_KEYWORDS = ['udhar liya', 'borrowed'];
 const REFUND_KEYWORDS = ['refund', 'refunded'];
-const PERSONAL_TRANSFER_KEYWORDS = [
-  'family', 'friend', 'brother', 'sister', 'bhai', 'dost', 'mom', 'dad', 'papa', 'mummy',
+const NEUTRAL_TRANSFER_KEYWORDS = [
   'cash deposit', 'bank deposit', 'cash withdrawal', 'atm withdrawal', 'withdrawal', 'withdrawn',
   'self transfer', 'own account', 'reimbursement', 'reimburse',
   'loan repayment', 'debt repayment',
@@ -102,6 +101,13 @@ const CATEGORY_MAP: Record<string, string> = {
   // Gifts & Donations
   gift: 'Gift', donation: 'Donation', charity: 'Donation', daan: 'Donation',
 
+  // People & family support
+  family: 'Family', parent: 'Family', parents: 'Family',
+  mom: 'Family', mummy: 'Family', mother: 'Family',
+  dad: 'Family', papa: 'Family', father: 'Family',
+  brother: 'Family', sister: 'Family', bhai: 'Family', behen: 'Family',
+  friend: 'Personal', dost: 'Personal', yaar: 'Personal',
+
   // Personal care
   salon: 'Personal Care', haircut: 'Personal Care', parlour: 'Personal Care',
   gym: 'Fitness', fitness: 'Fitness', yoga: 'Fitness',
@@ -139,12 +145,12 @@ export function parseNaturalLanguageTxn(input: string): ParsedTransaction {
     type = 'borrowed';
   } else if (REFUND_KEYWORDS.some(k => text.includes(k))) {
     type = 'refund';
-  } else if (PERSONAL_TRANSFER_KEYWORDS.some(k => text.includes(k))) {
-    type = 'transfer';
   } else if (INCOME_PHRASES.some(k => text.includes(k))) {
     type = 'income';
   } else if (EXPENSE_PHRASES.some(k => text.includes(k))) {
     type = 'expense';
+  } else if (NEUTRAL_TRANSFER_KEYWORDS.some(k => text.includes(k))) {
+    type = 'transfer';
   }
 
   // Step B: If no phrase matched, fall back to single-word keywords

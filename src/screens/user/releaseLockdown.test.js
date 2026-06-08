@@ -58,7 +58,7 @@ describe('release-build lockdown', () => {
     expect(quickAdd).not.toContain('generativelanguage.googleapis.com');
     expect(quickAdd).not.toContain('tryGeminiUpgrade');
     expect(envExample).not.toContain('GEMINI_API_KEY');
-    expect(envExample).not.toContain('OPENAI_API_KEY');
+    expect(envExample).toContain('OPENAI_API_KEY=your_openai_key_here');
     expect(configTypes).not.toContain('GEMINI_API_KEY');
     expect(configTypes).not.toContain('OPENAI_API_KEY');
     expect(gradle).toContain('["GEMINI_API_KEY", "OPENAI_API_KEY"].each');

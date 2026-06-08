@@ -29,6 +29,7 @@ jest.mock('@supabase/supabase-js', () => {
     in: mockIn,
     maybeSingle: mockMaybeSingle,
     order: mockOrder,
+    single: mockSingle,
   }));
   const mockSingle = jest.fn();
   const mockSelect = jest.fn(() => ({
@@ -72,11 +73,21 @@ jest.mock('@supabase/supabase-js', () => {
 });
 
 describe('manual parser personal movement safety', () => {
-  it('keeps personal transfers and deposits neutral', () => {
-    expect(parseTransaction('brother gave me 11000').type).toBe('transfer');
+  it('keeps account-only movements neutral', () => {
     expect(parseTransaction('cash deposit 11000').type).toBe('transfer');
     expect(parseTransaction('cash withdrawal 500').type).toBe('transfer');
     expect(parseTransaction('loan repayment 11000').type).toBe('transfer');
+  });
+
+  it('uses direction for manually entered person payments', () => {
+    expect(parseTransaction('brother gave me 11000')).toMatchObject({
+      type: 'income',
+      category: 'Family',
+    });
+    expect(parseTransaction('I give 500 to my mom')).toMatchObject({
+      type: 'expense',
+      category: 'Family',
+    });
   });
 
   it('keeps earned income and merchant expenses unchanged', () => {

@@ -76,8 +76,51 @@ interface ParsedTransaction {
   category: string;
 }
 
+const AI_PARSE_TIMEOUT_MS = 15000;
+
 export async function parseTransactionWithAI(text: string): Promise<ParsedTransaction> {
-  return parseTransaction(text);
+  try {
+    const trimmedText = text.trim();
+    if (!trimmedText) {
+      throw new Error('Please describe your transaction first');
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error('AI parsing timed out. Please use manual mode.'));
+      }, AI_PARSE_TIMEOUT_MS);
+    });
+
+    const invokePromise = supabase.functions.invoke('parse-transaction', {
+      body: { text: trimmedText },
+    });
+
+    const { data, error } = await Promise.race([invokePromise, timeoutPromise])
+      .finally(() => {
+        if (timeoutId) clearTimeout(timeoutId);
+      });
+
+    if (error) {
+      throw new Error(error.message || 'AI parsing failed. Please use manual mode.');
+    }
+
+    const parsed = data as Partial<ParsedTransaction> | null;
+    const amount = Number(parsed?.amount);
+    if (!parsed || !Number.isFinite(amount) || amount <= 0 || !parsed.type || !parsed.note) {
+      throw new Error('AI parsing returned an incomplete result. Please use manual mode.');
+    }
+
+    return {
+      amount,
+      type: parsed.type,
+      note: String(parsed.note),
+      category: String(parsed.category || parsed.type),
+    };
+  } catch (error) {
+    console.error('[AIParser] parseTransactionWithAI failed:', error);
+    throw error;
+  }
 }
 
 export const parseTransaction = (text: string): ParsedTransaction => {
@@ -93,18 +136,25 @@ export const parseTransaction = (text: string): ParsedTransaction => {
   
   const amount = parseFloat(amountMatch[1]);
   
-  // Detect type
+  // Detect type. Directional person payments should affect cashflow; only
+  // self/account movements stay neutral transfers.
   let type: TransactionType = 'expense';
-  if (/lent|udhar diya|gave to|lend/.test(lowerText)) {
+  const neutralTransferPattern = /cash deposit|bank deposit|cash withdrawal|atm withdrawal|withdrawal|withdrawn|self transfer|own account|reimburse|reimbursement|loan repayment|debt repayment/;
+  const incomingPersonPattern = /give me|gave me|gives me|given me|sent me|received from|got from|mujhe diya|mujhe mila|mujhe aaya/;
+  const outgoingPersonPattern = /\b(i|main|maine|mene|we|humne|hamne)\s+(gave|give|paid|pay|sent|send|spent|spend|bheja|diya)\b|\b(sent|send|gave|give|paid|pay)\b.*\bto\b.*\b(family|friend|brother|sister|bhai|behen|dost|mom|mother|mummy|dad|father|papa|parents?)\b/;
+
+  if (/lent|udhar diya|lend/.test(lowerText)) {
     type = 'lent';
   } else if (/borrowed|liya|udhar liya|took from|borrow/.test(lowerText)) {
     type = 'borrowed';
   } else if (/refund|refunded/.test(lowerText)) {
     type = 'refund';
-  } else if (/family|friend|brother|sister|bhai|dost|mom|dad|papa|mummy|cash deposit|bank deposit|cash withdrawal|atm withdrawal|withdrawal|withdrawn|self transfer|own account|reimburse|loan repayment|debt repayment/.test(lowerText)) {
+  } else if (neutralTransferPattern.test(lowerText)) {
     type = 'transfer';
-  } else if (/salary|received|credited|income|got|earned|give me|gave|given/.test(lowerText)) {
+  } else if (incomingPersonPattern.test(lowerText) || /salary|received|credited|income|got|earned/.test(lowerText)) {
     type = 'income';
+  } else if (outgoingPersonPattern.test(lowerText)) {
+    type = 'expense';
   } else if (/sip|mutual fund|stocks|zerodha|invest|shares|fd|nps/.test(lowerText)) {
     type = 'investment';
   } else if (/emi|loan|equated|hdfc loan|iciciloan/.test(lowerText)) {
@@ -114,7 +164,13 @@ export const parseTransaction = (text: string): ParsedTransaction => {
   // Extract note — remove amount, keep rest
   const note = text.replace(/₹?\s*\d+(?:\.\d+)?/, '').trim() || text.slice(0, 30);
   
-  return { amount, type, note, category: type };
+  const category = /\b(mom|mother|mummy|dad|father|papa|parents?|family|brother|sister|bhai|behen)\b/.test(lowerText)
+    ? 'Family'
+    : /\b(friend|dost|yaar)\b/.test(lowerText)
+      ? 'Personal'
+      : type;
+
+  return { amount, type, note, category };
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -418,26 +474,34 @@ export type AddTransactionInput = Omit<Transaction, 'id' | 'user_id' | 'created_
 };
 
 export async function addTransaction(
-  tx: AddTransactionInput
+  tx: AddTransactionInput,
+  userId?: string
 ): Promise<Transaction> {
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) {
-    throw new Error('User not authenticated');
-  }
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
 
-  // Validate transaction data
-  if (!tx.amount || tx.amount <= 0) {
-    throw new Error('Valid amount required');
-  }
-  
-  if (!tx.type) {
-    throw new Error('Transaction type required');
-  }
-  
-  if (!tx.note?.trim()) {
-    throw new Error('Note required');
-  }
+    if (userId && userId !== user.id) {
+      throw new Error('User ownership mismatch');
+    }
+
+    const ownerId = userId || user.id;
+
+    // Validate transaction data
+    if (!tx.amount || tx.amount <= 0) {
+      throw new Error('Valid amount required');
+    }
+    
+    if (!tx.type) {
+      throw new Error('Transaction type required');
+    }
+    
+    if (!tx.note?.trim()) {
+      throw new Error('Note required');
+    }
 
   const optionalFields: (keyof Omit<Transaction, 'id' | 'user_id' | 'created_at' | 'amount' | 'type' | 'note' | 'category'>)[] = [
     'account_id',
@@ -468,19 +532,20 @@ export async function addTransaction(
   }, {});
   const createdAt = tx.created_at?.trim();
 
-  const { data, error } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: user.id,
-      amount: tx.amount,
-      type: tx.type,
-      note: tx.note.trim(),
-      category: tx.category,
-      ...metadata,
-      ...(createdAt ? { created_at: createdAt } : {}),
-    })
-    .select()
-    .single();
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert({
+        user_id: ownerId,
+        amount: tx.amount,
+        type: tx.type,
+        note: tx.note.trim(),
+        category: tx.category,
+        ...metadata,
+        ...(createdAt ? { created_at: createdAt } : {}),
+      })
+      .select()
+      .eq('user_id', ownerId)
+      .single();
 
   if (error) {
     throw new Error(error.message);
@@ -496,7 +561,11 @@ export async function addTransaction(
     transactionId: data.id,
   });
 
-  return data;
+    return data;
+  } catch (error) {
+    console.error('[DB] addTransaction failed:', error);
+    throw error;
+  }
 }
 
 export interface CreateTransferTransactionInput {
@@ -633,31 +702,42 @@ export async function getTransactions(
   page?: number,
   pageSize: number = 30
 ): Promise<Transaction[]> {
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) {
-    throw new Error('User not authenticated');
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
+
+    if (userId && userId !== user.id) {
+      throw new Error('User ownership mismatch');
+    }
+
+    const ownerId = userId || user.id;
+
+    let query = supabase
+      .from('transactions')
+      .select(TRANSACTION_COLUMNS)
+      .eq('user_id', ownerId)
+      .order('created_at', { ascending: false });
+
+    if (page !== undefined) {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      query = query.range(from, to);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return (data || []).map(tx => sanitizeTransactionRawSmsForPrivacy(tx as unknown as Transaction));
+  } catch (error) {
+    console.error('[DB] getTransactions failed:', error);
+    throw error;
   }
-
-  let query = supabase
-    .from('transactions')
-    .select(TRANSACTION_COLUMNS)
-    .eq('user_id', userId || user.id)
-    .order('created_at', { ascending: false });
-
-  if (page !== undefined) {
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
-    query = query.range(from, to);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return (data || []).map(tx => sanitizeTransactionRawSmsForPrivacy(tx as unknown as Transaction));
 }
 
 export async function findDuplicateLinkedRefundTransaction(
@@ -686,35 +766,41 @@ export async function findDuplicateLinkedRefundTransaction(
 }
 
 export async function deleteTransaction(id: string): Promise<void> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('User not authenticated');
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('User not authenticated');
 
-  const transactionsForReviewDisposition = await fetchOwnedTransactionsForDelete(user.id, [id]);
+    const transactionsForReviewDisposition = await fetchOwnedTransactionsForDelete(user.id, [id]);
 
-  const { error } = await supabase
-    .from('transactions')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', user.id);
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
 
-  if (error) {
-    throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    await markDeletedReviewSources(user.id, transactionsForReviewDisposition);
+    await updateTransactionsCache(current => current.filter(tx => tx.id !== id));
+    emitFinanceDataChanged({
+      areas: ['transactions', 'review'],
+      source: 'transaction:delete',
+      transactionId: id,
+    });
+  } catch (error) {
+    console.error('[DB] deleteTransaction failed:', error);
+    throw error;
   }
-
-  await markDeletedReviewSources(user.id, transactionsForReviewDisposition);
-  await updateTransactionsCache(current => current.filter(tx => tx.id !== id));
-  emitFinanceDataChanged({
-    areas: ['transactions', 'review'],
-    source: 'transaction:delete',
-    transactionId: id,
-  });
 }
 
 export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('User not authenticated');
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('User not authenticated');
 
-  if (ids.length === 0) return;
+    if (ids.length === 0) return;
 
   const transactionsForReviewDisposition = await fetchOwnedTransactionsForDelete(user.id, ids);
 
@@ -741,25 +827,30 @@ export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
   const idSet = new Set(ids);
   await markDeletedReviewSources(user.id, transactionsForReviewDisposition);
   await updateTransactionsCache(current => current.filter(tx => !idSet.has(tx.id)));
-  emitFinanceDataChanged({
-    areas: ['transactions', 'review'],
-    source: 'transaction:bulkDelete',
-  });
+    emitFinanceDataChanged({
+      areas: ['transactions', 'review'],
+      source: 'transaction:bulkDelete',
+    });
+  } catch (error) {
+    console.error('[DB] bulkDeleteTransactions failed:', error);
+    throw error;
+  }
 }
 
 export async function updateTransaction(
   id: string,
   updates: Partial<Omit<Transaction, 'id' | 'user_id' | 'created_at'>>
 ): Promise<Transaction> {
-  if (updates.amount !== undefined && updates.amount <= 0) {
-    throw new Error('Amount must be greater than zero');
-  }
-  if (updates.type === 'transfer') {
-    throw new Error('Cannot update transaction type to transfer');
-  }
+  try {
+    if (updates.amount !== undefined && updates.amount <= 0) {
+      throw new Error('Amount must be greater than zero');
+    }
+    if (updates.type === 'transfer') {
+      throw new Error('Cannot update transaction type to transfer');
+    }
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('User not authenticated');
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('User not authenticated');
 
   const { data, error } = await supabase
     .from('transactions')
@@ -784,15 +875,20 @@ export async function updateTransaction(
     transactionId: id,
   });
 
-  return data;
+    return data;
+  } catch (error) {
+    console.error('[DB] updateTransaction failed:', error);
+    throw error;
+  }
 }
 
 export async function getUniqueCategories(): Promise<string[]> {
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) {
-    throw new Error('User not authenticated');
-  }
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
 
   const { data, error } = await supabase
     .from('transactions')
@@ -805,8 +901,12 @@ export async function getUniqueCategories(): Promise<string[]> {
     throw new Error(error.message);
   }
 
-  const categories = data?.map(item => item.category).filter(Boolean) || [];
-  return Array.from(new Set(categories));
+    const categories = data?.map(item => item.category).filter(Boolean) || [];
+    return Array.from(new Set(categories));
+  } catch (error) {
+    console.error('[DB] getUniqueCategories failed:', error);
+    throw error;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -957,6 +1057,7 @@ export async function syncOfflineTransactions(): Promise<void> {
           .from('transactions')
           .insert(item.record)
           .select()
+          .eq('user_id', user.id)
           .single();
 
         if (error) {

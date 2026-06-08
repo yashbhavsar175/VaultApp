@@ -301,16 +301,26 @@ export default function Transactions() {
       // RECOVERY SCRIPT FOR BROKEN INCOME TRANSACTIONS
       try {
         const { supabase } = require('../../lib/core');
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          throw new Error('User not authenticated');
+        }
+
         const { data: brokenTxs } = await supabase
           .from('transactions')
           .select('id, type, category')
+          .eq('user_id', user.id)
           .eq('type', 'income')
           .is('category', null);
           
         if (brokenTxs && brokenTxs.length > 0) {
           console.log(`[Recovery] Found ${brokenTxs.length} broken income transactions. Fixing...`);
           for (const tx of brokenTxs) {
-            await supabase.from('transactions').update({ category: 'Income' }).eq('id', tx.id);
+            await supabase
+              .from('transactions')
+              .update({ category: 'Income' })
+              .eq('id', tx.id)
+              .eq('user_id', user.id);
           }
           console.log(`[Recovery] Successfully fixed ${brokenTxs.length} transactions!`);
           loadTransactions();

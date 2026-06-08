@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   Modal,
   TextInput,
   TouchableOpacity,
+  ScrollView,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
@@ -17,20 +18,37 @@ import type { SpeechResultsEvent, SpeechErrorEvent } from '@react-native-voice/v
 import { useTheme } from '../../context/ThemeContext';
 import { parseNaturalLanguageTxn, ParsedTransaction } from '../../utils/nlpParser';
 import { addTransaction } from '../../lib/core';
-import { CACHE_KEYS, updateCache } from '../../lib/services/cache';
-import { Transaction } from '../../types';
+import { getBankAccounts, updateBankAccount } from '../../lib/database/financial';
+import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
+import { emitFinanceDataChanged } from '../../lib/services/dataEvents';
+import { getBankColor } from '../../config';
+import { BankAccount, Transaction, TransactionType } from '../../types';
 
 type VoiceModule = typeof import('@react-native-voice/voice').default;
 let voiceModule: VoiceModule | null = null;
 
-function getVoiceModule(): VoiceModule {
+function getVoiceModule(): VoiceModule | null {
   if (!voiceModule) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const loadedVoiceModule = require('@react-native-voice/voice').default as VoiceModule;
-    voiceModule = loadedVoiceModule;
-    return loadedVoiceModule;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const loadedVoiceModule = require('@react-native-voice/voice').default as VoiceModule | null;
+      voiceModule = loadedVoiceModule;
+      return loadedVoiceModule;
+    } catch (error) {
+      if (__DEV__) console.warn('[QuickAddModal] Voice module unavailable', error);
+      return null;
+    }
   }
   return voiceModule;
+}
+
+async function cleanupVoiceModule(voice: VoiceModule | null): Promise<void> {
+  if (!voice) return;
+  try {
+    await voice.destroy();
+  } catch (error) {
+    if (__DEV__) console.warn('[QuickAddModal] Voice destroy failed', error);
+  }
 }
 
 interface QuickAddModalProps {
@@ -45,9 +63,43 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
   const [parsed, setParsed] = useState<ParsedTransaction | null>(null);
   const [saving, setSaving] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [banks, setBanks] = useState<BankAccount[]>([]);
+  const [selectedAccount, setSelectedAccount] = useState<string>('cash');
+  const [loadingBanks, setLoadingBanks] = useState(false);
 
   const [aiWarning, setAiWarning] = useState<{ emoji: string; msg: string } | null>(null);
   const isListeningRef = useRef(false);
+
+  const loadBanks = useCallback(async () => {
+    try {
+      const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+      if (cached) {
+        setBanks(cached.data);
+        if (!cached.isStale) return;
+      } else {
+        setLoadingBanks(true);
+      }
+
+      const bankAccounts = await getBankAccounts();
+      setBanks(bankAccounts);
+      await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
+    } catch (error) {
+      if (__DEV__) console.warn('[QuickAddModal] Bank accounts unavailable', error);
+      setBanks([]);
+    } finally {
+      setLoadingBanks(false);
+    }
+  }, []);
+
+  const getBankBalanceDelta = (type: TransactionType, amount: number): number => {
+    if (type === 'expense' || type === 'emi' || type === 'investment' || type === 'lent') {
+      return -amount;
+    }
+    if (type === 'income' || type === 'refund' || type === 'borrowed') {
+      return amount;
+    }
+    return 0;
+  };
 
   // Smart contextual warning generator — instant, no API!
   const getSmartWarning = (text: string): { emoji: string; msg: string } => {
@@ -147,11 +199,13 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
       setParsed(null);
       setIsListening(false);
       setAiWarning(null);
+      setSelectedAccount('cash');
+      loadBanks();
     } else if (isListeningRef.current) {
-      getVoiceModule().stop().catch(() => {});
+      getVoiceModule()?.stop().catch(() => {});
       setIsListening(false);
     }
-  }, [visible]);
+  }, [visible, loadBanks]);
 
   useEffect(() => {
     if (input.trim().length > 2) {
@@ -166,6 +220,8 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
     if (!visible) return;
 
     const voice = getVoiceModule();
+    if (!voice) return;
+
     voice.onSpeechStart = () => setIsListening(true);
     voice.onSpeechEnd = () => setIsListening(false);
     voice.onSpeechError = (e: SpeechErrorEvent) => {
@@ -182,7 +238,7 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
     };
 
     return () => {
-      voice.destroy().then(voice.removeAllListeners);
+      cleanupVoiceModule(voice);
     };
   }, [visible]);
 
@@ -205,20 +261,36 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
   const toggleListening = async () => {
     try {
       if (isListening) {
-        await getVoiceModule().stop();
+        const voice = getVoiceModule();
+        if (!voice) {
+          Toast.show({ type: 'error', text1: 'Voice unavailable', text2: 'Please type the transaction instead.' });
+          setIsListening(false);
+          return;
+        }
+        await voice.stop();
         setIsListening(false);
       } else {
+        const voice = getVoiceModule();
+        if (!voice) {
+          Toast.show({ type: 'error', text1: 'Voice unavailable', text2: 'Please type the transaction instead.' });
+          return;
+        }
+
         const hasPermission = await requestAudioPermission();
         if (hasPermission) {
           setInput(''); // clear existing input when starting new voice
-          await getVoiceModule().start('en-IN'); // Keep recognition aligned with Indian English input.
+          await voice.start('en-IN'); // Keep recognition aligned with Indian English input.
         } else {
           Toast.show({ type: 'error', text1: 'Permission Denied', text2: 'Microphone access is required.' });
         }
       }
     } catch {
-      // Silently catch start/stop errors to avoid red screen LogBox
       setIsListening(false);
+      Toast.show({
+        type: 'error',
+        text1: 'Voice unavailable',
+        text2: 'Please type the transaction instead.',
+      });
     }
   };
 
@@ -227,12 +299,22 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
 
     setSaving(true);
     try {
+      const selectedBank = selectedAccount !== 'cash'
+        ? banks.find(bank => bank.id === selectedAccount)
+        : null;
+      const accountTrace = selectedBank
+        ? {
+            account_id: selectedBank.id,
+            account_last4: selectedBank.account_last4,
+          }
+        : {};
       const newTx: Omit<Transaction, 'id' | 'user_id' | 'created_at'> = {
         amount: parsed.amount,
         type: parsed.type,
         note: parsed.note || parsed.category,
         category: parsed.category,
         sms_source: 'voice',
+        ...accountTrace,
       };
 
       const savedTx = await addTransaction(newTx);
@@ -242,6 +324,24 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
         savedTx,
         ...(current || []).filter(tx => tx.id !== savedTx.id),
       ]);
+
+      if (selectedBank) {
+        const delta = getBankBalanceDelta(parsed.type, parsed.amount);
+        if (delta !== 0) {
+          const currentBalance = selectedBank.balance ?? selectedBank.starting_balance ?? 0;
+          const updatedBank = { ...selectedBank, balance: currentBalance + delta };
+          await updateBankAccount(selectedBank.id, { balance: updatedBank.balance });
+          setBanks(current => current.map(bank => bank.id === selectedBank.id ? updatedBank : bank));
+          await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
+            (current || banks).map(bank => bank.id === selectedBank.id ? updatedBank : bank)
+          );
+          emitFinanceDataChanged({
+            areas: ['accounts'],
+            source: 'quickadd:accountBalance',
+            transactionId: savedTx.id,
+          });
+        }
+      }
 
       Toast.show({
         type: 'success',
@@ -262,7 +362,14 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
     }
   };
 
-  const isReadyToSave = parsed !== null && parsed.amount !== null && parsed.type !== null;
+  const isReadyToSave = parsed !== null && parsed.amount !== null && parsed.amount > 0 && parsed.type !== null;
+  const selectedBank = selectedAccount !== 'cash'
+    ? banks.find(bank => bank.id === selectedAccount)
+    : null;
+  const accountActionLabel =
+    parsed?.type === 'income' || parsed?.type === 'refund' || parsed?.type === 'borrowed'
+      ? 'Received in'
+      : 'Paid from';
 
   return (
     <Modal
@@ -321,6 +428,73 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
               />
               {isListening && <Text style={{ color: '#ef4444', fontSize: 10, marginTop: 4, fontWeight: 'bold' }}>Listening</Text>}
             </TouchableOpacity>
+          </View>
+
+          <View style={{ marginBottom: 16 }}>
+            <Text style={{ color: colors.subtext, fontSize: 11, marginBottom: 8, fontWeight: '600', textTransform: 'uppercase' }}>
+              {accountActionLabel}
+            </Text>
+            {loadingBanks ? (
+              <View style={[styles.accountLoading, { backgroundColor: colors.card, borderColor: colors.border, borderRadius: borderRadius.md }]}>
+                <ActivityIndicator size="small" color={colors.accent} />
+              </View>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.accountScrollContent}>
+                <TouchableOpacity
+                  style={[
+                    styles.accountChip,
+                    {
+                      backgroundColor: selectedAccount === 'cash' ? colors.accent : colors.card,
+                      borderColor: selectedAccount === 'cash' ? colors.accent : colors.border,
+                      borderRadius: borderRadius.md,
+                    },
+                  ]}
+                  onPress={() => setSelectedAccount('cash')}
+                >
+                  <MaterialCommunityIcons
+                    name="cash"
+                    size={16}
+                    color={selectedAccount === 'cash' ? '#fff' : colors.text}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={{ color: selectedAccount === 'cash' ? '#fff' : colors.text, fontWeight: '700', fontSize: 13 }}>
+                    Cash
+                  </Text>
+                </TouchableOpacity>
+
+                {banks.map(bank => {
+                  const isSelected = selectedBank?.id === bank.id;
+                  const bankColor = getBankColor(bank.bank_name);
+                  return (
+                    <TouchableOpacity
+                      key={bank.id}
+                      style={[
+                        styles.accountChip,
+                        {
+                          backgroundColor: isSelected ? bankColor : colors.card,
+                          borderColor: isSelected ? bankColor : colors.border,
+                          borderRadius: borderRadius.md,
+                        },
+                      ]}
+                      onPress={() => setSelectedAccount(bank.id)}
+                    >
+                      <MaterialCommunityIcons
+                        name="bank-outline"
+                        size={16}
+                        color={isSelected ? '#fff' : colors.text}
+                        style={{ marginRight: 6 }}
+                      />
+                      <Text
+                        style={{ color: isSelected ? '#fff' : colors.text, fontWeight: '700', fontSize: 13 }}
+                        numberOfLines={1}
+                      >
+                        {bank.bank_name} ••{bank.account_last4}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
           </View>
 
           {/* Live Preview Card OR AI Fun Warning */}
@@ -390,6 +564,23 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
                   </Text>
                 </View>
               </View>
+
+              <View style={[styles.previewRow, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.subtext, fontSize: 11 }}>Source</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                    <MaterialCommunityIcons
+                      name={selectedAccount === 'cash' ? 'cash' : 'bank-outline'}
+                      size={13}
+                      color={colors.accent}
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }} numberOfLines={1}>
+                      {selectedBank ? `${selectedBank.bank_name} ••${selectedBank.account_last4}` : 'Cash'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
             </View>
           ) : null}
 
@@ -457,6 +648,24 @@ const styles = StyleSheet.create({
     height: 80,
     borderWidth: 1.5,
     justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accountScrollContent: {
+    paddingRight: 16,
+  },
+  accountLoading: {
+    height: 42,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountChip: {
+    height: 42,
+    maxWidth: 190,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    marginRight: 10,
+    flexDirection: 'row',
     alignItems: 'center',
   },
   previewCard: {

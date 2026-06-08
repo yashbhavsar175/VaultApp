@@ -992,8 +992,25 @@ function stripPorterDistanceMarkers(value: string): string {
     .trim();
 }
 
+function deduplicateAddressSegments(address: string): string {
+  const parts = address.split(',').map(p => p.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const part of parts) {
+    const key = part.toLowerCase().replace(/\s+/g, ' ');
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(part);
+    }
+  }
+  // Strip trailing Porter accessibility repeat after "India"
+  // Pattern: "..., India, SomeLocality, SomeCity, SomeState" → "..., India"
+  const joined = unique.join(', ');
+  return joined.replace(/,\s*India\s*(?:,\s*[^,]+){1,3}\s*$/i, ', India').trim();
+}
+
 function normalizeGeocodeText(value: string): string {
-  return stripPorterDistanceMarkers(
+  const cleaned = stripPorterDistanceMarkers(
     cleanAddressCandidate(value)
       .replace(/…|\.\.\.+/g, ' ')
       .replace(/[₹]/g, ' ')
@@ -1003,6 +1020,7 @@ function normalizeGeocodeText(value: string): string {
     .replace(/\s+/g, ' ')
     .replace(/^,\s*|\s*,$/g, '')
     .trim();
+  return deduplicateAddressSegments(cleaned);
 }
 
 function hasTruncatedAddress(value: string): boolean {
@@ -1057,7 +1075,7 @@ function hasHouseOrPlotNumber(value: string): boolean {
 }
 
 function hasBuildingOrLandmarkToken(value: string): boolean {
-  return /\b(?:house|hospital|clinic|complex|tower|building|society|park|garden|mall|plaza|arcade|apartment|apartments|residency|residence|floor|ground floor)\b/i.test(value);
+  return /\b(?:house|hospital|clinic|complex|tower|building|society|park|garden|mall|plaza|arcade|apartment|apartments|residency|residence|floor|ground floor|restaurant|hotel|cafe|samrat|darbar|palace|bhavan|nagar|mandir|temple|school|college|institute|bank|petrol|pump|station|market|bazar|bazaar|chowk|square|point|corner|gate|naka)\b/i.test(value);
 }
 
 function hasExactAddressDetail(value: string): boolean {
@@ -1307,6 +1325,17 @@ function buildGeocodeCandidates(address: string, contextText: string = ''): Geoc
     .slice(0, GEOCODE_MAX_CANDIDATES);
 }
 
+function truncateAddressForGoogle(address: string, maxLen: number = 150): string {
+  // Remove Porter accessibility trailing repeat: ", India, Locality, City, State"
+  let cleaned = address.replace(/,\s*India\s*(?:,\s*[^,]{2,40}){1,3}\s*$/i, ', India');
+  // Remove trailing partial word (truncated accessibility text)
+  cleaned = cleaned.replace(/,\s*[A-Z][a-z]+\.\.\.\s*$/i, '');
+  if (cleaned.length <= maxLen) return cleaned;
+  const cutPoint = cleaned.lastIndexOf(',', maxLen);
+  if (cutPoint > maxLen * 0.5) return cleaned.slice(0, cutPoint).trim();
+  return cleaned.slice(0, maxLen).trim();
+}
+
 function addGoogleAddressCandidate(
   candidates: GoogleAddressCandidate[],
   query: string,
@@ -1315,9 +1344,10 @@ function addGoogleAddressCandidate(
 ): void {
   const cleaned = normalizeGeocodeText(query);
   if (cleaned.length < 3 || !/[a-zA-Z]{3,}/.test(cleaned)) return;
-  const withContext = hasAhmedabadContext(`${cleaned} ${context}`)
+  let withContext = hasAhmedabadContext(`${cleaned} ${context}`)
     ? appendAhmedabadContext(cleaned)
     : cleaned;
+  withContext = truncateAddressForGoogle(withContext);
   if (!isValidAddressString(withContext)) return;
   const key = withContext.toLowerCase().replace(/\s+/g, ' ').trim();
   if (candidates.some(candidate => candidate.query.toLowerCase().replace(/\s+/g, ' ').trim() === key)) return;

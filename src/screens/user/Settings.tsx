@@ -189,7 +189,7 @@ export default function Settings() {
         type: enabled ? 'success' : 'info',
         text1: enabled ? 'Volume Guard On' : 'Volume Guard Off',
         text2: enabled
-          ? 'Current media volume is locked as the delivery-app maximum'
+          ? 'Current media and alert volumes are locked as delivery-app maximums'
           : 'Delivery apps can control volume normally again',
       });
       await checkPorterService();
@@ -239,7 +239,7 @@ export default function Settings() {
       Toast.show({
         type: 'success',
         text1: 'Volumes locked',
-        text2: 'Current media volume saved as the delivery-app maximum',
+        text2: 'Current media and alert volumes saved as delivery-app maximums',
       });
     } catch (error) {
       Toast.show({
@@ -492,8 +492,8 @@ export default function Settings() {
           await EncryptedStorage.clear();
           Toast.show({
             type: 'success',
-            text1: 'Signed Out',
-            text2: 'You have been logged out successfully',
+            text1: 'Logged out successfully',
+            text2: 'Your session has ended',
           });
         } catch {
           Toast.show({
@@ -1292,7 +1292,7 @@ export default function Settings() {
               'Delivery Volume Guard',
               volumeGuardEnabled ? 'On' : 'Off',
               volumeGuardEnabled ? 'ok' : 'neutral',
-              volumeGuardEnabled ? 'Delivery apps are limited to the locked media volume' : 'Enable if delivery apps raise media volume'
+              volumeGuardEnabled ? 'Delivery apps are limited to locked media and alert volumes' : 'Enable if delivery apps raise volume'
             )}
             {renderDeliveryStatusRow(
               'black-mesa',
@@ -1356,7 +1356,7 @@ export default function Settings() {
               <View style={{ flex: 1, marginLeft: spacing.md, marginRight: spacing.sm }}>
                 <Text style={[typography.bodyBold, { color: colors.text }]}>Volume Guard</Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Keep delivery apps from raising media volume above your locked level
+                  Keep delivery apps from raising media or alert volume above locked levels
                 </Text>
                 <TouchableOpacity
                   onPress={lockCurrentVolumes}

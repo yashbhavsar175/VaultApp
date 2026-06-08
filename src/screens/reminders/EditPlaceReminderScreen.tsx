@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 
 import Geolocation from 'react-native-geolocation-service';
@@ -58,6 +68,7 @@ export default function EditPlaceReminderScreen() {
   }, [route.params?.selectedLocation]);
 
   const handleUseCurrentLocation = () => {
+    Keyboard.dismiss();
     if (__DEV__) console.log('[EditPlaceReminderScreen] handleUseCurrentLocation called');
     Geolocation.getCurrentPosition(
       (position) => {
@@ -86,6 +97,8 @@ export default function EditPlaceReminderScreen() {
   };
 
   const handleSave = async () => {
+    if (loading) return;
+    Keyboard.dismiss();
     if (__DEV__) console.log('[EditPlaceReminderScreen] handleSave called with state:', { title, address, latitude, longitude, radiusOption, customRadius, triggerType, intensity, isOneTime });
     let finalRadius = parseInt(radiusOption, 10);
     if (radiusOption === 'custom') {
@@ -172,139 +185,156 @@ export default function EditPlaceReminderScreen() {
           backgroundColor: isSelected ? `${colors.accent}15` : 'transparent'
         }
       ]}
-      onPress={onPress}
+      onPress={() => {
+        Keyboard.dismiss();
+        onPress();
+      }}
     >
       <Text style={[typography.caption, { color: isSelected ? colors.accent : colors.subtext }]}>{label}</Text>
     </TouchableOpacity>
   );
 
   return (
-    <ScreenWrapper keyboardAvoiding>
+    <ScreenWrapper>
       <AppHeader title={existingReminder ? 'Edit Reminder' : 'New Place Reminder'} showBack />
-      
-      <ScrollView contentContainerStyle={{ padding: spacing.md, paddingBottom: 100 }}>
-        <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
-          <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Details</Text>
-          
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.md }}>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {renderOption('Take something', title === 'Take ', () => setTitle('Take '))}
-              {renderOption('Buy something', title === 'Buy ', () => setTitle('Buy '))}
-              {renderOption('Do something', title === 'Do ', () => setTitle('Do '))}
-              {renderOption('Custom', title === '', () => setTitle(''))}
-            </View>
-          </ScrollView>
+      <KeyboardAvoidingView
+        style={styles.content}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={{ padding: spacing.md, paddingBottom: spacing.lg }}
+        >
+          <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
+            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Details</Text>
 
-          <AppInput
-            placeholder="E.g., Take hospital file, Buy milk"
-            value={title}
-            onChangeText={setTitle}
-            containerStyle={{ marginBottom: spacing.md }}
-          />
-          <AppInput
-            placeholder="Extra notes (optional)"
-            value={note}
-            onChangeText={setNote}
-            multiline
-            containerStyle={{ marginBottom: spacing.md }}
-          />
-        </Card>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.md }} keyboardShouldPersistTaps="handled">
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {renderOption('Take something', title === 'Take ', () => setTitle('Take '))}
+                {renderOption('Buy something', title === 'Buy ', () => setTitle('Buy '))}
+                {renderOption('Do something', title === 'Do ', () => setTitle('Do '))}
+                {renderOption('Custom', title === '', () => setTitle(''))}
+              </View>
+            </ScrollView>
 
-        <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
-          <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Location</Text>
-          <AppInput
-            placeholder="Place name or address (Optional)"
-            value={address}
-            onChangeText={setAddress}
-            containerStyle={{ marginBottom: spacing.md }}
-          />
-          <View style={styles.locationCapture}>
-            <View style={{ flex: 1, marginRight: spacing.md }}>
-              <Text style={[typography.caption, { color: colors.text }]}>
-                {latitude && longitude ? 'Location saved' : 'No coordinates captured'}
-              </Text>
-              {locationAccuracy && (
-                <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
-                  Accuracy: approx. {Math.round(locationAccuracy)} m
-                </Text>
-              )}
-            </View>
-            <View style={{ gap: spacing.sm }}>
-              <AppButton
-                title={latitude ? "Update current" : "Use current"}
-                variant="secondary"
-                onPress={handleUseCurrentLocation}
-                style={{ minWidth: 140 }}
-              />
-              <AppButton
-                title="Choose on map"
-                variant="secondary"
-                onPress={() => navigation.navigate('PlaceReminderMapPicker', { latitude, longitude })}
-                style={{ minWidth: 140 }}
-              />
-            </View>
-          </View>
-        </Card>
-
-        <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
-          <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Triggers</Text>
-          
-          <Text style={[typography.caption, { color: colors.text, marginBottom: 8 }]}>Radius (meters)</Text>
-          <View style={styles.optionsRow}>
-            {renderOption('100m', radiusOption === '100', () => setRadiusOption('100'))}
-            {renderOption('500m', radiusOption === '500', () => setRadiusOption('500'))}
-            {renderOption('1km', radiusOption === '1000', () => setRadiusOption('1000'))}
-            {renderOption('Custom', radiusOption === 'custom', () => setRadiusOption('custom'))}
-          </View>
-          
-          {radiusOption === 'custom' && (
             <AppInput
-              placeholder="Custom radius (50 to 50000 meters)"
-              value={customRadius}
-              onChangeText={setCustomRadius}
-              keyboardType="numeric"
-              containerStyle={{ marginTop: spacing.sm }}
+              placeholder="E.g., Take hospital file, Buy milk"
+              value={title}
+              onChangeText={setTitle}
+              containerStyle={{ marginBottom: spacing.md }}
             />
-          )}
+            <AppInput
+              placeholder="Extra notes (optional)"
+              value={note}
+              onChangeText={setNote}
+              multiline
+              containerStyle={{ marginBottom: spacing.md }}
+            />
+          </Card>
 
-          <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, fontSize: 11 }]}>
-            Smaller radius is useful for home or office. Larger radius is better for shops or areas.
-          </Text>
+          <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
+            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Location</Text>
+            <AppInput
+              placeholder="Place name or address (Optional)"
+              value={address}
+              onChangeText={setAddress}
+              containerStyle={{ marginBottom: spacing.md }}
+            />
+            <View style={styles.locationCapture}>
+              <View style={{ flex: 1, marginRight: spacing.md }}>
+                <Text style={[typography.caption, { color: colors.text }]}>
+                  {latitude && longitude ? 'Location saved' : 'No coordinates captured'}
+                </Text>
+                {locationAccuracy && (
+                  <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
+                    Accuracy: approx. {Math.round(locationAccuracy)} m
+                  </Text>
+                )}
+              </View>
+              <View style={{ gap: spacing.sm }}>
+                <AppButton
+                  title={latitude ? "Update current" : "Use current"}
+                  variant="secondary"
+                  onPress={handleUseCurrentLocation}
+                  style={{ minWidth: 140 }}
+                />
+                <AppButton
+                  title="Choose on map"
+                  variant="secondary"
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    navigation.navigate('PlaceReminderMapPicker', { latitude, longitude });
+                  }}
+                  style={{ minWidth: 140 }}
+                />
+              </View>
+            </View>
+          </Card>
 
-          <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>When</Text>
-          <View style={styles.optionsRow}>
-            {renderOption('Arriving near this place', triggerType === 'arriving', () => setTriggerType('arriving'))}
-            {renderOption('Leaving this place', triggerType === 'leaving', () => setTriggerType('leaving'))}
-          </View>
+          <Card style={{ padding: spacing.md, marginBottom: spacing.md }}>
+            <Text style={[typography.h3, { color: colors.text, marginBottom: spacing.md }]}>Triggers</Text>
 
-          <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>Intensity</Text>
-          <View style={styles.optionsRow}>
-            {renderOption('Normal', intensity === 'normal', () => setIntensity('normal'))}
-            {renderOption('Important', intensity === 'important', () => setIntensity('important'))}
-          </View>
+            <Text style={[typography.caption, { color: colors.text, marginBottom: 8 }]}>Radius (meters)</Text>
+            <View style={styles.optionsRow}>
+              {renderOption('100m', radiusOption === '100', () => setRadiusOption('100'))}
+              {renderOption('500m', radiusOption === '500', () => setRadiusOption('500'))}
+              {renderOption('1km', radiusOption === '1000', () => setRadiusOption('1000'))}
+              {renderOption('Custom', radiusOption === 'custom', () => setRadiusOption('custom'))}
+            </View>
 
-          <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>Repeat</Text>
-          <View style={styles.optionsRow}>
-            {renderOption('Once', isOneTime, () => setIsOneTime(true))}
-            {renderOption('Repeat', !isOneTime, () => setIsOneTime(false))}
-          </View>
-          
-          {!isOneTime && (
+            {radiusOption === 'custom' && (
+              <AppInput
+                placeholder="Custom radius (50 to 50000 meters)"
+                value={customRadius}
+                onChangeText={setCustomRadius}
+                keyboardType="numeric"
+                containerStyle={{ marginTop: spacing.sm }}
+              />
+            )}
+
             <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, fontSize: 11 }]}>
-              Won't repeat for 30 minutes after alert.
+              Smaller radius is useful for home or office. Larger radius is better for shops or areas.
             </Text>
-          )}
-        </Card>
-      </ScrollView>
 
-      <View style={[styles.footer, { padding: spacing.md, backgroundColor: colors.background, borderTopColor: colors.border }]}>
-        <AppButton title="Save Reminder" onPress={handleSave} loading={loading} />
-      </View>
+            <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>When</Text>
+            <View style={styles.optionsRow}>
+              {renderOption('Arriving near this place', triggerType === 'arriving', () => setTriggerType('arriving'))}
+              {renderOption('Leaving this place', triggerType === 'leaving', () => setTriggerType('leaving'))}
+            </View>
+
+            <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>Intensity</Text>
+            <View style={styles.optionsRow}>
+              {renderOption('Normal', intensity === 'normal', () => setIntensity('normal'))}
+              {renderOption('Important', intensity === 'important', () => setIntensity('important'))}
+            </View>
+
+            <Text style={[typography.caption, { color: colors.text, marginTop: 16, marginBottom: 8 }]}>Repeat</Text>
+            <View style={styles.optionsRow}>
+              {renderOption('Once', isOneTime, () => setIsOneTime(true))}
+              {renderOption('Repeat', !isOneTime, () => setIsOneTime(false))}
+            </View>
+
+            {!isOneTime && (
+              <Text style={[typography.caption, { color: colors.subtext, marginTop: 8, fontSize: 11 }]}>
+                Won't repeat for 30 minutes after alert.
+              </Text>
+            )}
+          </Card>
+        </ScrollView>
+
+        <View style={[styles.footer, { padding: spacing.md, backgroundColor: colors.background, borderTopColor: colors.border }]}>
+          <AppButton title="Save Reminder" onPress={handleSave} loading={loading} />
+        </View>
+      </KeyboardAvoidingView>
     </ScreenWrapper>
   );
 }
 
 const styles = StyleSheet.create({
+  content: {
+    flex: 1,
+  },
   optionsRow: {
     flexDirection: 'row',
     gap: 8,
@@ -323,10 +353,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   footer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
     borderTopWidth: 1,
     elevation: 10,
     zIndex: 10,

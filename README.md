@@ -1,6 +1,6 @@
 # VaultApp - Personal Finance Tracker
 
-A React Native CLI app for tracking income, expenses, investments, and EMI payments with AI-powered transaction parsing.
+A React Native CLI app for tracking income, expenses, investments, and EMI payments with AI-powered transaction parsing through a Supabase Edge Function.
 
 ## Tech Stack
 
@@ -10,7 +10,7 @@ A React Native CLI app for tracking income, expenses, investments, and EMI payme
 - EncryptedStorage (Auth token persistence)
 - react-native-vector-icons (MaterialCommunityIcons)
 - react-native-toast-message (Notifications)
-- OpenAI GPT-4o-mini / Gemini 1.5 Flash (AI parsing)
+- OpenAI GPT-4o-mini via Supabase Edge Function (AI parsing)
 
 ## Project Structure
 
@@ -50,20 +50,41 @@ Additional project documentation lives in `docs/`. Archived standalone SQL files
 npm install
 ```
 
-### 2. Configure Supabase
+### 2. Configure Environment
+
+1. Copy `.env.example` to `.env`
+2. Fill in:
+   - `SUPABASE_URL`
+   - `SUPABASE_ANON_KEY`
+   - `GOOGLE_WEB_CLIENT_ID`
+   - `GOOGLE_MAPS_API_KEY` if you use map/distance features
+3. Keep `.env` private. It is already ignored by Git.
+
+### 3. Configure Supabase
 
 1. Create a Supabase project at https://supabase.com
 2. Run the SQL in `supabase-fresh-setup.sql` in your Supabase SQL Editor
 3. Configure Supabase URL and anon key through `.env` / `react-native-config`
 
-### 3. Configure AI Provider
+### 4. Configure AI Parsing
 
-1. Copy `src/lib/config.ts` and add your API key:
-   - For OpenAI: Get key from https://platform.openai.com/api-keys
-   - For Gemini: Get key from https://aistudio.google.com/app/apikey
-2. Choose your provider in `config.ts` (default: Gemini)
+The mobile app does not call OpenAI directly. It calls `supabase/functions/parse-transaction`, and the Edge Function reads `OPENAI_API_KEY` from Supabase Function secrets.
 
-### 4. Run the App
+For local Edge Function development, use the placeholder in `.env.example`, then replace it in your private `.env`:
+
+```bash
+OPENAI_API_KEY=your_openai_key_here
+OPENAI_MODEL=gpt-4o-mini
+```
+
+For production, set the secret in Supabase:
+
+```bash
+supabase secrets set OPENAI_API_KEY=your_real_key
+supabase functions deploy parse-transaction
+```
+
+### 5. Run the App
 
 #### iOS
 ```bash
@@ -90,7 +111,7 @@ npx react-native run-android
 - Pull to refresh
 
 ### Add Transaction
-- **AI Mode**: Natural language parsing (e.g., "200 rs petrol")
+- **AI Mode**: Natural language parsing through the `parse-transaction` Edge Function, with review before save
 - **Manual Mode**: Form-based entry
 - Transaction types: Income, Expense, Investment, EMI
 - Category tagging
@@ -138,7 +159,8 @@ All amounts use Indian locale formatting: ₹1,00,000
 
 ## Security Notes
 
-- `src/lib/config.ts` is gitignored to protect API keys
+- Runtime configuration is loaded from `.env` through `react-native-config`
+- Provider secrets such as `OPENAI_API_KEY` belong in Supabase Function secrets, not mobile source code
 - Never commit API keys to version control
 - RLS policies ensure data isolation between users
 

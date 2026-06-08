@@ -5,14 +5,32 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, AppHeader, Card, AppButton } from '../../components';
 import { getPlaceReminders, deletePlaceReminder, PlaceReminder, savePlaceReminder, syncAllGeofences } from '../../lib/services/placeReminders';
-import { requestPlaceReminderPermissions, requestBackgroundLocationPermission, checkPlaceReminderPermissions } from '../../lib/services/placeReminderPermissions';
+import {
+  requestPlaceReminderPermissions,
+  requestBackgroundLocationPermission,
+  checkPlaceReminderPermissions,
+  PermissionStatus,
+} from '../../lib/services/placeReminderPermissions';
 
 export default function PlaceRemindersScreen() {
   const navigation = useNavigation<any>();
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [reminders, setReminders] = useState<PlaceReminder[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hasBackgroundPermission, setHasBackgroundPermission] = useState(false);
+  const [backgroundPermissionStatus, setBackgroundPermissionStatus] = useState<PermissionStatus>('unknown');
+  const hasCheckedBackgroundPermission = backgroundPermissionStatus !== 'unknown';
+  const hasBackgroundPermission = backgroundPermissionStatus === 'granted';
+
+  const checkPermissionsSilently = useCallback(async () => {
+    try {
+      const status = await checkPlaceReminderPermissions();
+      console.log('[PlaceRemindersScreen] Permission check result:', status);
+      setBackgroundPermissionStatus(status.backgroundLocation);
+    } catch (error) {
+      console.warn('[PlaceRemindersScreen] Permission check error:', error);
+      setBackgroundPermissionStatus('denied');
+    }
+  }, []);
 
   const loadReminders = useCallback(async () => {
     console.log('[PlaceRemindersScreen] loadReminders called');
@@ -32,22 +50,15 @@ export default function PlaceRemindersScreen() {
     useCallback(() => {
       console.log('[PlaceRemindersScreen] Screen focused — reloading reminders & checking permissions');
       loadReminders();
-      // Check permissions silently on focus
-      requestPlaceReminderPermissions().then(async () => {
-        const status = await checkPlaceReminderPermissions();
-        console.log('[PlaceRemindersScreen] Permission check result:', status);
-        setHasBackgroundPermission(status.backgroundLocation === 'granted');
-      });
-    }, [loadReminders])
+      checkPermissionsSilently();
+    }, [loadReminders, checkPermissionsSilently])
   );
 
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
       console.log('[PlaceRemindersScreen] AppState changed to:', nextAppState);
       if (nextAppState === 'active') {
-        const status = await checkPlaceReminderPermissions();
-        console.log('[PlaceRemindersScreen] AppState active — permission recheck:', status);
-        setHasBackgroundPermission(status.backgroundLocation === 'granted');
+        await checkPermissionsSilently();
       }
     };
 
@@ -55,17 +66,19 @@ export default function PlaceRemindersScreen() {
     return () => {
       subscription.remove();
     };
-  }, []);
+  }, [checkPermissionsSilently]);
 
   const handleEnableBackground = async () => {
     console.log('[PlaceRemindersScreen] handleEnableBackground — requesting background location');
+    await requestPlaceReminderPermissions();
     const status = await requestBackgroundLocationPermission();
     console.log('[PlaceRemindersScreen] Background location result:', status);
     if (status === 'granted') {
-      setHasBackgroundPermission(true);
+      setBackgroundPermissionStatus('granted');
       await syncAllGeofences();
       Alert.alert('Success', 'Background reminders are now active.');
     } else {
+      setBackgroundPermissionStatus(status);
       Alert.alert(
         'Location Permission Needed',
         'To wake the app in the background, please tap "Open Settings" below, then go to:\n\n1. Permissions\n2. Location\n3. Select "Allow all the time"',
@@ -168,13 +181,15 @@ export default function PlaceRemindersScreen() {
       <View style={{ backgroundColor: colors.accent + '20', padding: spacing.sm, marginHorizontal: spacing.md, marginTop: spacing.md, borderRadius: borderRadius.md, flexDirection: 'row', alignItems: 'center' }}>
         <MaterialCommunityIcons name="information-outline" size={20} color={colors.accent} style={{ marginRight: spacing.sm }} />
         <Text style={[typography.caption, { color: colors.text, flex: 1 }]}>
-          {hasBackgroundPermission
+          {!hasCheckedBackgroundPermission
+            ? 'Checking place reminder permissions...'
+            : hasBackgroundPermission
             ? 'Note: Place reminders work when the app is closed (Background Mode Active).'
             : 'Note: Place reminders are currently in a foreground-only MVP phase and will only trigger while the app is open and active.'}
         </Text>
       </View>
       
-      {!hasBackgroundPermission && (
+      {hasCheckedBackgroundPermission && !hasBackgroundPermission && (
         <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}>
           <AppButton 
             title="Enable Background Reminders" 

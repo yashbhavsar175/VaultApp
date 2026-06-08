@@ -39,7 +39,8 @@ class PorterAccessibilityService : AccessibilityService() {
         private const val OCR_DUPLICATE_REFRESH_MS = 2500L
         private const val OCR_UNSUPPORTED_BACKOFF_MS = 10 * 60_000L
         private const val PORTER_EVENT_MIN_INTERVAL_MS = 120L
-        private const val VOLUME_CLAMP_MIN_INTERVAL_MS = 2500L
+        private const val VOLUME_CLAMP_MIN_INTERVAL_MS = 6000L
+        private const val VOLUME_CLAMP_BURST_WINDOW_MS = 8000L
         private const val BUFFERED_PORTER_EVENT_TTL_MS = 45_000L
         private const val MAX_TEXT_NODE_DEPTH = 40
         private const val MAX_TEXT_NODES = 450
@@ -66,6 +67,22 @@ class PorterAccessibilityService : AccessibilityService() {
             "uber",
             "ola"
         )
+        private val VOLUME_GUARD_STREAMS = intArrayOf(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.STREAM_NOTIFICATION,
+            AudioManager.STREAM_RING,
+            AudioManager.STREAM_ALARM
+        )
+        private val VOLUME_CLAMP_DELAYS_MS = longArrayOf(
+            0L,
+            350L,
+            900L,
+            1600L,
+            2600L,
+            4200L,
+            6500L,
+            VOLUME_CLAMP_BURST_WINDOW_MS
+        )
         private val PORTER_EVENT_TYPES = setOf(
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
@@ -74,13 +91,25 @@ class PorterAccessibilityService : AccessibilityService() {
 
         private var cachedNativeLogs: JSONArray? = null
         private var bufferedPorterEvent: JSONObject? = null
+        private val volumeGuardHandler = Handler(Looper.getMainLooper())
+        private var lastVolumeClampRequestTime: Long = 0
 
         fun captureCurrentVolumeCaps(context: Context) {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit()
-                .putInt("stream_${AudioManager.STREAM_MUSIC}", audioManager.getStreamVolume(AudioManager.STREAM_MUSIC))
-                .apply()
+            val editor = prefs.edit()
+            for (stream in VOLUME_GUARD_STREAMS) {
+                try {
+                    editor.putInt(streamKey(stream), audioManager.getStreamVolume(stream))
+                } catch (e: Exception) {
+                    appendNativeLog(
+                        context,
+                        "volume_guard_error",
+                        "Could not capture ${streamLabel(stream)} cap: ${e.message}"
+                    )
+                }
+            }
+            editor.apply()
         }
 
         fun setVolumeGuardEnabled(context: Context, enabled: Boolean) {
@@ -92,6 +121,10 @@ class PorterAccessibilityService : AccessibilityService() {
         fun isVolumeGuardEnabled(context: Context): Boolean {
             return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(KEY_ENABLED, false)
+        }
+
+        fun isVolumeGuardPackageName(packageName: String): Boolean {
+            return VOLUME_GUARD_PACKAGES.any { packageName.contains(it, ignoreCase = true) }
         }
 
         fun appendNativeLog(
@@ -355,46 +388,141 @@ class PorterAccessibilityService : AccessibilityService() {
             }
         }
 
-        fun clampAudioForGuard(context: Context) {
+        fun requestVolumeGuardClampBurst(
+            context: Context,
+            packageName: String = "",
+            eventType: String = ""
+        ) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(KEY_ENABLED, false)) return
+
+            val now = System.currentTimeMillis()
+            if (now - lastVolumeClampRequestTime < VOLUME_CLAMP_MIN_INTERVAL_MS) return
+            lastVolumeClampRequestTime = now
+
+            val appContext = context.applicationContext
+            for (delay in VOLUME_CLAMP_DELAYS_MS) {
+                volumeGuardHandler.postDelayed({
+                    try {
+                        clampAudioForGuard(appContext, packageName, eventType)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Volume guard clamp failed safely", e)
+                        appendNativeLog(
+                            appContext,
+                            "volume_guard_error",
+                            "Volume guard clamp failed safely: ${e.message}",
+                            packageName,
+                            eventType
+                        )
+                    }
+                }, delay)
+            }
+
+            appendNativeLog(
+                appContext,
+                "volume_guard",
+                "Matched guarded app package; scheduled ${VOLUME_CLAMP_BURST_WINDOW_MS}ms delivery volume clamp window for media and alert streams. ${getAudioRouteSummaryForContext(appContext)}",
+                packageName,
+                eventType
+            )
+        }
+
+        fun clampAudioForGuard(
+            context: Context,
+            packageName: String = "",
+            eventType: String = ""
+        ) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (!prefs.getBoolean(KEY_ENABLED, false)) return
 
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-            val cap = getSafeMusicCap(prefs, audioManager) ?: return
-            val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            if (current <= cap) {
-                Log.d(TAG, "Volume guard skipped music current=$current cap=$cap route=${getAudioRouteSummary(audioManager)}")
-                return
+            val clampedStreams = mutableListOf<String>()
+
+            for (stream in VOLUME_GUARD_STREAMS) {
+                val cap = getSafeStreamCap(prefs, audioManager, stream) ?: continue
+                val current = try {
+                    audioManager.getStreamVolume(stream)
+                } catch (_: Exception) {
+                    continue
+                }
+                if (current <= cap) continue
+
+                try {
+                    audioManager.setStreamVolume(stream, cap, 0)
+                    clampedStreams.add("${streamLabel(stream)} $current->$cap")
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "Volume guard could not clamp ${streamLabel(stream)} stream", e)
+                    appendNativeLog(
+                        context,
+                        "volume_guard_error",
+                        "Could not clamp ${streamLabel(stream)} stream: ${e.message}",
+                        packageName,
+                        eventType
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Volume guard stream clamp failed safely", e)
+                    appendNativeLog(
+                        context,
+                        "volume_guard_error",
+                        "Stream clamp failed safely for ${streamLabel(stream)}: ${e.message}",
+                        packageName,
+                        eventType
+                    )
+                }
             }
 
-            try {
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, cap, 0)
-                Log.d(TAG, "Volume guard clamped music $current->$cap route=${getAudioRouteSummary(audioManager)}")
+            if (clampedStreams.isNotEmpty()) {
+                Log.d(TAG, "Volume guard clamped ${clampedStreams.joinToString(", ")} route=${getAudioRouteSummary(audioManager)}")
                 appendNativeLog(
                     context,
                     "volume_clamp",
-                    "Clamped music volume $current->$cap. ${getAudioRouteSummary(audioManager)}"
+                    "Clamped ${clampedStreams.joinToString(", ")}. ${getAudioRouteSummary(audioManager)}",
+                    packageName,
+                    eventType
                 )
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Volume guard could not clamp music stream", e)
             }
         }
 
-        private fun getSafeMusicCap(
+        private fun getSafeStreamCap(
             prefs: android.content.SharedPreferences,
-            audioManager: AudioManager
+            audioManager: AudioManager,
+            stream: Int
         ): Int? {
-            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val maxVolume = audioManager.getStreamMaxVolume(stream)
             if (maxVolume <= 0) return null
 
             val savedCap = prefs.getInt(
-                "stream_${AudioManager.STREAM_MUSIC}",
-                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                streamKey(stream),
+                audioManager.getStreamVolume(stream)
             )
             if (savedCap < 0) return null
 
-            val minFloor = minOf(maxVolume, maxOf(2, (maxVolume + 4) / 5))
+            val minFloor = if (stream == AudioManager.STREAM_MUSIC) {
+                minOf(maxVolume, maxOf(2, (maxVolume + 4) / 5))
+            } else {
+                0
+            }
             return savedCap.coerceIn(minFloor, maxVolume)
+        }
+
+        private fun streamKey(stream: Int): String {
+            return "stream_$stream"
+        }
+
+        private fun streamLabel(stream: Int): String {
+            return when (stream) {
+                AudioManager.STREAM_MUSIC -> "music"
+                AudioManager.STREAM_NOTIFICATION -> "notification"
+                AudioManager.STREAM_RING -> "ring"
+                AudioManager.STREAM_ALARM -> "alarm"
+                else -> "stream_$stream"
+            }
+        }
+
+        private fun getAudioRouteSummaryForContext(context: Context): String {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                ?: return "route=unknown"
+            return getAudioRouteSummary(audioManager)
         }
 
         private fun getAudioRouteSummary(audioManager: AudioManager): String {
@@ -494,8 +622,6 @@ class PorterAccessibilityService : AccessibilityService() {
     private var lastOcrTextHash: Int = 0
     private var ocrUnsupportedUntil: Long = 0
     private var lastOcrUnsupportedLogTime: Long = 0
-    private var lastVolumeLogTime: Long = 0
-    private var lastVolumeClampRequestTime: Long = 0
     private var lastEmptyLogTime: Long = 0
     private var lastPorterProcessTime: Long = 0
     private var lastAnrGuardLogTime: Long = 0
@@ -540,10 +666,9 @@ class PorterAccessibilityService : AccessibilityService() {
         
         // Only process Porter app events
         val isPorterPackage = packageName.contains("porter", ignoreCase = true)
-        val isVolumeGuardPackage = VOLUME_GUARD_PACKAGES.any { packageName.contains(it, ignoreCase = true) }
+        val isVolumeGuardPackage = isVolumeGuardPackageName(packageName)
         if (isVolumeGuardPackage) {
-            requestVolumeClampBurst()
-            appendThrottledVolumeLog(packageName, eventType)
+            requestVolumeGuardClampBurst(applicationContext, packageName, eventType)
         }
 
         if (!isPorterPackage) {
@@ -783,19 +908,6 @@ class PorterAccessibilityService : AccessibilityService() {
 
     private fun isPorterOwnedPackage(packageName: String): Boolean {
         return packageName.contains("porter", ignoreCase = true)
-    }
-
-    private fun appendThrottledVolumeLog(packageName: String, eventType: String) {
-        val now = System.currentTimeMillis()
-        if (now - lastVolumeLogTime < 3000L) return
-        lastVolumeLogTime = now
-        appendNativeLog(
-            applicationContext,
-            "volume_guard",
-            "Matched guarded app package; requested music volume clamp. ${getAudioRouteSummaryForService()}",
-            packageName,
-            eventType
-        )
     }
 
     private fun safeEventType(event: AccessibilityEvent?): String {
@@ -1076,37 +1188,6 @@ class PorterAccessibilityService : AccessibilityService() {
                 lower.contains("jio")
 
         return hasSystemSignal && !hasRideSignal
-    }
-
-    private fun requestVolumeClampBurst() {
-        val now = System.currentTimeMillis()
-        if (now - lastVolumeClampRequestTime < VOLUME_CLAMP_MIN_INTERVAL_MS) return
-        lastVolumeClampRequestTime = now
-        clampVolumeBurst()
-    }
-
-    private fun clampVolumeBurst() {
-        val delays = longArrayOf(0L, 1200L)
-        for (delay in delays) {
-            handler.postDelayed({
-                try {
-                    PorterAccessibilityService.clampAudioForGuard(applicationContext)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Volume guard clamp failed safely", e)
-                    appendNativeLog(
-                        applicationContext,
-                        "volume_guard_error",
-                        "Volume guard clamp failed safely: ${e.message}"
-                    )
-                }
-            }, delay)
-        }
-    }
-
-    private fun getAudioRouteSummaryForService(): String {
-        val audioManager = applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            ?: return "route=unknown"
-        return getAudioRouteSummary(audioManager)
     }
 
     private fun dispatchPendingEvent() {

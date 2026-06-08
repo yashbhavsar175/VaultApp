@@ -2,9 +2,11 @@ import React from 'react';
 import { Text, TextInput, TouchableOpacity } from 'react-native';
 import ReactTestRenderer, { act } from 'react-test-renderer';
 import Toast from 'react-native-toast-message';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import QuickAddModal from './QuickAddModal';
 import { addTransaction } from '../../lib/core';
 import { updateCache } from '../../lib/services/cache';
+import { getBankAccounts, updateBankAccount } from '../../lib/database/financial';
 import { parseNaturalLanguageTxn } from '../../utils/nlpParser';
 
 jest.mock('../../context/ThemeContext', () => ({
@@ -36,8 +38,19 @@ jest.mock('../../lib/core', () => ({
 }));
 
 jest.mock('../../lib/services/cache', () => ({
-  CACHE_KEYS: { TRANSACTIONS: 'transactions' },
+  CACHE_KEYS: { TRANSACTIONS: 'transactions', BANK_ACCOUNTS: 'bank_accounts' },
+  getCached: jest.fn(),
+  setCache: jest.fn(),
   updateCache: jest.fn(),
+}));
+
+jest.mock('../../lib/database/financial', () => ({
+  getBankAccounts: jest.fn(),
+  updateBankAccount: jest.fn(),
+}));
+
+jest.mock('../../lib/services/dataEvents', () => ({
+  emitFinanceDataChanged: jest.fn(),
 }));
 
 jest.mock('../../utils/nlpParser', () => ({
@@ -46,6 +59,8 @@ jest.mock('../../utils/nlpParser', () => ({
 
 const mockedAddTransaction = addTransaction as jest.Mock;
 const mockedUpdateCache = updateCache as jest.Mock;
+const mockedGetBankAccounts = getBankAccounts as jest.Mock;
+const mockedUpdateBankAccount = updateBankAccount as jest.Mock;
 const mockedParseNaturalLanguageTxn = parseNaturalLanguageTxn as jest.Mock;
 const mockedToast = Toast.show as jest.Mock;
 const fs = require('fs') as { readFileSync: (filePath: string, encoding: 'utf8') => string };
@@ -108,6 +123,11 @@ const findButtonWithText = (
 describe('QuickAddModal', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const cache = require('../../lib/services/cache');
+    cache.getCached.mockResolvedValue(null);
+    cache.setCache.mockResolvedValue(undefined);
+    mockedGetBankAccounts.mockResolvedValue([]);
+    mockedUpdateBankAccount.mockResolvedValue(undefined);
     mockedParseNaturalLanguageTxn.mockReturnValue({
       amount: null,
       type: null,
@@ -116,7 +136,7 @@ describe('QuickAddModal', () => {
     });
   });
 
-  it('cleans up voice listeners when the modal closes', async () => {
+  it('destroys the voice session when the modal closes', async () => {
     const voice = require('@react-native-voice/voice').default;
     let renderer: ReactTestRenderer.ReactTestRenderer;
     await act(async () => {
@@ -132,7 +152,40 @@ describe('QuickAddModal', () => {
     });
 
     expect(voice.destroy).toHaveBeenCalled();
-    expect(voice.removeAllListeners).toHaveBeenCalled();
+    expect(voice.removeAllListeners).not.toHaveBeenCalled();
+  });
+
+  it('shows fallback feedback when voice start fails', async () => {
+    const voice = require('@react-native-voice/voice').default;
+    voice.start.mockRejectedValueOnce(new Error('Voice native module unavailable'));
+
+    let renderer: ReactTestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = ReactTestRenderer.create(
+        <QuickAddModal visible onClose={jest.fn()} onSuccess={jest.fn()} />,
+      );
+    });
+
+    const micButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(button =>
+        button.findAllByType(MaterialCommunityIcons).some(icon =>
+          icon.props.name === 'microphone',
+        ),
+      );
+
+    await act(async () => {
+      await micButton?.props.onPress();
+    });
+
+    expect(mockedToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      text1: 'Voice unavailable',
+    }));
+
+    await act(async () => {
+      renderer!.unmount();
+    });
   });
 
   it('renders English-only base copy and warning copy', async () => {
@@ -205,6 +258,77 @@ describe('QuickAddModal', () => {
     expect(mockedToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     expect(onSuccess).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+
+    await act(async () => {
+      renderer!.unmount();
+    });
+  });
+
+  it('keeps cash as the default source and attaches a selected bank when chosen', async () => {
+    mockedGetBankAccounts.mockResolvedValue([{
+      id: 'bank-1',
+      user_id: 'user-1',
+      bank_name: 'HDFC',
+      account_last4: '1234',
+      account_type: 'savings',
+      starting_balance: 1000,
+      balance: 1000,
+      credit_limit: 0,
+      loan_total: 0,
+      upi_ids: [],
+      created_at: '2026-06-07T00:00:00.000Z',
+    }]);
+    mockedParseNaturalLanguageTxn.mockReturnValue({
+      amount: 500,
+      type: 'expense',
+      category: 'Family',
+      note: 'I Give To My Mom',
+    });
+    mockedAddTransaction.mockResolvedValue({
+      id: 'txn-bank',
+      amount: 500,
+      type: 'expense',
+      category: 'Family',
+      note: 'I Give To My Mom',
+      account_id: 'bank-1',
+      account_last4: '1234',
+    });
+
+    let renderer: ReactTestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = ReactTestRenderer.create(
+        <QuickAddModal visible onClose={jest.fn()} onSuccess={jest.fn()} />,
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      renderer!.root.findByType(TextInput).props.onChangeText('I give 500 to my mom');
+    });
+
+    const bankButton = findButtonWithText(renderer!, 'HDFC');
+    expect(bankButton).toBeTruthy();
+
+    await act(async () => {
+      bankButton?.props.onPress();
+    });
+
+    const saveButton = findButtonWithText(renderer!, 'Save Transaction');
+    await act(async () => {
+      await saveButton?.props.onPress();
+    });
+
+    expect(mockedAddTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      amount: 500,
+      type: 'expense',
+      category: 'Family',
+      account_id: 'bank-1',
+      account_last4: '1234',
+    }));
+    expect(mockedUpdateBankAccount).toHaveBeenCalledWith('bank-1', { balance: 500 });
 
     await act(async () => {
       renderer!.unmount();

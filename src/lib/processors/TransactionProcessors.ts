@@ -1242,6 +1242,7 @@ export const processSms = async (taskData: SmsData) => {
             account_match_confidence: 'high',
           })
           .eq('id', duplicate.id)
+          .eq('user_id', userId)
           .select()
           .single();
         recordSmsEvidenceWithDebug({
@@ -1285,6 +1286,7 @@ export const processSms = async (taskData: SmsData) => {
             account_match_confidence: 'high',
           })
           .eq('id', duplicate.id)
+          .eq('user_id', userId)
           .select()
           .single();
         
@@ -1391,6 +1393,7 @@ export const processSms = async (taskData: SmsData) => {
             ...transactionClassificationFields(automaticPolicy),
           })
           .select()
+          .eq('user_id', userId)
           .single();
 
         if (error) throw error;
@@ -1730,6 +1733,7 @@ export const processNotification = async (taskData: any) => {
             account_match_confidence: 'high',
           })
           .eq('id', duplicate.id)
+          .eq('user_id', userId)
           .select()
           .single();
         recordNotificationEvidenceWithDebug({
@@ -1773,6 +1777,7 @@ export const processNotification = async (taskData: any) => {
             account_match_confidence: 'high',
           })
           .eq('id', duplicate.id)
+          .eq('user_id', userId)
           .select()
           .single();
         
@@ -1879,6 +1884,7 @@ export const processNotification = async (taskData: any) => {
             ...transactionClassificationFields(automaticPolicy),
           })
           .select()
+          .eq('user_id', userId)
           .single();
 
         if (error) throw error;

@@ -274,7 +274,7 @@ export default function Add() {
         text1: isConfigError ? 'API Key Missing' : 'Parsing Failed',
         text2: isConfigError ? 'Please configure API key or use Manual mode' : 'Please try manual mode',
       });
-      console.error('Error: Failed to parse transaction with Gemini', error);
+      console.error('Error: Failed to parse transaction with AI', error);
     } finally {
       setParsing(false);
     }
