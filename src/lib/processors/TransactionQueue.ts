@@ -1,5 +1,6 @@
 import { processSms, processNotification } from './TransactionProcessors';
-import type { SmsData } from './TransactionProcessors';
+import type { SmsData, ProcessorResult } from './TransactionProcessors';
+import { showTransactionConfirmation } from '../services/notifications';
 
 interface QueuedSignal {
   id: string;
@@ -12,7 +13,10 @@ interface QueuedSignal {
 
 let signalQueue: QueuedSignal[] = [];
 let queueTimeout: ReturnType<typeof setTimeout> | null = null;
-const QUEUE_DELAY_MS = 5000;
+let queueStartedAt: number | null = null;
+let activeQueueDrain: Promise<void> | null = null;
+const QUEUE_DELAY_MS = 2000;
+const QUEUE_MAX_WAIT_MS = 10000;
 
 export function enqueueSms(data: SmsData): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -29,42 +33,155 @@ export function enqueueNotification(data: any): Promise<void> {
 }
 
 function startQueueTimer() {
-  if (queueTimeout) return;
+  const now = Date.now();
+  if (queueStartedAt === null) {
+    queueStartedAt = now;
+  }
+
+  if (queueTimeout) {
+    clearTimeout(queueTimeout);
+  }
+
+  const elapsedMs = now - queueStartedAt;
+  const delayMs = elapsedMs >= QUEUE_MAX_WAIT_MS ? 0 : QUEUE_DELAY_MS;
+
+  if (__DEV__) console.log('[TransactionQueue] Scheduling batch', {
+    delayMs,
+    queueSize: signalQueue.length,
+  });
+
   queueTimeout = setTimeout(() => {
+    queueTimeout = null;
     void processQueue();
-  }, QUEUE_DELAY_MS);
+  }, delayMs);
 }
 
-async function processQueue() {
+export async function processPendingSmsQueue(): Promise<void> {
+  if (queueTimeout) {
+    clearTimeout(queueTimeout);
+    queueTimeout = null;
+  }
+
+  await processQueue();
+}
+
+export function getQueueLength(): number {
+  return signalQueue.length;
+}
+
+async function processQueue(): Promise<void> {
+  if (activeQueueDrain) {
+    return activeQueueDrain;
+  }
+
+  activeQueueDrain = drainQueue().finally(() => {
+    activeQueueDrain = null;
+    if (signalQueue.length > 0 && !queueTimeout) {
+      startQueueTimer();
+    }
+  });
+
+  return activeQueueDrain;
+}
+
+async function drainQueue(): Promise<void> {
   const currentQueue = [...signalQueue];
   signalQueue = [];
-  queueTimeout = null;
+  queueStartedAt = signalQueue.length > 0 ? Date.now() : null;
 
-  console.log(`[TransactionQueue] Processing ${currentQueue.length} queued signals after 5s delay`);
+  if (currentQueue.length === 0) {
+    if (__DEV__) console.log('[TransactionQueue] Drain requested with empty queue');
+    return;
+  }
 
-  // We process them sequentially. 
-  // To properly pair self-transfers and avoid double notifications, 
-  // TransactionProcessors needs to be modified to handle the queue context,
-  // or we pass a flag to suppress immediate notifications.
-  
-  // For now, we pass `true` as the second argument to processSms/processNotification
-  // to indicate it's running from the queue and should handle notifications smartly.
+  if (__DEV__) console.log('[TransactionQueue] Processing batch', {
+    batchSize: currentQueue.length,
+  });
+
+  const results: ProcessorResult[] = [];
+  let resolveCount = 0;
+  let rejectCount = 0;
 
   for (const signal of currentQueue) {
     try {
+      let result: ProcessorResult | void;
       if (signal.type === 'sms') {
-        // @ts-ignore - we will add the second parameter
-        await processSms(signal.data, true);
+        result = await processSms(signal.data);
       } else {
-        // @ts-ignore
-        await processNotification(signal.data, true);
+        result = await processNotification(signal.data);
       }
+      if (result) results.push(result);
       signal.resolve();
-    } catch (e) {
-      console.error('[TransactionQueue] Error processing signal:', e);
-      signal.reject(e);
+      resolveCount++;
+    } catch (error) {
+      if (__DEV__) console.error('[TransactionQueue] Signal processing failed:', error);
+      signal.reject(error);
+      rejectCount++;
     }
   }
 
-  console.log(`[TransactionQueue] Finished processing batch`);
+  // Build final map: for each transactionId, keep the LATEST result
+  // (later results are more accurate — e.g. transfer upgrade overwrites income)
+  const finalResults = new Map<string, ProcessorResult>();
+  for (const res of results) {
+    if (!res.transactionId) continue;
+    if (res.skipped) {
+      // Skipped means it's a duplicate of something already in the map.
+      // Do not overwrite a real result with a skipped one.
+      if (!finalResults.has(res.transactionId)) {
+        finalResults.set(res.transactionId, res);
+      }
+      continue;
+    }
+    // Non-skipped always overwrites (upgrade wins over original).
+    finalResults.set(res.transactionId, res);
+  }
+
+  let saved = 0;
+  let upgraded = 0;
+  let skipped = 0;
+  for (const res of finalResults.values()) {
+    if (res.skipped) {
+      skipped++;
+      continue;
+    }
+    if (res.type === 'transfer') upgraded++;
+    else saved++;
+  }
+
+  if (__DEV__) {
+    console.log('[TransactionQueue] Batch complete', {
+      batchSize: currentQueue.length,
+      saved,
+      upgraded,
+      skipped,
+      notificationsFired: saved + upgraded,
+      resolveCount,
+      rejectCount,
+    });
+  }
+
+  await BatchNotifier(finalResults);
+}
+
+async function BatchNotifier(finalResults: Map<string, ProcessorResult>) {
+  for (const res of finalResults.values()) {
+    if (res.skipped) continue;
+    if (!res.transactionId || !res.note) continue;
+    try {
+      await showTransactionConfirmation(
+        res.transactionId,
+        res.type as any,
+        res.note,
+        res.amount,
+        res.accountLast4,
+        res.rawSms,
+        undefined,
+        undefined,
+        res.classificationOptions
+      );
+    } catch (error) {
+      if (__DEV__) console.error('[TransactionQueue] Notification failed (non-critical):', error);
+    }
+  }
 }

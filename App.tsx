@@ -566,7 +566,10 @@ function App() {
                 ) : showSignup ? (
                   <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
                 ) : (
-                  <LoginScreen onNavigateToSignup={() => setShowSignup(true)} />
+                  <LoginScreen
+                    onNavigateToSignup={() => setShowSignup(true)}
+                    onAuthenticated={retryStartup}
+                  />
                 )}
               </NavigationContainer>
             </ErrorBoundary>

@@ -8,7 +8,8 @@ import HapticFeedback from 'react-native-haptic-feedback';
 import { supabase, deleteTransaction, updateTransaction } from '../../lib/core';
 import { BankAccount, Transaction, TransactionEvidence } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
-import { ScreenWrapper, Card, AppHeader, AppButton, EditTransactionModal, AppConfirmModal } from '../../components';
+import { ScreenWrapper, Card, AppHeader, AppButton, EditTransactionModal, AppConfirmModal, TransactionReminderModal } from '../../components';
+import { getStoredTransactionReminder, TransactionReminderData } from '../../components/modals/TransactionReminderModal';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import {
   getTransactionAmountPrefix,
@@ -407,6 +408,8 @@ export default function TransactionDetail({ route, navigation }: Props) {
   const [transactionEvidence, setTransactionEvidence] = useState<TransactionEvidence[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [isReminderModalVisible, setIsReminderModalVisible] = useState(false);
+  const [activeReminder, setActiveReminder] = useState<TransactionReminderData | null>(null);
 
   const [confirmDialog, setConfirmDialog] = useState<{
     visible: boolean;
@@ -517,11 +520,20 @@ export default function TransactionDetail({ route, navigation }: Props) {
     }
   }, [applyBankNameFromCache, transactionId]);
 
+  const loadReminderStatus = useCallback(async () => {
+    if (!transactionId) return;
+    const reminder = await getStoredTransactionReminder(transactionId);
+    if (isMountedRef.current) {
+      setActiveReminder(reminder);
+    }
+  }, [transactionId]);
+
   useEffect(() => {
     isMountedRef.current = true;
     loadTransaction();
+    loadReminderStatus();
     return () => { isMountedRef.current = false; };
-  }, [loadTransaction]);
+  }, [loadTransaction, loadReminderStatus]);
 
   const handleDelete = () => {
     if (!transaction) return;
@@ -1019,6 +1031,36 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
 
 
+        {/* Meetup Reminder Card */}
+        <Card style={{ marginTop: spacing.lg, padding: spacing.lg }}>
+          <View style={[styles.sectionHeader, { marginBottom: spacing.md }]}>
+            <MaterialCommunityIcons name="account-clock-outline" size={22} color={colors.text} />
+            <Text style={[typography.h3, { color: colors.text, marginLeft: spacing.sm }]}>
+              Meetup Reminder
+            </Text>
+          </View>
+          
+          {activeReminder ? (
+            <View style={{ marginBottom: spacing.md }}>
+              <Text style={[typography.body, { color: colors.text }]}>
+                Reminder set for {new Date(activeReminder.scheduledAt).toLocaleString('en-IN', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+          ) : (
+             <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md }]}>
+              We will remind you when you meet so you can ask for your money back!
+            </Text>
+          )}
+
+          <AppButton
+            title={activeReminder ? "Manage Reminder" : "🔔 Set Meetup Reminder"}
+            onPress={() => setIsReminderModalVisible(true)}
+            variant={activeReminder ? "secondary" : "primary"}
+            fullWidth
+            style={activeReminder ? {} : { backgroundColor: '#f59e0b', borderColor: '#f59e0b' }}
+          />
+        </Card>
+
         {/* Delete Button */}
         <AppButton
           title="Delete Transaction"
@@ -1034,6 +1076,15 @@ export default function TransactionDetail({ route, navigation }: Props) {
         transaction={transaction}
         onClose={() => setIsEditModalVisible(false)}
         onSave={handleSaveEdit}
+      />
+
+      <TransactionReminderModal
+        visible={isReminderModalVisible}
+        transactionId={transaction.id}
+        transactionAmount={Number(transaction.amount)}
+        transactionNote={getTransactionDisplayName(transaction) || 'Transaction'}
+        onClose={() => setIsReminderModalVisible(false)}
+        onReminderChanged={loadReminderStatus}
       />
 
       <AppConfirmModal

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,12 @@ import { ScreenWrapper, Card, AppButton, AppInput } from '../../components';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 
 const AUTH_ACTION_TIMEOUT_MS = 15000;
+const AUTH_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_SIGNUP_PASSWORD_STRENGTH = 3;
+const HAPTIC_DEBOUNCE_MS = 400;
+const LOGIN_FLAG_KEY = 'has_logged_in_before';
+const APP_USER_ID_KEY = 'app_user_id';
+const SESSION_EXPIRY_BUFFER_MS = 30 * 1000;
 
 const withAuthActionTimeout = async <T,>(promise: Promise<T>, label: string): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -27,14 +33,44 @@ const withAuthActionTimeout = async <T,>(promise: Promise<T>, label: string): Pr
     timeoutId = setTimeout(() => {
       reject(new Error(`${label} timed out. Please check your connection and try again.`));
     }, AUTH_ACTION_TIMEOUT_MS);
+    activeAuthActionTimeouts.add(timeoutId);
   });
 
   try {
     return await Promise.race([promise, timeoutPromise]);
   } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      activeAuthActionTimeouts.delete(timeoutId);
+    }
   }
 };
+
+const activeAuthActionTimeouts = new Set<ReturnType<typeof setTimeout>>();
+let lastHapticAt = 0;
+
+function triggerHaptic(pattern: Parameters<typeof HapticFeedback.trigger>[0]): void {
+  const now = Date.now();
+  if (now - lastHapticAt < HAPTIC_DEBOUNCE_MS) return;
+  lastHapticAt = now;
+  HapticFeedback.trigger(pattern, {
+    enableVibrateFallback: true,
+    ignoreAndroidSystemSettings: false,
+  });
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isValidEmail(value: string): boolean {
+  return AUTH_EMAIL_PATTERN.test(normalizeEmail(value));
+}
+
+function isValidPersistedSession(session: { user?: unknown; expires_at?: number | null } | null | undefined): boolean {
+  if (!session?.user || typeof session.expires_at !== 'number') return false;
+  return session.expires_at * 1000 > Date.now() + SESSION_EXPIRY_BUFFER_MS;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOGIN SCREEN
@@ -42,9 +78,10 @@ const withAuthActionTimeout = async <T,>(promise: Promise<T>, label: string): Pr
 
 interface LoginScreenProps {
   onNavigateToSignup: () => void;
+  onAuthenticated?: () => void;
 }
 
-export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
+export function LoginScreen({ onNavigateToSignup, onAuthenticated }: LoginScreenProps) {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -56,8 +93,8 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
 
   // Shake animation for error states
   const shakeAnim = useRef(new Animated.Value(0)).current;
-  const shake = () => {
-    HapticFeedback.trigger('notificationError', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+  const shake = useCallback(() => {
+    triggerHaptic('notificationError');
     Animated.sequence([
       Animated.timing(shakeAnim, { toValue: 10, duration: 60, useNativeDriver: true }),
       Animated.timing(shakeAnim, { toValue: -10, duration: 60, useNativeDriver: true }),
@@ -65,12 +102,13 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
       Animated.timing(shakeAnim, { toValue: -8, duration: 60, useNativeDriver: true }),
       Animated.timing(shakeAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
     ]).start();
-  };
+  }, [shakeAnim]);
 
   useEffect(() => {
+    let isMounted = true;
     (async () => {
       try {
-        const flag = await AsyncStorage.getItem('has_logged_in_before');
+        const flag = await AsyncStorage.getItem(LOGIN_FLAG_KEY);
         const rnBiometrics = new ReactNativeBiometrics();
         const { available } = await rnBiometrics.isSensorAvailable();
 
@@ -78,18 +116,23 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
         // since it can't log the user in without a password.
         const { data: { session } } = await supabase.auth.getSession();
 
-        setHasPreviousLogin(!!flag && !!session);
+        if (!isMounted) return;
         setBiometricAvailable(available);
+        setHasPreviousLogin(Boolean(flag && available && isValidPersistedSession(session)));
       } catch (err) {
         if (__DEV__) console.error('Failed to load biometric login state:', err);
+        if (!isMounted) return;
         setHasPreviousLogin(false);
         setBiometricAvailable(false);
       }
     })();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleBiometricLogin = async () => {
-    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+    triggerHaptic('impactLight');
     try {
       const rnBiometrics = new ReactNativeBiometrics();
       const { success } = await rnBiometrics.simplePrompt({
@@ -97,12 +140,18 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
         cancelButtonText: 'Use Password',
       });
       if (success) {
-        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        triggerHaptic('notificationSuccess');
         // Re-use existing Supabase session (persisted by the Supabase auth storage adapter)
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
+        const { data: { session } } = await withAuthActionTimeout(
+          supabase.auth.getSession(),
+          'Biometric session check',
+        );
+        if (isValidPersistedSession(session)) {
+          setHasPreviousLogin(true);
           Toast.show({ type: 'success', text1: 'Welcome Back', text2: 'Biometric login successful' });
+          onAuthenticated?.();
         } else {
+          setHasPreviousLogin(false);
           Toast.show({ type: 'info', text1: 'Session Expired', text2: 'Please login with password' });
         }
       } else {
@@ -115,9 +164,16 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
   };
 
   const handleLogin = async () => {
-    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-    if (!email || !password) {
+    if (loading || googleLoading) return;
+    triggerHaptic('impactLight');
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail || !password) {
       setError('Please fill in all fields');
+      shake();
+      return;
+    }
+    if (!isValidEmail(normalizedEmail)) {
+      setError('Please enter a valid email address');
       shake();
       return;
     }
@@ -128,7 +184,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
     try {
       const { data, error: authError } = await withAuthActionTimeout(
         supabase.auth.signInWithPassword({
-          email,
+          email: normalizedEmail,
           password,
         }),
         'Login',
@@ -144,9 +200,9 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
         });
       } else if (data.user) {
         // Save user ID + login flag for biometric quick login
-        await AsyncStorage.setItem('app_user_id', data.user.id);
-        await AsyncStorage.setItem('has_logged_in_before', '1');
-        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        await AsyncStorage.setItem(APP_USER_ID_KEY, data.user.id);
+        await AsyncStorage.setItem(LOGIN_FLAG_KEY, '1');
+        triggerHaptic('notificationSuccess');
         Toast.show({
           type: 'success',
           text1: 'Welcome Back',
@@ -168,7 +224,8 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
   };
 
   const handleGoogleSignIn = async () => {
-    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+    if (loading || googleLoading) return;
+    triggerHaptic('impactLight');
     setGoogleLoading(true);
     setError('');
 
@@ -188,9 +245,9 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
           text2: errorMessage,
         });
       } else if (data?.user) {
-        await AsyncStorage.setItem('app_user_id', data.user.id);
-        await AsyncStorage.setItem('has_logged_in_before', '1');
-        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        await AsyncStorage.setItem(APP_USER_ID_KEY, data.user.id);
+        await AsyncStorage.setItem(LOGIN_FLAG_KEY, '1');
+        triggerHaptic('notificationSuccess');
         Toast.show({
           type: 'success',
           text1: 'Welcome Back',
@@ -230,6 +287,9 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
                 { borderColor: colors.accent, borderRadius: borderRadius.md, marginBottom: spacing.md }
               ]}
               onPress={handleBiometricLogin}
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Quick login with biometrics"
             >
               <MaterialCommunityIcons name="fingerprint" size={22} color={colors.accent} />
               <Text style={[typography.body, { color: colors.accent, marginLeft: 8 }]}>
@@ -262,6 +322,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
             title="Login"
             onPress={handleLogin}
             loading={loading}
+            disabled={googleLoading}
             fullWidth
             style={{ marginTop: spacing.sm }}
           />
@@ -277,10 +338,15 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
           <GoogleSignInButton
             onPress={handleGoogleSignIn}
             loading={googleLoading}
+            disabled={loading}
             text="Sign in with Google"
           />
 
-          <TouchableOpacity onPress={onNavigateToSignup} style={{ marginTop: spacing.md }}>
+          <TouchableOpacity
+            onPress={onNavigateToSignup}
+            style={{ marginTop: spacing.md }}
+            accessibilityRole="button"
+            accessibilityLabel="Go to signup screen">
             <Text style={[typography.caption, { color: colors.accent, textAlign: 'center' }]}>
               Don't have an account? Sign up
             </Text>
@@ -315,8 +381,8 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
 
   // Shake animation
   const shakeAnim = useRef(new Animated.Value(0)).current;
-  const shake = () => {
-    HapticFeedback.trigger('notificationError', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+  const shake = useCallback(() => {
+    triggerHaptic('notificationError');
     Animated.sequence([
       Animated.timing(shakeAnim, { toValue: 10, duration: 60, useNativeDriver: true }),
       Animated.timing(shakeAnim, { toValue: -10, duration: 60, useNativeDriver: true }),
@@ -324,10 +390,10 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       Animated.timing(shakeAnim, { toValue: -8, duration: 60, useNativeDriver: true }),
       Animated.timing(shakeAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
     ]).start();
-  };
+  }, [shakeAnim]);
 
   // Password strength calculator
-  const getPasswordStrength = (pwd: string): { level: number; label: string; color: string } => {
+  const getPasswordStrength = useCallback((pwd: string): { level: number; label: string; color: string } => {
     if (!pwd) return { level: 0, label: '', color: 'transparent' };
     let score = 0;
     if (pwd.length >= 8) score++;
@@ -339,19 +405,27 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     if (score === 2) return { level: 2, label: 'Fair', color: '#f59e0b' };
     if (score === 3) return { level: 3, label: 'Good', color: '#3b82f6' };
     return { level: 4, label: 'Strong', color: '#10b981' };
-  };
-  const pwStrength = getPasswordStrength(password);
+  }, []);
+  const pwStrength = useMemo(() => getPasswordStrength(password), [getPasswordStrength, password]);
 
   const handleSignup = async () => {
-    HapticFeedback.trigger('impactLight', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+    if (loading || googleLoading) return;
+    triggerHaptic('impactLight');
     setEmailError('');
     setPasswordError('');
     setConfirmPasswordError('');
+    const normalizedEmail = normalizeEmail(email);
 
-    if (!email || !password || !confirmPassword) {
-      if (!email) setEmailError('Email is required');
+    if (!normalizedEmail || !password || !confirmPassword) {
+      if (!normalizedEmail) setEmailError('Email is required');
       if (!password) setPasswordError('Password is required');
       if (!confirmPassword) setConfirmPasswordError('Please confirm password');
+      shake();
+      return;
+    }
+
+    if (!isValidEmail(normalizedEmail)) {
+      setEmailError('Please enter a valid email address');
       shake();
       return;
     }
@@ -362,8 +436,8 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       return;
     }
 
-    if (password.length < 6) {
-      setPasswordError('Password must be at least 6 characters');
+    if (pwStrength.level < MIN_SIGNUP_PASSWORD_STRENGTH) {
+      setPasswordError('Use at least 8 characters with uppercase, number, or special character');
       shake();
       return;
     }
@@ -383,7 +457,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     try {
       const { data, error } = await withAuthActionTimeout(
         supabase.auth.signUp({
-          email,
+          email: normalizedEmail,
           password,
         }),
         'Signup',
@@ -398,9 +472,9 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
           text2: error.message,
         });
       } else if (data.user) {
-        await AsyncStorage.setItem('app_user_id', data.user.id);
-        await AsyncStorage.setItem('has_logged_in_before', '1');
-        HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
+        await AsyncStorage.setItem(APP_USER_ID_KEY, data.user.id);
+        await AsyncStorage.setItem(LOGIN_FLAG_KEY, '1');
+        triggerHaptic('notificationSuccess');
         Toast.show({
           type: 'success',
           text1: 'Account Created',
@@ -422,7 +496,10 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
   };
 
   const handleGoogleSignUp = async () => {
+    if (loading || googleLoading) return;
+    triggerHaptic('impactLight');
     if (!agreedToTerms) {
+      shake();
       Toast.show({
         type: 'error',
         text1: 'Terms Required',
@@ -448,9 +525,9 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
         });
       } else if (data?.user) {
         // Save user ID for background tasks
-        await AsyncStorage.setItem('app_user_id', data.user.id);
-        await AsyncStorage.setItem('has_logged_in_before', '1');
-        if (__DEV__) console.log('User ID saved for background tasks:', data.user.id);
+        await AsyncStorage.setItem(APP_USER_ID_KEY, data.user.id);
+        await AsyncStorage.setItem(LOGIN_FLAG_KEY, '1');
+        triggerHaptic('notificationSuccess');
 
         Toast.show({
           type: 'success',
@@ -537,7 +614,11 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
           <View style={[styles.checkboxContainer, { marginBottom: spacing.md }]}>
             <TouchableOpacity
               style={[styles.checkbox, { borderColor: colors.accent, borderRadius: borderRadius.sm }]}
-              onPress={() => setAgreedToTerms(!agreedToTerms)}>
+              onPress={() => setAgreedToTerms(!agreedToTerms)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: agreedToTerms }}
+              accessibilityLabel="Agree to Terms and Privacy Policy"
+              activeOpacity={0.7}>
               {agreedToTerms && <View style={[styles.checkboxChecked, { backgroundColor: colors.accent }]} />}
             </TouchableOpacity>
             <View style={styles.termsTextContainer}>
@@ -560,7 +641,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
             title="Sign Up"
             onPress={handleSignup}
             loading={loading}
-            disabled={!agreedToTerms}
+            disabled={!agreedToTerms || googleLoading}
             fullWidth
             style={{ marginBottom: spacing.sm }}
           />
@@ -576,11 +657,15 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
           <GoogleSignInButton
             onPress={handleGoogleSignUp}
             loading={googleLoading}
-            disabled={!agreedToTerms}
+            disabled={!agreedToTerms || loading}
             text="Sign up with Google"
           />
 
-          <TouchableOpacity onPress={onNavigateToLogin} style={{ marginTop: spacing.md }}>
+          <TouchableOpacity
+            onPress={onNavigateToLogin}
+            style={{ marginTop: spacing.md }}
+            accessibilityRole="button"
+            accessibilityLabel="Go to login screen">
             <Text style={[typography.caption, { color: colors.accent, textAlign: 'center' }]}>
               Already have an account? Login
             </Text>
@@ -617,25 +702,35 @@ interface GoogleSignInButtonProps {
 }
 
 function GoogleSignInButton({ onPress, loading, disabled, text }: GoogleSignInButtonProps) {
-  const { borderRadius } = useTheme();
+  const { colors, typography, borderRadius } = useTheme();
   
   return (
     <TouchableOpacity
       style={[
         styles.googleButton,
-        { borderRadius: borderRadius.md, height: 48 },
+        {
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          height: 48,
+        },
         disabled && styles.googleButtonDisabled,
       ]}
       onPress={onPress}
-      disabled={loading || disabled}>
+      disabled={loading || disabled}
+      accessibilityRole="button"
+      accessibilityLabel={text}
+      accessibilityState={{ disabled: Boolean(loading || disabled), busy: loading }}>
       {loading ? (
-        <ActivityIndicator color="#111" />
+        <ActivityIndicator color={colors.accent} />
       ) : (
         <>
-          <View style={styles.googleIconContainer}>
+          <View style={[styles.googleIconContainer, { backgroundColor: colors.background }]}>
             <Text style={styles.googleIcon}>G</Text>
           </View>
-          <Text style={styles.googleButtonText}>{text}</Text>
+          <Text style={[styles.googleButtonText, typography.bodyBold, { color: colors.text }]}>
+            {text}
+          </Text>
         </>
       )}
     </TouchableOpacity>
@@ -663,7 +758,10 @@ function LegalModal({ visible, onClose, title, content }: LegalModalProps) {
           <Text style={[typography.h2, { color: colors.text, marginBottom: spacing.md }]}>
             {title}
           </Text>
-          <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={true}>
+          <ScrollView
+            style={styles.modalContent}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={true}>
             <Text style={[typography.caption, { color: colors.subtext, lineHeight: 22 }]}>
               {content}
             </Text>
@@ -746,9 +844,7 @@ const styles = StyleSheet.create({
     height: 1,
   },
   googleButton: {
-    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#ffffff',
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
@@ -756,12 +852,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   googleButtonDisabled: {
-    backgroundColor: '#cccccc',
-    borderColor: '#cccccc',
     opacity: 0.6,
   },
   googleIconContainer: {
-    backgroundColor: '#fff',
     borderRadius: 50,
     width: 20,
     height: 20,
@@ -775,7 +868,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   googleButtonText: {
-    color: '#111111',
     fontSize: 15,
     fontWeight: '600',
   },

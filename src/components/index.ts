@@ -18,3 +18,4 @@ export { default as EditTransactionModal } from './modals/EditTransactionModal';
 export { default as MapPickerModal } from './modals/MapPickerModal';
 export { default as PermissionPrompt } from './modals/PermissionPrompt';
 export { default as QuickAddModal } from './modals/QuickAddModal';
+export { default as TransactionReminderModal } from './modals/TransactionReminderModal';

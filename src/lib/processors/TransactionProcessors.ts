@@ -10,8 +10,7 @@ import NetInfo from '@react-native-community/netinfo';
 import {
   isSpamMessage,
   showFinancialEventNotification,
-  showSmsFailedNotification,
-  showTransactionConfirmation
+  showSmsFailedNotification
 } from '../services/notifications';
 import { extractUpiIdFromText } from '../../utils/upi';
 import {
@@ -49,7 +48,7 @@ export interface SmsData {
   timestamp: number;
 }
 
-interface ParsedTransaction {
+export interface ParsedTransaction {
   amount: number;
   type: 'debit' | 'credit';
   reference?: string;
@@ -60,6 +59,20 @@ interface ParsedTransaction {
   accountLast4?: string;
   cardLast4?: string;
   upiId?: string;
+}
+
+export interface ProcessorResult {
+  transactionId: string | null;
+  type: string;
+  note: string;
+  amount: number;
+  accountLast4?: string;
+  rawSms?: string;
+  skipped: boolean;
+  classificationOptions?: {
+    classificationStatus?: 'manual_confirmed' | 'review_required' | 'ignored' | null;
+    classificationReason?: string | null;
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -79,6 +92,16 @@ const ALLOWED_PACKAGES = [
   'money.super.app', // Super.money
   'money.super.payments', // Super.money (current Play package)
   'com.spendsense', // Test notifications
+  // Bank apps - push notification capture
+  'com.kotak.mahindra.kotakbanking', // Kotak Bank
+  'com.snapwork.hdfc', // HDFC MobileBanking
+  'com.csam.icici.bank.imobile', // ICICI iMobile
+  'com.axis.mobile', // Axis Mobile
+  'com.sbi.SBIFreedomPlus', // SBI YONO
+  'com.idfcfirstbank.mobilebanking', // IDFC First Bank
+  'com.yesbank', // Yes Bank
+  'com.induslnd.mobilebanking', // IndusInd Bank
+  'com.fbl', // Federal Bank
 ];
 
 const PACKAGE_TO_SENDER: { [key: string]: string } = {
@@ -93,16 +116,28 @@ const PACKAGE_TO_SENDER: { [key: string]: string } = {
   'money.super.app': 'SUPERM',
   'money.super.payments': 'SUPERM',
   'com.spendsense': 'TEST',
+  'com.kotak.mahindra.kotakbanking': 'KOTAK',
+  'com.snapwork.hdfc': 'HDFC',
+  'com.csam.icici.bank.imobile': 'ICICIB',
+  'com.axis.mobile': 'AXISBK',
+  'com.sbi.SBIFreedomPlus': 'SBIINB',
+  'com.idfcfirstbank.mobilebanking': 'IDFCFB',
+  'com.yesbank': 'YESBNK',
+  'com.induslnd.mobilebanking': 'INDBNK',
+  'com.fbl': 'FEDBK',
 };
 
 const BANK_SENDERS = [
-  'HDFC', 'ICICI', 'SBI', 'AXIS', 'KOTAK', 'PNB', 
-  'SCBANK', 'YESBNK', 'INDBNK', 'UNIONB', 'UTKARSH', 'UTKSPR', 'UTKSFB', 'SFBL', 'BOB', 'SLCBNK'
+  'HDFC', 'ICICI', 'ICICIB', 'SBI', 'SBIINB', 'AXIS', 'AXISBK', 'KOTAK', 'PNB',
+  'SCBANK', 'YESBNK', 'INDBNK', 'IDFCFB', 'FEDBK', 'UNIONB', 'UTKARSH', 'UTKSPR', 'UTKSFB', 'SFBL', 'BOB', 'SLCBNK'
 ];
 
 const UPI_SENDERS = [
   'PAYTMB', 'GPAYID', 'PHONEPE', 'BHARTP', 'AMAZONP', 'WHATSAP',
-  'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED', 'SUPERM', 'TEST'
+  'MOBIKW', 'FREECHARGE', 'PAYZAPP', 'SLCEIT', 'SLICE', 'CRED', 'SUPERM', 'TEST',
+  // Investment platforms (SEBI-regulated, send fund transfer confirmations via SMS)
+  'INDDEM', 'INDMNY', 'GROWW', 'ZERODHA', 'KUVERA', 'FISDOM', 'ANGELB', 'UPSTOX',
+  'NSDL', 'BSEINV', 'MFUINV', 'CAMSINV', 'KARVY',
 ];
 
 const BLOCKED_SENDERS = ['TEST', 'TEST-SMS', 'DM-TEST', 'VM-TEST'];
@@ -193,12 +228,29 @@ function identifySource(sender: string, body = ''): 'bank' | 'upi' | 'unknown' {
   const upperBody = body.toUpperCase();
   if (BANK_SENDERS.some(bank => upperBody.includes(bank))) return 'bank';
 
+  // Fallback: if body mentions bank account/transfer keywords, treat as upi-like
+  // so parseTransaction() can attempt to parse it (investment platform payouts, etc.)
+  if (
+    /\b(?:account|a\/c|bank\s+account|registered\s+bank)\b/i.test(body) &&
+    /\b(?:transferred|credited|refund|payout|settlement|neft|imps|rtgs)\b/i.test(body)
+  ) {
+    if (__DEV__) console.log('[IdentifySource] Fallback: body matches bank-payout pattern, treating as upi');
+    return 'upi';
+  }
+
+  if (__DEV__ && hasAmount(body)) {
+    console.warn('[IdentifySource] Unknown sender with amount — check sender lists', {
+      senderPresent: Boolean(sender),
+    });
+  }
+
   return 'unknown';
 }
 
 function extractAccountLast4(body: string): string | undefined {
   const accountPatterns = [
     /(?:A\/?C|Acct|Account)\s*(?:ending\s*(?:with\s*)?|no\.?|number)?\s*[-:xX* ]*\s*(\d{3,5})/i,
+    /(?:credited|debited|deposited|transferred)\s+(?:to|from|into)\s+(?:your\s+)?(?:[A-Za-z]+\s+Bank\s+)?(?:A\/?C|Acct|Account\s*)?(?:x{1,}|\*{2,})\s*(\d{3,5})/i,
   ];
   for (const pattern of accountPatterns) {
     const match = body.match(pattern);
@@ -225,8 +277,8 @@ function isNumericUpiId(str: string): boolean {
 }
 
 function hasAmount(body: string): boolean {
-  return /(?:INR|Rs\.?|₹)\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body) ||
-    /(?:amount|amt|paid|debited|credited|received|deducted|spent|withdrawn|sent|transferred)\s*(?:of|:)?\s*(?:INR|Rs\.?|₹)?\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body);
+  return /(?:INR|Rs\.?:|Rs\.?|₹)\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body) ||
+    /(?:amount|amt|paid|debited|credited|received|deducted|spent|withdrawn|sent|transferred)\s*(?:of|:)?\s*(?:INR|Rs\.?:|Rs\.?|₹)?\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body);
 }
 
 function isNonTransactionalAmountMention(body: string): boolean {
@@ -243,10 +295,11 @@ function hasTransactionContext(body: string): boolean {
 
 function shouldAttemptTransactionParse(body: string): boolean {
   if (!hasAmount(body)) return false;
-  if (isNonTransactionalAmountMention(body)) return false;
 
   const hasCompletedAction = hasCompletedTransactionEvidence(body);
-  return hasCompletedAction || hasTransactionContext(body);
+  if (hasCompletedAction) return true;
+  if (isNonTransactionalAmountMention(body)) return false;
+  return hasTransactionContext(body);
 }
 
 function normalizeComparableText(value?: string | null): string {
@@ -653,16 +706,19 @@ function hashFromRedactedRawText(value: string): string | null {
 function parseTransaction(body: string, sender: string): ParsedTransaction | null {
   try {
     const source = identifySource(sender, body);
-    if (source === 'unknown') return null;
+    if (source === 'unknown') {
+      if (__DEV__) console.warn('[ParseTransaction] Skipped: source unknown — sender not in BANK/UPI lists');
+      return null;
+    }
 
     if (!shouldAttemptTransactionParse(body)) return null;
 
     // Extract amount
     const amountPatterns = [
-      /^(?:INR|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:INR|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:amount|amt)[\s:]*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:debited|credited|paid|received|deducted|spent|withdrawn|sent|transferred)[\s:]*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
+      /^(?:INR|Rs\.?:|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
+      /(?:INR|Rs\.?:|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
+      /(?:amount|amt)[\s:]*(?:INR|Rs\.?:|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
+      /(?:debited|credited|paid|received|deducted|spent|withdrawn|sent|transferred)[\s:]*(?:INR|Rs\.?:|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
     ];
 
     let amount = 0;
@@ -675,24 +731,44 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     }
     if (amount === 0) return null;
 
-    // Determine type
-    const isPaidToYou = /paid\s+(?:to\s+)?you/i.test(body);
-    const isCredit = isPaidToYou || 
-                     /you'?ve\s+got/i.test(body) ||
-                     /credited|received|deposited|refund|added|cr\.?\s/i.test(body);
-    const isDebit = /debited|deducted|spent|withdrawn|purchase|purchased|sent|dr\.?\s/i.test(body) ||
-                    /\bpayment\s+(?:of\s+)?(?:INR|Rs\.?|₹)?\s*[0-9,]+(?:\.\d{1,2})?\s+(?:made|successful|completed|done)\b/i.test(body) ||
-                    (!isCredit && /paid/i.test(body));
+    // Special case: "transferred to your account" = credit (incoming)
+    const isTransferredToAccount = /transferred\s+to\s+(?:your\s+)?(?:account|a\/c|bank)/i.test(body);
 
-    if (!isCredit && !isDebit) return null;
-    
+    // Priority 1: Explicit debit keywords (strongest signal)
     let type: 'debit' | 'credit';
-    if (/\bdebited\b|\bdr\.?\s/i.test(body)) {
+    if (/\bdebited\b/i.test(body) || /\bdr\.?\s/i.test(body) || /\bdeducted\b/i.test(body)) {
       type = 'debit';
-    } else if (/\bcredited\b|\bcr\.?\s/i.test(body)) {
+    }
+    // Priority 2: Explicit credit keywords
+    else if (/\bcredited\b/i.test(body) || /\bcr\.?\s/i.test(body)) {
       type = 'credit';
-    } else {
-      type = isCredit ? 'credit' : isDebit ? 'debit' : 'debit';
+    }
+    // Priority 3: Semantic credit signals
+    else if (
+      /paid\s+(?:to\s+)?you/i.test(body) ||
+      /you'?ve\s+got/i.test(body) ||
+      /\breceived\b/i.test(body) ||
+      /\bdeposited\b/i.test(body) ||
+      /\brefund\b/i.test(body) ||
+      isTransferredToAccount
+    ) {
+      type = 'credit';
+    }
+    // Priority 4: Semantic debit signals
+    else if (
+      /\bspent\b/i.test(body) ||
+      /\bwithdrawn\b/i.test(body) ||
+      /\bpurchased?\b/i.test(body) ||
+      /\bsent\b/i.test(body) ||
+      (/\btransferred\b/i.test(body) && !isTransferredToAccount) ||
+      /\bpayment\s+(?:of\s+)?(?:INR|Rs\.?:|Rs\.?|₹)?\s*[0-9,]+(?:\.\d{1,2})?\s+(?:made|successful|completed|done)\b/i.test(body) ||
+      /\bpaid\b/i.test(body)
+    ) {
+      type = 'debit';
+    }
+    // Priority 5: Cannot determine
+    else {
+      return null;
     }
 
     // Extract reference
@@ -752,6 +828,17 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
   }
 }
 
+export function dryRunParseTransaction(body: string, sender: string): {
+  parsed: ParsedTransaction | null;
+  source: 'bank' | 'upi' | 'unknown';
+  wouldAttemptParse: boolean;
+} {
+  const source = identifySource(sender, body);
+  const wouldAttemptParse = source !== 'unknown' && shouldAttemptTransactionParse(body);
+  const parsed = wouldAttemptParse ? parseTransaction(body, sender) : null;
+  return { parsed, source, wouldAttemptParse };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATABASE OPERATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -773,7 +860,7 @@ async function checkForDuplicates(
     if (referenceNumber) {
       const { data: referenceData, error: referenceError } = await supabase
         .from('transactions')
-        .select('*')
+        .select('id, type, account_id, account_last4, sms_source, reference_number, raw_sms, note, category, from_account_id, to_account_id')
         .eq('user_id', userId)
         .eq('amount', amount)
         .eq('type', type)
@@ -787,7 +874,7 @@ async function checkForDuplicates(
     } else if (rawText) {
       const { data: rawData, error: rawError } = await supabase
         .from('transactions')
-        .select('*')
+        .select('id, type, account_id, account_last4, sms_source, reference_number, raw_sms, note, category, from_account_id, to_account_id')
         .eq('user_id', userId)
         .eq('amount', amount)
         .eq('type', type)
@@ -804,7 +891,7 @@ async function checkForDuplicates(
     // First check for very recent duplicates (within 1 minute) - these should always be skipped
     let recentQuery = supabase
       .from('transactions')
-      .select('*')
+      .select('id, type, account_id, account_last4, sms_source, reference_number, raw_sms, note, category, from_account_id, to_account_id')
       .eq('user_id', userId)
       .eq('amount', amount)
       .gte('created_at', oneMinuteAgo)
@@ -831,7 +918,7 @@ async function checkForDuplicates(
 
     const { data: mirrorData, error: mirrorError } = await supabase
       .from('transactions')
-      .select('*')
+      .select('id, type, account_id, account_last4, sms_source, reference_number, raw_sms, note, category, from_account_id, to_account_id')
       .eq('user_id', userId)
       .eq('amount', amount)
       .gte('created_at', oneMinuteAgo)
@@ -839,6 +926,16 @@ async function checkForDuplicates(
       .limit(5);
 
     if (!mirrorError && mirrorData && mirrorData.length > 0) {
+      // Cross-source same-type: bank SMS + UPI notification reporting same event
+      // Both sources flagged AND same transaction type = same event, not a transfer pair
+      const crossSourceDuplicate = mirrorData.find(existingTxn =>
+        existingTxn.type === type &&
+        Boolean(existingTxn.sms_source) &&
+        Boolean(smsSource) &&
+        existingTxn.sms_source !== smsSource
+      );
+      if (crossSourceDuplicate) return crossSourceDuplicate;
+
       const mirror = mirrorData.find(existingTxn => {
         const isOpposingMovement =
           existingTxn.type === 'transfer' ||
@@ -854,7 +951,7 @@ async function checkForDuplicates(
     // Then check for older duplicates (within 5 minutes) - but be less aggressive
     let query = supabase
       .from('transactions')
-      .select('*')
+      .select('id, type, account_id, account_last4, sms_source, reference_number, raw_sms, note, category, from_account_id, to_account_id')
       .eq('user_id', userId)
       .eq('amount', amount)
       .gte('created_at', fiveMinutesAgo)
@@ -878,7 +975,8 @@ async function checkForDuplicates(
         ? data[0]
         : data.find(tx => isSameUnreferencedTransaction(tx, rawText, merchant));
       if (existingTxn) {
-        // Additional check: if we have SMS source, make sure it matches
+        // smsSource differs = same transaction reported by two different sources
+        // returning existingTxn signals to caller: "this is a duplicate, skip it"
         if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
           return existingTxn;
         }
@@ -890,7 +988,7 @@ async function checkForDuplicates(
     if (!referenceNumber) {
       let fallbackQuery = supabase
         .from('transactions')
-        .select('*')
+        .select('id, type, account_id, account_last4, sms_source, reference_number, raw_sms, note, category, from_account_id, to_account_id')
         .eq('user_id', userId)
         .eq('amount', amount)
         .gte('created_at', fiveMinutesAgo)
@@ -906,6 +1004,8 @@ async function checkForDuplicates(
 
       if (fallbackData && fallbackData.length > 0) {
         const existingTxn = fallbackData[0];
+        // smsSource differs = same transaction reported by two different sources
+        // returning existingTxn signals to caller: "this is a duplicate, skip it"
         if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
           return existingTxn;
         }
@@ -1002,11 +1102,17 @@ async function getProcessorUserId(): Promise<string | null> {
       return null;
     }
     if (storedUserId && storedUserId !== user.id) {
+      if (__DEV__) console.warn('[ProcessorAuth] Stale user ID in AsyncStorage — clearing. SMS halted until re-login.', {
+        storedPresent: true,
+        sessionPresent: true,
+        mismatch: true,
+      });
       await AsyncStorage.removeItem('app_user_id');
       return null;
     }
     return user.id;
   } catch {
+    if (__DEV__) console.warn('[ProcessorAuth] getUser() failed — session may be expired.');
     return null;
   }
 }
@@ -1125,7 +1231,9 @@ async function resolvePaymentAppBankAccountSafely(input: {
 // SMS PROCESSOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export const processSms = async (taskData: SmsData) => {
+export const processSms = async (
+  taskData: SmsData
+): Promise<ProcessorResult | void> => {
   if (__DEV__) console.log('SMS Processor Started', {
     sender: summarizeSenderForLog(taskData.sender),
     bodyLength: taskData.body?.length ?? 0,
@@ -1192,6 +1300,14 @@ export const processSms = async (taskData: SmsData) => {
 
     // Check for duplicates
     let dbType = automaticPolicy.type;
+    const resultClassificationOptions = (
+      resultType: 'expense' | 'income' | 'transfer',
+      upgradedTransfer = false
+    ) => notificationClassificationOptions({
+      dbType: resultType,
+      policy: automaticPolicy,
+      upgradedTransfer,
+    });
     const redactedRawSms = createRedactedRawTextRecord({
       kind: 'sms',
       text: taskData.body,
@@ -1262,7 +1378,16 @@ export const processSms = async (taskData: SmsData) => {
           source: 'sms:transaction_upgraded',
           transactionId: duplicate.id,
         });
-        return;
+        return {
+          transactionId: duplicate.id,
+          type: 'transfer',
+          note: transferPatch.note || duplicate.note || 'Bank to Bank',
+          amount: parsed.amount,
+          accountLast4: confirmationAccountLast4,
+          rawSms: redactedRawSms,
+          skipped: false,
+          classificationOptions: resultClassificationOptions('transfer', true),
+        };
       } else if (
         (duplicate.type === 'income' && dbType === 'expense') ||
         (duplicate.type === 'expense' && dbType === 'income') ||
@@ -1297,7 +1422,15 @@ export const processSms = async (taskData: SmsData) => {
           confirmationAccountLast4 = duplicate.account_last4 || parsed.accountLast4;
         } else {
           if (__DEV__) console.error('Failed to upgrade transaction to transfer:', upgradeError);
-          return;
+          return {
+            transactionId: duplicate.id,
+            type: dbType,
+            note: duplicate.note || '',
+            amount: parsed.amount,
+            rawSms: redactedRawSms,
+            skipped: true,
+            classificationOptions: resultClassificationOptions(dbType),
+          };
         }
       } else {
         if (__DEV__) console.log('Duplicate transaction detected - skipping');
@@ -1313,7 +1446,16 @@ export const processSms = async (taskData: SmsData) => {
           routeDecision: 'duplicate',
           eventId: duplicate.id || null,
         }));
-        return;
+        return {
+          transactionId: duplicate.id,
+          type: dbType,
+          note: duplicate.note || '',
+          amount: parsed.amount,
+          accountLast4: confirmationAccountLast4,
+          rawSms: redactedRawSms,
+          skipped: true,
+          classificationOptions: resultClassificationOptions(dbType),
+        };
       }
     }
     if (dbType === 'transfer' && !currentTransferPatch) {
@@ -1429,7 +1571,15 @@ export const processSms = async (taskData: SmsData) => {
     } catch (error) {
       if (isDuplicateInsertError(error)) {
         if (__DEV__) console.log('Duplicate transaction detected by database - skipping');
-        return;
+        return {
+          transactionId: null,
+          type: dbType,
+          note: transactionNote,
+          amount: parsed.amount,
+          rawSms: redactedRawSms,
+          skipped: true,
+          classificationOptions: resultClassificationOptions(dbType, isUpgradedTransfer),
+        };
       }
 
       // Network call failed unexpectedly — queue offline
@@ -1478,27 +1628,6 @@ export const processSms = async (taskData: SmsData) => {
         transactionId,
         timestamp: taskData.timestamp,
       }, debugDetails);
-
-      try {
-        await showTransactionConfirmation(
-          transactionId,
-          dbType,
-          transactionNote,
-          parsed.amount,
-          confirmationAccountLast4,
-          redactedRawSms,
-          undefined,
-          undefined,
-          notificationClassificationOptions({
-            dbType,
-            policy: automaticPolicy,
-            upgradedTransfer: isUpgradedTransfer,
-          })
-        );
-      } catch (notificationError) {
-        if (__DEV__) console.error('Failed to show transaction notification (non-critical):', notificationError);
-        // Don't fail the whole operation for notification issues
-      }
     }
 
     // Log success - this should not fail the whole operation
@@ -1507,6 +1636,17 @@ export const processSms = async (taskData: SmsData) => {
     } catch {
       // Swallow logging errors - they're not critical
     }
+
+    return {
+      transactionId,
+      type: dbType,
+      note: transactionNote,
+      amount: parsed.amount,
+      accountLast4: confirmationAccountLast4,
+      rawSms: redactedRawSms,
+      skipped: false,
+      classificationOptions: resultClassificationOptions(dbType, isUpgradedTransfer),
+    };
   } catch (error) {
     if (__DEV__) console.error('Error in SMS processor:', error);
   }
@@ -1516,7 +1656,9 @@ export const processSms = async (taskData: SmsData) => {
 // NOTIFICATION PROCESSOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export const processNotification = async (taskData: any) => {
+export const processNotification = async (
+  taskData: any
+): Promise<ProcessorResult | void> => {
   if (__DEV__) console.log('🔔 Notification Processor Started:', {
     payloadLength: getNotificationPayloadLength(taskData),
   });
@@ -1581,7 +1723,7 @@ export const processNotification = async (taskData: any) => {
         : null,
     });
 
-    // Non-transaction filter
+    // Non-transaction filter (moved after WhatsApp check, applied post-parse)
     const NON_TRANSACTION_PATTERNS = [
       /emi\s+of\s+(?:INR|Rs\.?|₹)\s*[0-9,]+.*(?:is\s+)?due/i,
       /(?:INR|Rs\.?|₹)\s*[0-9,]+.*(?:is\s+)?due\s+on/i,
@@ -1595,43 +1737,73 @@ export const processNotification = async (taskData: any) => {
       // Promotional/Cashback/Offer messages
       /cashback\s+on/i,
       /get\s+(?:INR|Rs\.?|₹)\s*[0-9,]+\s+cashback/i,
-      /(?:offer|deal|discount|sale|promo)/i,
-      /use\s+code\s+[A-Z0-9]+/i,
+      /(?:exclusive\s+offer|limited\s+offer|special\s+offer|offer\s+valid|offer\s+expires)/i,
+      /(?:use\s+code\s+[A-Z0-9]+|apply\s+coupon|promo\s+code)/i,
+      /(?:get\s+flat|flat\s+\d+%\s+off|upto\s+\d+%\s+off)/i,
       /(?:plus|&)\s+(?:assured|get|win)/i,
       /pay\s+now\s*[.!]?\s*$/i,
       /(?:limited|exclusive)\s+(?:offer|deal)/i,
       /(?:save|earn|win)\s+(?:upto|up to)\s+(?:INR|Rs\.?|₹)/i,
     ];
-    
-    if (NON_TRANSACTION_PATTERNS.some(pattern => pattern.test(combinedText))) {
-      if (__DEV__) console.log('⚠️ Reminder notification - skipping');
-      return;
-    }
 
     // WhatsApp strict validation
     if (notif.app === 'com.whatsapp') {
       const textLower = combinedText.toLowerCase();
+
+      // Pattern A: UPI P2P transfers — needs payment reference
       const hasUPIReference = textLower.includes('upi ref') || 
                              textLower.includes('upi id') || 
                              textLower.includes('transaction id') ||
                              textLower.includes('utr');
       const hasPaymentKeyword = textLower.includes('payment') || 
                                textLower.includes('₹') || 
-                               textLower.includes('rs.');
-      
-      if (!hasUPIReference || !hasPaymentKeyword) {
-        if (__DEV__) console.log('⚠️ WhatsApp notification not a valid payment - skipping');
+                               textLower.includes('rs.') ||
+                               textLower.includes('rs:');
+      const isUpiTransfer = hasUPIReference && hasPaymentKeyword;
+
+      // Pattern B: SEBI-mandated investment payouts — needs amount + account + transfer keyword
+      const hasAmountB = /(?:rs\.?:|rs\.|inr|₹)\s*[\d,]+/i.test(combinedText);
+      const hasAccountRef = textLower.includes('account no') ||
+                           textLower.includes('account number') ||
+                           textLower.includes('account linked') ||
+                           textLower.includes('bank account') ||
+                           textLower.includes('registered bank');
+      const hasTransferKeyword = textLower.includes('transferred') ||
+                                textLower.includes('credited') ||
+                                textLower.includes('payout') ||
+                                textLower.includes('settlement') ||
+                                textLower.includes('refund');
+      const isInvestmentPayout = hasAmountB && hasAccountRef && hasTransferKeyword;
+
+      if (!isUpiTransfer && !isInvestmentPayout) {
+        if (__DEV__) {
+          console.log('WhatsApp notification not a valid payment - skipping');
+          if (hasAmount(combinedText)) {
+            console.warn('[WhatsApp] Filtered message had amount — may be a missed transaction', {
+              textLength: combinedText.length,
+            });
+          }
+        }
         return;
       }
     }
 
     const parsed = parseTransaction(combinedText, sender);
     if (!parsed) {
-      if (__DEV__) console.log('Notification not recognized as financial transaction');
+      const promoFiltered = NON_TRANSACTION_PATTERNS.some(pattern => pattern.test(combinedText));
+      const reasonCode = promoFiltered
+        ? 'promo_filtered'
+        : balanceChanged
+          ? 'balance_signal_recorded'
+          : 'parse_failed';
+      if (__DEV__) console.log(promoFiltered
+        ? '⚠️ Promo/reminder notification - skipping'
+        : 'Notification not recognized as financial transaction'
+      );
       eventDebugLog('[AutoTransactionDebug] Route decision', {
         sourceKind: 'notification',
         routeDecision: balanceChanged ? 'balance_only' : 'ignored',
-        reasonCode: balanceChanged ? 'balance_signal_recorded' : 'parse_failed',
+        reasonCode,
       });
       if (balanceChanged) {
         void showFinancialEventNotification({
@@ -1640,7 +1812,7 @@ export const processNotification = async (taskData: any) => {
           eventId: `${notif.time || Date.now()}`,
         });
       }
-      if (hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText)) {
+      if (!promoFiltered && hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText)) {
         recordNotificationEvidenceWithDebug({
           text: combinedText,
           sourcePackage: notif.app,
@@ -1650,7 +1822,7 @@ export const processNotification = async (taskData: any) => {
         }, {
           sourceKind: 'notification',
           routeDecision: 'ignored',
-          reasonCode: 'parse_failed',
+          reasonCode,
         });
 
         await showSmsFailedNotification(combinedText, sender, 'Parse failed', {
@@ -1674,6 +1846,14 @@ export const processNotification = async (taskData: any) => {
 
     // Check for duplicates
     let dbType = automaticPolicy.type;
+    const resultClassificationOptions = (
+      resultType: 'expense' | 'income' | 'transfer',
+      upgradedTransfer = false
+    ) => notificationClassificationOptions({
+      dbType: resultType,
+      policy: automaticPolicy,
+      upgradedTransfer,
+    });
     const senderLabel = notif.app || parsed.rawSender;
     const redactedRawNotification = createRedactedRawTextRecord({
       kind: 'notification',
@@ -1754,7 +1934,16 @@ export const processNotification = async (taskData: any) => {
           source: 'notification:transaction_upgraded',
           transactionId: duplicate.id,
         });
-        return;
+        return {
+          transactionId: duplicate.id,
+          type: 'transfer',
+          note: transferPatch.note || duplicate.note || 'Bank to Bank',
+          amount: parsed.amount,
+          accountLast4: matchedAccountLast4,
+          rawSms: redactedRawNotification,
+          skipped: false,
+          classificationOptions: resultClassificationOptions('transfer', true),
+        };
       } else if (
         (duplicate.type === 'income' && dbType === 'expense') ||
         (duplicate.type === 'expense' && dbType === 'income') ||
@@ -1787,7 +1976,15 @@ export const processNotification = async (taskData: any) => {
           dbType = 'transfer';
         } else {
           if (__DEV__) console.error('Failed to upgrade transaction to transfer:', upgradeError);
-          return;
+          return {
+            transactionId: duplicate.id,
+            type: dbType,
+            note: duplicate.note || '',
+            amount: parsed.amount,
+            rawSms: redactedRawNotification,
+            skipped: true,
+            classificationOptions: resultClassificationOptions(dbType),
+          };
         }
       } else {
         if (__DEV__) console.log('Duplicate transaction detected - skipping');
@@ -1804,7 +2001,16 @@ export const processNotification = async (taskData: any) => {
           routeDecision: 'duplicate',
           eventId: duplicate.id || null,
         }));
-        return;
+        return {
+          transactionId: duplicate.id,
+          type: dbType,
+          note: duplicate.note || '',
+          amount: parsed.amount,
+          accountLast4: matchedAccountLast4,
+          rawSms: redactedRawNotification,
+          skipped: true,
+          classificationOptions: resultClassificationOptions(dbType),
+        };
       }
     }
     if (dbType === 'transfer' && !currentTransferPatch) {
@@ -1919,7 +2125,16 @@ export const processNotification = async (taskData: any) => {
     } catch (error) {
       if (isDuplicateInsertError(error)) {
         if (__DEV__) console.log('Duplicate transaction detected by database - skipping');
-        return;
+        return {
+          transactionId: null,
+          type: dbType,
+          note: transactionNote,
+          amount: parsed.amount,
+          accountLast4: matchedAccountLast4,
+          rawSms: redactedRawNotification,
+          skipped: true,
+          classificationOptions: resultClassificationOptions(dbType, isUpgradedTransfer),
+        };
       }
 
       // Network call failed unexpectedly — queue offline
@@ -1969,27 +2184,6 @@ export const processNotification = async (taskData: any) => {
         transactionId,
         timestamp: notif.time || Date.now(),
       }, debugDetails);
-
-      try {
-        await showTransactionConfirmation(
-          transactionId,
-          dbType,
-          transactionNote,
-          parsed.amount,
-          parsed.accountLast4,
-          redactedRawNotification,
-          undefined,
-          undefined,
-          notificationClassificationOptions({
-            dbType,
-            policy: automaticPolicy,
-            upgradedTransfer: isUpgradedTransfer,
-          })
-        );
-      } catch (notificationError) {
-        if (__DEV__) console.error('Failed to show transaction notification (non-critical):', notificationError);
-        // Don't fail the whole operation for notification issues
-      }
     }
 
     // Log success - this should not fail the whole operation
@@ -1998,6 +2192,17 @@ export const processNotification = async (taskData: any) => {
     } catch {
       // Swallow logging errors - they're not critical
     }
+
+    return {
+      transactionId,
+      type: dbType,
+      note: transactionNote,
+      amount: parsed.amount,
+      accountLast4: parsed.accountLast4,
+      rawSms: redactedRawNotification,
+      skipped: false,
+      classificationOptions: resultClassificationOptions(dbType, isUpgradedTransfer),
+    };
   } catch (error) {
     if (__DEV__) console.error('Error in notification processor:', error);
   }

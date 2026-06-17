@@ -9,18 +9,19 @@
  * - Spam/promo filtering
  */
 
-import notifee, { AndroidImportance, AuthorizationStatus, EventType } from '@notifee/react-native';
+import notifee, {
+  AndroidImportance,
+  AuthorizationStatus,
+  EventType,
+  type Event as NotifeeEvent,
+} from '@notifee/react-native';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
 import NetInfo from '@react-native-community/netinfo';
 import { deleteTransaction, supabase } from '../core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { parseSMS, isTransactionSMS, ParsedTransaction } from './smsParser';
-import { getBankAccounts, updateBankAccount } from '../database/financial';
-import {
-  getTransactionDisplayName,
-  inferTransactionCategory,
-} from '../../utils/transactionPresentation';
-import { BankAccount, Transaction } from '../../types';
+import { enqueueSms } from '../processors/TransactionQueue';
+import { parseSMS, ParsedTransaction } from './smsParser';
+import { Transaction } from '../../types';
 import { CACHE_KEYS, updateCache } from './cache';
 import { emitFinanceDataChanged } from './dataEvents';
 import {
@@ -29,8 +30,6 @@ import {
   sanitizeDebugBugReportEntry,
   RedactedRawTextKind,
 } from '../privacy/rawText';
-import { recordBalanceSignalForUser } from './balanceSignalRecorder';
-import { recordSmsTransactionEvidence } from './runtimeTransactionEvidence';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   USER_QUEUE_ACTIONS,
@@ -63,6 +62,34 @@ interface FinancialEventNotificationInput {
   eventId?: string | null;
 }
 
+type NotificationData = Record<string, string | number | object | undefined>;
+
+interface NotificationEventDetail {
+  notification?: {
+    id?: string;
+    data?: NotificationData;
+  };
+  pressAction?: {
+    id: string;
+  };
+}
+
+interface SafeNotifeeEvent {
+  type?: EventType;
+  detail?: NotificationEventDetail;
+}
+
+const CHANNELS = {
+  SMS_PARSED: 'sms_parsed',
+  SMS_FAILED: 'sms_failed',
+} as const;
+
+const DEBUG_BUG_REPORTS_KEY = 'debug_bug_reports';
+const MAX_DEBUG_BUG_REPORTS = 50;
+const DEBUG_BUG_REPORT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const CONFIRMATION_DEBOUNCE_TTL_MS = 5 * 60 * 1000;
+const CONFIRMATION_DEBOUNCE_CLEANUP_MS = 60 * 1000;
+
 function safeErrorCode(error: unknown): string {
   if (!error || typeof error !== 'object') return 'unknown_error';
   const code = (error as { code?: unknown; name?: unknown; status?: unknown }).code
@@ -86,6 +113,15 @@ function logInfo(..._details: unknown[]): void {
 function safeLast4(value?: string | null): string | undefined {
   const digits = value?.replace(/\D/g, '') || '';
   return digits.length >= 4 ? digits.slice(-4) : undefined;
+}
+
+function safeSenderLabel(value?: string | null): string {
+  const trimmed = value?.trim();
+  if (!trimmed || /\d{7,}/.test(trimmed)) return 'Sender redacted';
+  return trimmed
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48) || 'Sender redacted';
 }
 
 function formatSafeAmount(amount?: number | null): string {
@@ -115,19 +151,14 @@ async function getNotificationPermissionStatus(): Promise<{
   blocked: boolean;
 }> {
   try {
-    const getter = (notifee as any).getNotificationSettings;
-    if (typeof getter !== 'function') {
-      return { label: 'unknown', blocked: false };
-    }
-
-    const settings = await getter.call(notifee);
+    const settings = await notifee.getNotificationSettings();
     const status = settings?.authorizationStatus;
     if (status === AuthorizationStatus.DENIED) return { label: 'denied', blocked: true };
     if (status === AuthorizationStatus.AUTHORIZED) return { label: 'authorized', blocked: false };
     if (status === AuthorizationStatus.PROVISIONAL) return { label: 'provisional', blocked: false };
     return { label: String(status ?? 'unknown'), blocked: false };
   } catch (error) {
-    console.warn('[SpendSenseNotification] Permission status unavailable', {
+    if (__DEV__) console.warn('[SpendSenseNotification] Permission status unavailable', {
       errorCode: safeErrorCode(error),
     });
     return { label: 'unknown_error', blocked: false };
@@ -175,7 +206,7 @@ export async function showFinancialEventNotification(
       title: routeTitle(input.route),
       body: routeBody(input),
       android: {
-        channelId: 'sms_parsed',
+        channelId: CHANNELS.SMS_PARSED,
         importance: AndroidImportance.DEFAULT,
         pressAction: { id: 'default' },
       },
@@ -192,7 +223,7 @@ export async function showFinancialEventNotification(
     });
     return 'sent';
   } catch (error) {
-    console.warn('[SpendSenseNotification] Display failed', {
+    if (__DEV__) console.warn('[SpendSenseNotification] Display failed', {
       route: input.route,
       errorCode: safeErrorCode(error),
     });
@@ -211,8 +242,9 @@ const SPAM_KEYWORDS_LIST = [
   'offer ends', 'apply now', 'pre-approved', 'pre approved', 'limited time',
   'hurry', 'claim now', 'exclusive offer', 'congratulations',
   'you are eligible', 'instant approval', 'no documents', 'easy emi',
-  'cashback offer', 'special offer', 'offer expire', 'expire',
-  'spend limit', 'view offer', 'namaste', 'team bank',
+  'cashback offer', 'special offer', 'offer expire', 'offer expired',
+  'deal expires', 'code expires', 'voucher expir',
+  'spend limit', 'view offer',
   // EMI / Bill reminders (NOT actual transactions)
   'emi due', 'emi is due', 'is due on', 'due on ', 'payment due',
   'bill due', 'pay now with', 'overdue', 'reminder:', 'upcoming emi',
@@ -234,11 +266,24 @@ const SPAM_REGEX = new RegExp(
   'i'
 );
 
+const SPAM_KEYWORD_REGEXES = SPAM_KEYWORDS_LIST.map(keyword =>
+  new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+);
+
 /**
  * Check if SMS/notification is spam/promo — O(1) via pre-compiled SPAM_REGEX
  */
 export function isSpamMessage(text: string): boolean {
   return SPAM_REGEX.test(text);
+}
+
+export function getSpamConfidence(text: string): number {
+  if (!text.trim()) return 0;
+  const matches = SPAM_KEYWORD_REGEXES.reduce(
+    (count, pattern) => count + (pattern.test(text) ? 1 : 0),
+    0
+  );
+  return Math.min(matches / Math.max(SPAM_KEYWORD_REGEXES.length, 1), 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -251,14 +296,14 @@ export function isSpamMessage(text: string): boolean {
 export async function createTransactionChannels() {
   try {
     await notifee.createChannel({
-      id: 'sms_parsed',
+      id: CHANNELS.SMS_PARSED,
       name: 'Transaction Confirmations',
       importance: AndroidImportance.DEFAULT,
       description: 'Notifications for auto-detected transactions',
     });
 
     await notifee.createChannel({
-      id: 'sms_failed',
+      id: CHANNELS.SMS_FAILED,
       name: 'SMS Parsing Failures',
       importance: AndroidImportance.HIGH,
       description: 'Notifications when SMS cannot be parsed',
@@ -277,7 +322,18 @@ export async function createTransactionChannels() {
 /**
  * Show confirmation notification for successfully parsed transaction
  */
-const confirmationDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
+const confirmationDebounceMap = new Map<string, {
+  timeoutId: ReturnType<typeof setTimeout>;
+  createdAt: number;
+}>();
+
+function clearStaleConfirmationDebounces(now = Date.now()): void {
+  confirmationDebounceMap.forEach((entry, transactionId) => {
+    if (now - entry.createdAt <= CONFIRMATION_DEBOUNCE_TTL_MS) return;
+    clearTimeout(entry.timeoutId);
+    confirmationDebounceMap.delete(transactionId);
+  });
+}
 
 export async function showTransactionConfirmation(
   transactionId: string,
@@ -293,21 +349,29 @@ export async function showTransactionConfirmation(
     classificationReason?: string | null;
   }
 ): Promise<void> {
+  clearStaleConfirmationDebounces();
+
   // Clear any pending notification for this transaction
-  const existingTimeout = confirmationDebounceMap.get(transactionId);
-  if (existingTimeout) {
-    clearTimeout(existingTimeout);
+  const existingEntry = confirmationDebounceMap.get(transactionId);
+  if (existingEntry) {
+    clearTimeout(existingEntry.timeoutId);
   }
 
   return new Promise<void>((resolve) => {
     const timeoutId = setTimeout(async () => {
       confirmationDebounceMap.delete(transactionId);
-      await executeShowTransactionConfirmation(
-        transactionId, type, _merchant, amount, accountName, rawSms, logicLog, sender, options
-      );
-      resolve();
+      try {
+        await executeShowTransactionConfirmation(
+          transactionId, type, _merchant, amount, accountName, rawSms, logicLog, sender, options
+        );
+      } finally {
+        resolve();
+      }
     }, 500);
-    confirmationDebounceMap.set(transactionId, timeoutId);
+    confirmationDebounceMap.set(transactionId, {
+      timeoutId,
+      createdAt: Date.now(),
+    });
   });
 }
 
@@ -343,8 +407,8 @@ async function executeShowTransactionConfirmation(
 
     await createTransactionChannels();
     logInfo('[SpendSenseNotification] Channel ready', {
-      channelId: 'sms_parsed',
-      route: 'stored_transaction',
+        channelId: 'sms_parsed',
+        route: 'stored_transaction',
     });
 
     let titleText = 'Transaction saved';
@@ -383,7 +447,7 @@ async function executeShowTransactionConfirmation(
       title: titleText,
       body: bodyText,
       android: {
-        channelId: 'sms_parsed',
+        channelId: CHANNELS.SMS_PARSED,
         importance: AndroidImportance.DEFAULT,
         pressAction: { id: 'default' },
         actions: [
@@ -414,6 +478,65 @@ async function executeShowTransactionConfirmation(
   }
 }
 
+async function removeTransactionFromLocalState(
+  transactionId: string,
+  source: string
+): Promise<void> {
+  await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+    current ? current.filter(tx => tx.id !== transactionId) : current
+  );
+  emitFinanceDataChanged({
+    areas: ['transactions', 'review'],
+    source,
+    transactionId,
+  });
+}
+
+let bugReportWriteQueue: Promise<void> = Promise.resolve();
+
+function parseDebugBugReports(value: string | null): Record<string, any>[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    if (__DEV__) console.warn('[SpendSenseNotification] Ignoring corrupt bug report cache', {
+      errorCode: safeErrorCode(error),
+    });
+    return [];
+  }
+}
+
+function isRecentBugReport(entry: Record<string, any>, now: number): boolean {
+  if (typeof entry.timestamp !== 'string') return true;
+  const timestamp = new Date(entry.timestamp).getTime();
+  if (!Number.isFinite(timestamp)) return false;
+  return now - timestamp < DEBUG_BUG_REPORT_MAX_AGE_MS;
+}
+
+async function appendDebugBugReport(entry: Record<string, any>): Promise<void> {
+  const write = bugReportWriteQueue.then(async () => {
+    const now = Date.now();
+    const currentLogsStr = await AsyncStorage.getItem(DEBUG_BUG_REPORTS_KEY);
+    const currentLogs = parseDebugBugReports(currentLogsStr).filter(log =>
+      isRecentBugReport(log, now)
+    );
+    const newLogs = [
+      sanitizeDebugBugReportEntry(entry),
+      ...currentLogs.slice(0, MAX_DEBUG_BUG_REPORTS - 1),
+    ];
+
+    await AsyncStorage.setItem(DEBUG_BUG_REPORTS_KEY, JSON.stringify(newLogs));
+  });
+
+  bugReportWriteQueue = write.catch(error => {
+    if (__DEV__) console.error('[SpendSenseNotification] Bug report write failed', {
+      errorCode: safeErrorCode(error),
+    });
+  });
+  return write;
+}
+
 /**
  * Show notification for failed SMS parsing
  */
@@ -441,9 +564,9 @@ export async function showSmsFailedNotification(
 
     await notifee.displayNotification({
       title: 'Transaction SMS Not Recognized',
-      body: `From: ${sender}\n${redactedRawText}`,
+      body: `From: ${safeSenderLabel(sender)}\n${redactedRawText}`,
       android: {
-        channelId: 'sms_failed',
+        channelId: CHANNELS.SMS_FAILED,
         importance: AndroidImportance.HIGH,
         pressAction: { id: 'default' },
         actions: [
@@ -474,21 +597,24 @@ export async function showSmsFailedNotification(
 /**
  * Handle background notification events (when app is closed/background)
  */
-export async function handleTransactionNotificationEvent(event: any): Promise<void> {
+export async function handleTransactionNotificationEvent(
+  event: SafeNotifeeEvent | NotifeeEvent
+): Promise<void> {
   const { type, detail } = event;
 
   logInfo('[Transaction Notification] Event received:', type);
 
   if (type === EventType.ACTION_PRESS) {
-    const { pressAction, notification } = detail;
+    const { pressAction, notification } = detail || {};
     const transactionId = notification?.data?.transactionId;
 
     logInfo('[Transaction Notification] Action pressed:', pressAction?.id);
     logInfo('[Transaction Notification] Transaction ID:', transactionId);
 
-    if (pressAction?.id === 'delete' && transactionId) {
+    if (pressAction?.id === 'delete' && typeof transactionId === 'string') {
       try {
         logInfo('Deleting transaction:', transactionId);
+        await removeTransactionFromLocalState(transactionId, 'notification:delete_requested');
 
         // OFFLINE RELIABILITY: check connectivity before hitting Supabase
         const netState = await NetInfo.fetch();
@@ -502,7 +628,7 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
           // Online — use shared deletion path so review state stays consistent
           await deleteTransaction(transactionId);
           logInfo('Transaction deleted successfully');
-          await notifee.cancelNotification(notification.id);
+          if (notification?.id) await notifee.cancelNotification(notification.id);
         } else {
           // Offline — queue for background sync, dismiss immediately for uninterrupted UX
           logInfo('Offline — queuing delete for background sync');
@@ -510,52 +636,60 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
             transactionId,
             _queued_at: new Date().toISOString(),
           });
-          await notifee.cancelNotification(notification.id);
+          if (notification?.id) await notifee.cancelNotification(notification.id);
           logInfo('Delete queued — notification dismissed');
         }
       } catch (error) {
-        console.error('Error in delete handler:', error);
+        emitFinanceDataChanged({
+          areas: ['transactions', 'review'],
+          source: 'notification:delete_failed',
+          transactionId,
+        });
+        if (__DEV__) console.error('Error in delete handler:', {
+          errorCode: safeErrorCode(error),
+        });
       }
     } else if (pressAction?.id === 'ok') {
-      await notifee.cancelNotification(notification.id);
+      if (notification?.id) await notifee.cancelNotification(notification.id);
       logInfo('Transaction confirmed by user');
     } else if (pressAction?.id === 'report_bug') {
       try {
         logInfo('Reporting bug for notification');
-        const rawSms = notification?.data?.rawSms || 'No raw SMS available';
-        const sender = notification?.data?.sender || 'Unknown Sender';
-        const logicLog = notification?.data?.logicLog || 'No logic log available';
+        const rawSms = String(notification?.data?.rawSms || 'No raw SMS available');
+        const sender = String(notification?.data?.sender || 'Unknown Sender');
+        const logicLog = String(notification?.data?.logicLog || 'No logic log available');
         const actionType = notification?.data?.action;
 
-        const currentLogsStr = await AsyncStorage.getItem('debug_bug_reports');
-        const currentLogs = currentLogsStr ? JSON.parse(currentLogsStr) : [];
-
-        currentLogs.unshift(sanitizeDebugBugReportEntry({
+        await appendDebugBugReport({
           id: Date.now().toString(),
           timestamp: new Date().toISOString(),
-          transactionId: transactionId || 'failed_parse',
-          type: actionType,
+          transactionId: typeof transactionId === 'string' ? transactionId : 'failed_parse',
+          type: typeof actionType === 'string' ? actionType : undefined,
           sender,
           rawSms,
-          rawSmsKind: notification?.data?.rawSmsKind,
-          source: notification?.data?.source,
-          app: notification?.data?.app,
+          rawSmsKind: typeof notification?.data?.rawSmsKind === 'string'
+            ? notification.data.rawSmsKind
+            : undefined,
+          source: typeof notification?.data?.source === 'string'
+            ? notification.data.source
+            : undefined,
+          app: typeof notification?.data?.app === 'string'
+            ? notification.data.app
+            : undefined,
           logicLog,
-        }));
-
-        if (currentLogs.length > 50) currentLogs.length = 50;
-
-        await AsyncStorage.setItem('debug_bug_reports', JSON.stringify(currentLogs));
-        await notifee.cancelNotification(notification.id);
+        });
+        if (notification?.id) await notifee.cancelNotification(notification.id);
         logInfo('Bug report saved successfully');
       } catch (error) {
-        console.error('Error saving bug report:', error);
+        if (__DEV__) console.error('Error saving bug report:', {
+          errorCode: safeErrorCode(error),
+        });
       }
     }
   }
 
   if (type === EventType.PRESS) {
-    const { notification } = detail;
+    const { notification } = detail || {};
     const transactionId = notification?.data?.transactionId;
     logInfo('[Transaction Notification] Notification pressed, ID:', transactionId);
     // TODO: Navigate to transaction detail screen — handled in foreground listener in App.tsx
@@ -569,7 +703,7 @@ export async function handleTransactionNotificationEvent(event: any): Promise<vo
 /**
  * Background event handler for Notifee — runs even when the app is closed
  */
-export async function onBackgroundEvent(event: any) {
+export async function onBackgroundEvent(event: SafeNotifeeEvent | NotifeeEvent) {
   const { type, detail } = event;
   logInfo('[Background] Notifee event received:', type);
 
@@ -591,7 +725,11 @@ export async function onBackgroundEvent(event: any) {
  * Call this inside a useEffect in the main App component
  */
 export function initializeForegroundListener() {
-  return notifee.onForegroundEvent(async (event) => {
+  const cleanupInterval = setInterval(
+    clearStaleConfirmationDebounces,
+    CONFIRMATION_DEBOUNCE_CLEANUP_MS
+  );
+  const unsubscribe = notifee.onForegroundEvent(async (event) => {
     const { type, detail } = event;
     logInfo('[Foreground] Notifee event received:', type);
 
@@ -602,6 +740,11 @@ export function initializeForegroundListener() {
       }
     }
   });
+
+  return () => {
+    clearInterval(cleanupInterval);
+    unsubscribe();
+  };
 }
 
 /**
@@ -628,216 +771,32 @@ export async function initializeBackgroundListeners() {
 // INTELLIGENT SMS PROCESSING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function recordLegacySmsBalanceSignalSafely(
-  userId: string,
-  smsText: string,
-  senderId: string
-): Promise<void> {
-  try {
-    const result = await recordBalanceSignalForUser({
-      userId,
-      text: smsText,
-      senderOrPackage: senderId,
-      sourceType: 'sms',
-      timestamp: Date.now(),
-    });
-
-    if (result.parsed.isBalanceSignal) {
-      logInfo('[BalanceSignal] Recorded legacy SMS balance signal', {
-        hash: result.parsed.redactedSource.hash,
-        snapshots: result.snapshots.length,
-        detectedCandidates: result.detectedCandidates.length,
-      });
-      if (
-        result.snapshots.length > 0 ||
-        result.detectedCandidates.length > 0 ||
-        result.debitCards.length > 0 ||
-        result.creditCardStatements.length > 0
-      ) {
-        emitFinanceDataChanged({
-          areas: ['accounts', 'balances'],
-          source: 'smsParser:balance_signal',
-        });
-      }
-    }
-  } catch (error) {
-    console.warn('[BalanceSignal] Failed to record legacy SMS balance signal', {
-      message: error instanceof Error ? error.message : 'unknown_error',
-    });
-  }
-}
-
 /**
- * Process incoming SMS and auto-create transaction if possible
- * Returns transaction ID if successful, null otherwise
+ * @deprecated DO NOT USE. This is a legacy SMS processor that bypasses all
+ * duplicate detection, offline queuing, and self-transfer logic.
+ * It now delegates to enqueueSms() from TransactionQueue.ts and returns once
+ * queued. The queue owns dedupe, offline handling, and self-transfer routing.
  */
 export async function processTransactionSMS(
   smsText: string,
   senderId: string
 ): Promise<{ success: boolean; transactionId?: string; parsed: ParsedTransaction }> {
+  const parsed = parseSMS(smsText, senderId);
+
+  logInfo('[DEPRECATED] processTransactionSMS() called. Delegating to enqueueSms().');
+
   try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user?.id) {
-      await recordLegacySmsBalanceSignalSafely(user.id, smsText, senderId);
-    }
-
-    // Step 1: Check if it's a transaction SMS
-    if (!isTransactionSMS(smsText)) {
-      logInfo('[SMS Parser] Not a transaction SMS');
-      return { success: false, parsed: parseSMS(smsText, senderId) };
-    }
-
-    // Step 2: Parse SMS
-    const parsed = parseSMS(smsText, senderId);
-    logInfo('[SMS Parser] Parsed:', summarizeParsedSmsForLog(parsed));
-
-    // Step 3: Check confidence
-    if (parsed.confidence < 50) {
-      logInfo('[SMS Parser] Low confidence, skipping auto-creation');
-      await showSmsFailedNotification(smsText, senderId, `Low confidence: ${parsed.confidence}%`);
-      return { success: false, parsed };
-    }
-
-    // Step 4: Find matching bank account
-    const accounts = await getBankAccounts();
-    let matchedAccount = null;
-
-    if (parsed.last4Digits) {
-      matchedAccount = accounts.find(acc => acc.account_last4 === parsed.last4Digits);
-    }
-
-    if (!matchedAccount && parsed.bankName) {
-      matchedAccount = accounts.find(acc => 
-        acc.bank_name.toLowerCase().includes(parsed.bankName!.toLowerCase())
-      );
-    }
-
-    if (!matchedAccount) {
-      logInfo('[SMS Parser] No matching account found');
-      await showSmsFailedNotification(
-        smsText,
-        senderId,
-        `Bank: ${parsed.bankName || 'Unknown'}, Last4: ${parsed.last4Digits || 'Unknown'} - No matching account`
-      );
-      return { success: false, parsed };
-    }
-
-    if (!user) {
-      logInfo('[SMS Parser] No user found');
-      return { success: false, parsed };
-    }
-
-    // Determine transaction type
-    let type: 'income' | 'expense' | 'transfer' = 'expense';
-    if (parsed.transactionType === 'credit') {
-      type = 'income';
-    } else if (parsed.transactionType === 'payment') {
-      // Credit card payment is expense from bank account
-      type = 'expense';
-    }
-
-    const presentation = {
-      type,
-      merchant: parsed.merchant,
-      note: parsed.merchant || (parsed.bankName ? `${parsed.bankName} Transaction` : undefined),
-      category: parsed.merchant,
-      upi_id: parsed.upiId,
-      raw_sms: smsText,
-      sms_source: 'sms',
-      sms_sender: senderId,
-    };
-    const transactionNote = getTransactionDisplayName(presentation);
-    const transactionCategory = inferTransactionCategory(presentation);
-    const redactedRawSms = createRedactedRawTextRecord({
-      kind: 'sms',
-      text: smsText,
+    await enqueueSms({
+      body: smsText,
       sender: senderId,
-      source: 'sms',
-    });
-
-    const { data: transaction, error } = await supabase
-      .from('transactions')
-      .insert({
-        user_id: user.id,
-        type,
-        amount: parsed.amount,
-        note: transactionNote,
-        category: transactionCategory,
-        account_id: matchedAccount.id,
-        account_last4: matchedAccount.account_last4,
-        sms_source: 'sms',
-        sms_sender: senderId,
-        raw_sms: redactedRawSms,
-        balance: parsed.balance,
-        upi_id: parsed.upiId,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .eq('user_id', user.id)
-      .single();
-
-    if (error) {
-      console.error('[SMS Parser] Error creating transaction:', error);
-      await showSmsFailedNotification(smsText, senderId, `Database error: ${error.message}`);
-      return { success: false, parsed };
-    }
-
-    void recordSmsTransactionEvidence({
-      text: smsText,
-      sender: senderId,
-      parsed: {
-        amount: parsed.amount,
-        transactionType: parsed.transactionType,
-        merchant: parsed.merchant,
-        bankName: parsed.bankName,
-        accountLast4: parsed.last4Digits,
-        last4Digits: parsed.last4Digits,
-        upiId: parsed.upiId,
-      },
-      transactionId: transaction.id,
       timestamp: Date.now(),
-    }).catch(() => undefined);
-
-    if (parsed.balance !== null && parsed.balance !== undefined) {
-      try {
-        await updateBankAccount(matchedAccount.id, { balance: parsed.balance });
-        await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
-          current ? current.map(account => account.id === matchedAccount.id ? { ...account, balance: parsed.balance! } : account) : current
-        );
-      } catch (balanceError) {
-        console.warn('[SMS Parser] Transaction saved, but balance update failed:', balanceError);
-      }
-    }
-
-    await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
-      transaction as Transaction,
-      ...(current || []).filter(tx => tx.id !== transaction.id),
-    ]);
-    emitFinanceDataChanged({
-      areas: parsed.balance !== null && parsed.balance !== undefined
-        ? ['transactions', 'accounts']
-        : ['transactions'],
-      source: 'smsParser:transaction',
-      transactionId: transaction.id,
     });
-
-    // Step 6: Show confirmation notification
-    await showTransactionConfirmation(
-      transaction.id,
-      type,
-      transactionNote,
-      parsed.amount!,
-      matchedAccount.bank_name,
-      redactedRawSms,
-      `Confidence: ${parsed.confidence}%\nMatched: ${matchedAccount.bank_name} (${matchedAccount.account_last4})`,
-      senderId
-    );
-
-    logInfo('[SMS Parser] Transaction created successfully:', transaction.id);
-    return { success: true, transactionId: transaction.id, parsed };
+    return { success: true, parsed };
   } catch (error) {
-    console.error('[SMS Parser] Error processing SMS:', error);
-    return { success: false, parsed: parseSMS(smsText, senderId) };
+    if (__DEV__) console.error('[SMS Parser] Error queueing SMS:', {
+      errorCode: safeErrorCode(error),
+    });
+    return { success: false, parsed };
   }
 }
 
@@ -851,15 +810,32 @@ export async function getSMSParsingStats(): Promise<{
   successRate: number;
 }> {
   try {
-    const bugReportsStr = await AsyncStorage.getItem('debug_bug_reports');
-    const bugReports = bugReportsStr ? JSON.parse(bugReportsStr) : [];
-    
-    const total = bugReports.length;
-    const failed = bugReports.filter((r: any) => r.type === 'sms_failed').length;
-    const successful = bugReports.filter((r: any) => r.type === 'transaction_confirmation').length;
-    const successRate = total > 0 ? (successful / total) * 100 : 0;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return { total: 0, successful: 0, failed: 0, successRate: 0 };
 
-    return { total, successful, failed, successRate };
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const { count: successful } = await supabase
+      .from('transactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .not('sms_source', 'is', null)
+      .gte('created_at', todayStart.toISOString());
+
+    const bugReportsStr = await AsyncStorage.getItem(DEBUG_BUG_REPORTS_KEY);
+    const bugReports = parseDebugBugReports(bugReportsStr);
+    const failed = bugReports.filter((r: any) => r.type === 'sms_failed').length;
+
+    const total = (successful || 0) + failed;
+    const successRate = total > 0 ? ((successful || 0) / total) * 100 : 0;
+
+    return {
+      total,
+      successful: successful || 0,
+      failed,
+      successRate: Math.round(successRate * 10) / 10,
+    };
   } catch {
     return { total: 0, successful: 0, failed: 0, successRate: 0 };
   }

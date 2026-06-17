@@ -16,7 +16,6 @@ import EncryptedStorage from 'react-native-encrypted-storage';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
 import { Transaction, TransactionType } from '../types';
-import { showTransactionConfirmation } from './services/notifications';
 import { emitFinanceDataChanged } from './services/dataEvents';
 import { GeofencingNative } from './services/geofencingNative';
 import { sanitizeTransactionRawSmsForPrivacy } from './privacy/rawText';
@@ -1043,7 +1042,7 @@ export async function syncOfflineTransactions(): Promise<void> {
       });
 
       const remainingQueue: OfflineQueueEntry[] = [];
-      const syncedRecords: { tx: any; queuedAt: string | null }[] = [];
+      const syncedRecords: any[] = [];
       let duplicateCount = 0;
       let skippedOwnerMismatch = 0;
 
@@ -1071,30 +1070,11 @@ export async function syncOfflineTransactions(): Promise<void> {
           continue;
         }
 
-        syncedRecords.push({ tx: insertedRecord || item.record, queuedAt: item.queuedAt });
-      }
-
-      // Success: Show notifications for transactions that might have missed them
-      // We assume that if a transaction was queued, it should have gotten a notification
-      // when it was originally processed. If it didn't, we should show one now.
-      for (const { tx, queuedAt } of syncedRecords) {
-        try {
-          await showTransactionConfirmation(
-            tx.id, // The actual DB ID from the insert
-            tx.type as any, // Cast to match the expected type
-            tx.note || 'Transaction',
-            tx.amount,
-            tx.account_last4,
-            `Synced from offline queue (originally queued at: ${queuedAt || 'unknown'})`
-          );
-        } catch (notifyError) {
-          console.error('[OfflineSync] Failed to show notification for synced transaction:', notifyError);
-          // Don't fail the whole sync for notification issues
-        }
+        syncedRecords.push(insertedRecord || item.record);
       }
 
       if (syncedRecords.length > 0) {
-        const syncedTransactions = syncedRecords.map(({ tx }) => tx as Transaction);
+        const syncedTransactions = syncedRecords.map(tx => tx as Transaction);
         const syncedIds = new Set(syncedTransactions.map(tx => tx.id));
         await updateTransactionsCache(current => [
           ...syncedTransactions,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -31,6 +31,21 @@ const { PorterModule } = NativeModules;
 // SECURITY: API key sourced from .env via react-native-config — never hardcoded
 // Set GOOGLE_MAPS_API_KEY in .env. If missing, falls back to Haversine estimation.
 const GOOGLE_MAPS_API_KEY: string = Config.GOOGLE_MAPS_API_KEY || '';
+const MAX_DEBUG_HISTORY_EVENTS = 100;
+const HISTORY_RENDER_LIMIT = 50;
+const DEBUG_REFRESH_DEBOUNCE_MS = 300;
+
+const DEBUG_KEYS = {
+  TIME: 'debug_porter_last_time',
+  RAW_TEXT: 'debug_porter_last_raw_text',
+  STATUS: 'debug_porter_status',
+  RESULT: 'debug_porter_result',
+  EVENT_TYPE: 'debug_porter_last_event_type',
+  API_ERROR: 'debug_porter_api_error',
+  API_RESPONSE: 'debug_porter_api_response',
+  NOMINATIM: 'debug_porter_nominatim',
+  HISTORY: 'debug_porter_history',
+} as const;
 
 const MOCK_TRIPS = [
   {
@@ -52,10 +67,86 @@ type DistanceResult = {
   tripDistance: string | null;
 };
 
+interface DebugState {
+  time: string;
+  rawText: string;
+  status: string;
+  result: string;
+  eventType: string;
+  apiError: string;
+  nominatim: string;
+}
+
+type DebugHistoryEvent = {
+  timestamp?: string;
+  eventType?: string;
+  textSummary?: string;
+  textContent?: string;
+  pickup?: string;
+  drop?: string;
+  status?: string;
+  apiError?: string;
+  nominatim?: string;
+  result?: string;
+};
+
+const EMPTY_DEBUG_LOGS: DebugState = {
+  time: '',
+  rawText: '',
+  status: '',
+  result: '',
+  eventType: '',
+  apiError: '',
+  nominatim: '',
+};
+
 function safeTextSummary(value: unknown): string {
   const text = typeof value === 'string' ? value.trim() : '';
   if (/^redacted len=\d+ hash=[a-f0-9]+$/i.test(text)) return text;
   return redactedTextSummary(text);
+}
+
+function safeErrorSummary(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'unknown_error';
+  const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+  const code = maybeError.code || maybeError.name || maybeError.status;
+  return typeof code === 'string' || typeof code === 'number'
+    ? String(code).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || 'unknown_error'
+    : 'unknown_error';
+}
+
+function parseHistoryJson(value: string | null): DebugHistoryEvent[] {
+  try {
+    const parsed = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function eventStatusText(event: DebugHistoryEvent): string {
+  return typeof event.status === 'string' ? event.status : '';
+}
+
+function eventIsSuccess(event: DebugHistoryEvent): boolean {
+  return eventStatusText(event).includes('Success');
+}
+
+function eventIsFailure(event: DebugHistoryEvent): boolean {
+  const status = eventStatusText(event);
+  return status.includes('Failed') || status.includes('Error');
+}
+
+function safeEventTime(value?: string): string {
+  if (!value) return 'N/A';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleString();
+}
+
+function safeEventClock(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString();
 }
 
 // Haversine formula — real straight-line distance between two GPS coordinates
@@ -98,7 +189,7 @@ async function getDistancesKm(
 ): Promise<DistanceResult> {
   if (!GOOGLE_MAPS_API_KEY) {
     // API Key missing — log warning and fall through to Haversine fallback
-    console.warn('[PorterTestScreen] GOOGLE_MAPS_API_KEY not found in .env. Using Haversine fallback.');
+    console.warn('[PorterTestScreen] Maps API unavailable. Using Haversine fallback.');
   } else {
     try {
       const origin = `${currentLat},${currentLng}`;
@@ -148,76 +239,87 @@ function PorterTestScreenContent() {
   const [locationStatus, setLocationStatus] = useState<'idle' | 'loading' | 'ready' | 'denied'>('idle');
   
   // Debug state for offline debugging
-  const [debugLogs, setDebugLogs] = useState({
-    time: '',
-    rawText: '',
-    status: '',
-    result: '',
-    eventType: '',
-    apiError: '',
-    nominatim: ''
-  });
-  const [debugHistory, setDebugHistory] = useState<any[]>([]);
+  const [debugLogs, setDebugLogs] = useState<DebugState>(EMPTY_DEBUG_LOGS);
+  const [debugHistory, setDebugHistory] = useState<DebugHistoryEvent[]>([]);
   const [nativeInbox, setNativeInbox] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showNativeInbox, setShowNativeInbox] = useState(true);
 
   const eventEmitter = useRef(new NativeEventEmitter(PorterModule)).current;
+  const debugRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    // Listen for real accessibility events (when testing on actual Porter app)
-    const subscription = eventEmitter.addListener('onPorterScreenChange', (event) => {
-      setCapturedText(`[${event.eventType || 'unknown'}] ${safeTextSummary(event.textContent)}`);
-      // Auto-refresh debug logs and history when new event arrives
-      setTimeout(() => loadDebugLogs(), 500); // Small delay to ensure AsyncStorage is updated
-    });
-    requestLocation();
-    loadDebugLogs();
-    return () => subscription.remove();
-  }, [eventEmitter]);
-
-  const loadDebugLogs = async () => {
+  const loadDebugLogs = useCallback(async () => {
     try {
-      const time = await AsyncStorage.getItem('debug_porter_last_time') || 'Never';
-      const rawText = safeTextSummary(await AsyncStorage.getItem('debug_porter_last_raw_text'));
-      const status = safeTextSummary(await AsyncStorage.getItem('debug_porter_status'));
-      const result = await AsyncStorage.getItem('debug_porter_result') || '';
-      const eventType = await AsyncStorage.getItem('debug_porter_last_event_type') || '';
-      const apiError = await AsyncStorage.getItem('debug_porter_api_error') || '';
-      const nominatimValue = await AsyncStorage.getItem('debug_porter_nominatim');
+      const time = await AsyncStorage.getItem(DEBUG_KEYS.TIME) || 'Never';
+      const rawText = safeTextSummary(await AsyncStorage.getItem(DEBUG_KEYS.RAW_TEXT));
+      const status = safeTextSummary(await AsyncStorage.getItem(DEBUG_KEYS.STATUS));
+      const result = await AsyncStorage.getItem(DEBUG_KEYS.RESULT) || '';
+      const eventType = await AsyncStorage.getItem(DEBUG_KEYS.EVENT_TYPE) || '';
+      const apiError = await AsyncStorage.getItem(DEBUG_KEYS.API_ERROR) || '';
+      const nominatimValue = await AsyncStorage.getItem(DEBUG_KEYS.NOMINATIM);
       const nominatim = nominatimValue ? safeTextSummary(nominatimValue) : '';
       
       setDebugLogs({ time, rawText, status, result, eventType, apiError, nominatim });
       
       // Load history
-      const historyJson = await AsyncStorage.getItem('debug_porter_history');
-      const history = historyJson ? JSON.parse(historyJson) : [];
-      setDebugHistory(history);
+      const historyJson = await AsyncStorage.getItem(DEBUG_KEYS.HISTORY);
+      setDebugHistory(parseHistoryJson(historyJson).slice(0, MAX_DEBUG_HISTORY_EVENTS));
 
       const nativeLogs = await getPorterNativeDebugLogs();
       setNativeInbox(nativeLogs);
-    } catch {
-      console.log('Failed to load debug logs');
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Debug load failed:', {
+        errorCode: safeErrorSummary(error),
+      });
+      setDebugLogs({
+        ...EMPTY_DEBUG_LOGS,
+        time: 'Load failed',
+        rawText: 'Error',
+        status: 'Failed to load',
+      });
+    }
+  }, []);
+
+  const scheduleDebugRefresh = useCallback(() => {
+    if (debugRefreshTimeoutRef.current) {
+      clearTimeout(debugRefreshTimeoutRef.current);
+    }
+
+    debugRefreshTimeoutRef.current = setTimeout(() => {
+      debugRefreshTimeoutRef.current = null;
+      loadDebugLogs().catch(error => {
+        if (__DEV__) console.error('[PorterTest] Debug refresh failed:', {
+          errorCode: safeErrorSummary(error),
+        });
+      });
+    }, DEBUG_REFRESH_DEBOUNCE_MS);
+  }, [loadDebugLogs]);
+
+  const clearDebugLogs = async () => {
+    try {
+      await AsyncStorage.multiRemove([
+        DEBUG_KEYS.TIME,
+        DEBUG_KEYS.RAW_TEXT,
+        DEBUG_KEYS.STATUS,
+        DEBUG_KEYS.RESULT,
+        DEBUG_KEYS.EVENT_TYPE,
+        DEBUG_KEYS.API_ERROR,
+        DEBUG_KEYS.NOMINATIM,
+        DEBUG_KEYS.API_RESPONSE,
+        DEBUG_KEYS.HISTORY,
+      ]);
+      await clearPorterNativeDebugLogs();
+      await loadDebugLogs();
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Clear debug logs failed:', {
+        errorCode: safeErrorSummary(error),
+      });
+      showToastOverlay('Failed to clear debug logs');
     }
   };
 
-  const clearDebugLogs = async () => {
-    await AsyncStorage.multiRemove([
-      'debug_porter_last_time',
-      'debug_porter_last_raw_text',
-      'debug_porter_status',
-      'debug_porter_result',
-      'debug_porter_last_event_type',
-      'debug_porter_api_error',
-      'debug_porter_nominatim',
-      'debug_porter_api_response',
-      'debug_porter_history'
-    ]);
-    await clearPorterNativeDebugLogs();
-    loadDebugLogs();
-  };
-
-  const requestLocation = async () => {
+  const requestLocation = useCallback(async () => {
+    if (locationStatus === 'loading') return;
     setLocationStatus('loading');
     try {
       if (Platform.OS === 'android') {
@@ -243,47 +345,89 @@ function PorterTestScreenContent() {
         () => setLocationStatus('denied'),
         {
           enableHighAccuracy: true,
-          timeout: 5000,       // Reduced: fail fast, don't drain battery waiting for GPS
-          maximumAge: 60000,   // Prefer cached location up to 60s old — significant battery saving
+          timeout: 3000,
+          maximumAge: 300000,
         }
       );
-    } catch {
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Location request failed:', {
+        errorCode: safeErrorSummary(error),
+      });
       setLocationStatus('denied');
     }
-  };
+  }, [locationStatus]);
+
+  useEffect(() => {
+    // Listen for real accessibility events (when testing on actual Porter app)
+    const subscription = eventEmitter.addListener('onPorterScreenChange', (event) => {
+      setCapturedText(`[${event.eventType || 'unknown'}] ${safeTextSummary(event.textContent)}`);
+      scheduleDebugRefresh();
+    });
+
+    loadDebugLogs().catch(error => {
+      if (__DEV__) console.error('[PorterTest] Initial debug load failed:', {
+        errorCode: safeErrorSummary(error),
+      });
+    });
+
+    return () => {
+      subscription.remove();
+      if (debugRefreshTimeoutRef.current) {
+        clearTimeout(debugRefreshTimeoutRef.current);
+        debugRefreshTimeoutRef.current = null;
+      }
+    };
+  }, [eventEmitter, loadDebugLogs, scheduleDebugRefresh]);
+
+  useEffect(() => {
+    if (locationStatus !== 'idle') return;
+    requestLocation().catch(error => {
+      if (__DEV__) console.error('[PorterTest] Initial location request failed:', {
+        errorCode: safeErrorSummary(error),
+      });
+    });
+  }, [locationStatus, requestLocation]);
 
   const simulateTripPopup = async (trip: typeof MOCK_TRIPS[0]) => {
-    setCurrentTrip(trip);
-    setDistances({ toPickup: null, tripDistance: null });
-    setCapturedText(null);
-    setLoadingDistance(true);
-    const startedAt = new Date().toISOString();
-    const mockText = `Mock Porter Popup || Pickup || ${trip.pickup} || Drop || ${trip.drop}`;
-    await AsyncStorage.multiSet([
-      ['debug_porter_last_time', startedAt],
-      ['debug_porter_last_raw_text', safeTextSummary(mockText)],
-      ['debug_porter_last_event_type', 'MANUAL_SIMULATION'],
-      ['debug_porter_status', 'Manual simulation: calculating distance'],
-    ]);
-    loadDebugLogs();
+    try {
+      setCurrentTrip(trip);
+      setDistances({ toPickup: null, tripDistance: null });
+      setCapturedText(null);
+      setLoadingDistance(true);
+      const startedAt = new Date().toISOString();
+      const mockText = `Mock Porter Popup || Pickup || ${trip.pickup} || Drop || ${trip.drop}`;
+      await AsyncStorage.multiSet([
+        [DEBUG_KEYS.TIME, startedAt],
+        [DEBUG_KEYS.RAW_TEXT, safeTextSummary(mockText)],
+        [DEBUG_KEYS.EVENT_TYPE, 'MANUAL_SIMULATION'],
+        [DEBUG_KEYS.STATUS, 'Manual simulation: calculating distance'],
+      ]);
+      await loadDebugLogs();
 
-    const lat = currentLocation?.lat ?? 19.076;  // fallback: Mumbai
-    const lng = currentLocation?.lng ?? 72.8777;
+      const lat = currentLocation?.lat ?? 19.076;  // fallback: Mumbai
+      const lng = currentLocation?.lng ?? 72.8777;
 
-    const result = await getDistancesKm(lat, lng, trip.pickup, trip.drop);
-    setDistances(result);
-    setLoadingDistance(false);
-    await AsyncStorage.multiSet([
-      ['debug_porter_result', JSON.stringify(result)],
-      ['debug_porter_status', 'Manual simulation: overlay shown'],
-    ]);
-    loadDebugLogs();
+      const result = await getDistancesKm(lat, lng, trip.pickup, trip.drop);
+      setDistances(result);
+      await AsyncStorage.multiSet([
+        [DEBUG_KEYS.RESULT, JSON.stringify(result)],
+        [DEBUG_KEYS.STATUS, 'Manual simulation: overlay shown'],
+      ]);
+      await loadDebugLogs();
 
-    // Show native toast overlay (same as it would appear over Porter)
-    showToastOverlay(
-      `📍 To Pickup: ${result.toPickup}  |  🛣️ Trip: ${result.tripDistance}`,
-      true
-    );
+      // Show native toast overlay (same as it would appear over Porter)
+      showToastOverlay(
+        `📍 To Pickup: ${result.toPickup}  |  🛣️ Trip: ${result.tripDistance}`,
+        true
+      );
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Simulation failed:', {
+        errorCode: safeErrorSummary(error),
+      });
+      showToastOverlay('Simulation failed');
+    } finally {
+      setLoadingDistance(false);
+    }
   };
 
   // Simulate a fake Porter event and add to history (for testing without real Porter app)
@@ -294,8 +438,8 @@ function PorterTestScreenContent() {
 
       // Get API error and nominatim info
       const distances = await getDistancesKm(lat, lng, trip.pickup, trip.drop);
-      const apiError = await AsyncStorage.getItem('debug_porter_api_error') || '';
-      const nominatim = await AsyncStorage.getItem('debug_porter_nominatim') || '';
+      const apiError = await AsyncStorage.getItem(DEBUG_KEYS.API_ERROR) || '';
+      const nominatim = await AsyncStorage.getItem(DEBUG_KEYS.NOMINATIM) || '';
 
       // Create fake event
       const fakeEvent = {
@@ -311,25 +455,26 @@ function PorterTestScreenContent() {
       };
 
       // Load existing history
-      const historyJson = await AsyncStorage.getItem('debug_porter_history');
-      const history = historyJson ? JSON.parse(historyJson) : [];
+      const historyJson = await AsyncStorage.getItem(DEBUG_KEYS.HISTORY);
+      const history = parseHistoryJson(historyJson);
       
-      // Add new event
+      if (history.length >= MAX_DEBUG_HISTORY_EVENTS) {
+        history.splice(MAX_DEBUG_HISTORY_EVENTS - 1);
+      }
+
       history.unshift(fakeEvent);
       
-      // Keep a deeper local history for diagnostics.
-      if (history.length > 150) {
-        history.splice(150);
-      }
-      
-      await AsyncStorage.setItem('debug_porter_history', JSON.stringify(history));
+      await AsyncStorage.setItem(DEBUG_KEYS.HISTORY, JSON.stringify(history));
       
       // Refresh UI
-      loadDebugLogs();
+      await loadDebugLogs();
       
       showToastOverlay(`✅ Fake event added to history (${shouldFail ? 'Failed' : 'Success'})`);
-    } catch (e: any) {
-      console.error('Failed to simulate event:', e);
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Failed to simulate history event:', {
+        errorCode: safeErrorSummary(error),
+      });
+      showToastOverlay('Failed to add history event');
     }
   };
 
@@ -343,15 +488,15 @@ function PorterTestScreenContent() {
       let exportText = `Porter Debug History Export\n`;
       exportText += `Generated: ${new Date().toLocaleString()}\n`;
       exportText += `Total Events: ${debugHistory.length}\n`;
-      exportText += `Success: ${debugHistory.filter(e => e.status.includes('Success')).length}\n`;
-      exportText += `Failed: ${debugHistory.filter(e => e.status.includes('Failed') || e.status.includes('Error')).length}\n`;
+      exportText += `Success: ${debugHistory.filter(eventIsSuccess).length}\n`;
+      exportText += `Failed: ${debugHistory.filter(eventIsFailure).length}\n`;
       exportText += `\n${'='.repeat(50)}\n\n`;
 
       debugHistory.forEach((event, index) => {
         exportText += `📦 Event #${index + 1}\n`;
-        exportText += `⏱️ Time: ${new Date(event.timestamp).toLocaleString()}\n`;
-        exportText += `⚙️ Type: ${event.eventType}\n`;
-        exportText += `📏 Result: ${event.result || 'N/A'}\n`;
+        exportText += `⏱️ Time: ${safeEventTime(event.timestamp)}\n`;
+        exportText += `⚙️ Type: ${event.eventType || 'N/A'}\n`;
+        exportText += `📏 Result: ${safeTextSummary(event.result || 'N/A')}\n`;
         exportText += `🔌 API Status Summary: ${safeTextSummary(event.apiError)}\n`;
         exportText += `📝 Status Summary: ${safeTextSummary(event.status)}\n`;
         exportText += `📄 Text Summary: ${safeTextSummary(event.textSummary || event.textContent)}\n`;
@@ -367,8 +512,8 @@ function PorterTestScreenContent() {
 
   const buildAllPorterLogsReport = async () => {
     const nativeLogs = await getPorterNativeDebugLogs();
-    const historyJson = await AsyncStorage.getItem('debug_porter_history');
-    const latestHistory = historyJson ? JSON.parse(historyJson) : [];
+    const historyJson = await AsyncStorage.getItem(DEBUG_KEYS.HISTORY);
+    const latestHistory = parseHistoryJson(historyJson);
     let report = `SpendSense Porter Diagnostics\n`;
     report += `Generated: ${new Date().toLocaleString()}\n`;
     report += `Platform: ${Platform.OS} ${Platform.Version}\n`;
@@ -391,8 +536,8 @@ function PorterTestScreenContent() {
       nativeLogs.forEach((log: any, index: number) => {
         report += `\n#${index + 1} ${log.stage || 'log'}\n`;
         report += `Time: ${log.time ? new Date(log.time).toLocaleString() : 'N/A'}\n`;
-        report += `Message: ${log.message || 'N/A'}\n`;
-        report += `Package: ${log.packageName || 'N/A'}\n`;
+        report += `Message Summary: ${safeTextSummary(log.message || 'N/A')}\n`;
+        report += `Package: ${safeTextSummary(log.packageName || 'N/A')}\n`;
         report += `Event Type: ${log.eventType || 'N/A'}\n`;
         report += `Text Length: ${log.textLength || 0}\n`;
         report += `Text Summary: ${safeTextSummary(log.sample)}\n`;
@@ -403,12 +548,12 @@ function PorterTestScreenContent() {
     if (latestHistory.length === 0) {
       report += `No JS event history collected.\n`;
     } else {
-      latestHistory.forEach((event: any, index: number) => {
+      latestHistory.forEach((event: DebugHistoryEvent, index: number) => {
         report += `\n#${index + 1}\n`;
-        report += `Time: ${event.timestamp ? new Date(event.timestamp).toLocaleString() : 'N/A'}\n`;
+        report += `Time: ${safeEventTime(event.timestamp)}\n`;
         report += `Event Type: ${event.eventType || 'N/A'}\n`;
         report += `Status Summary: ${safeTextSummary(event.status)}\n`;
-        report += `Result: ${event.result || 'N/A'}\n`;
+        report += `Result: ${safeTextSummary(event.result || 'N/A')}\n`;
         report += `API Summary: ${safeTextSummary(event.apiError)}\n`;
         report += `Text Summary: ${safeTextSummary(event.textSummary || event.textContent)}\n`;
       });
@@ -434,29 +579,35 @@ function PorterTestScreenContent() {
 
   const deleteEvent = async (index: number) => {
     try {
-      const historyJson = await AsyncStorage.getItem('debug_porter_history');
-      const history = historyJson ? JSON.parse(historyJson) : [];
+      const historyJson = await AsyncStorage.getItem(DEBUG_KEYS.HISTORY);
+      const history = parseHistoryJson(historyJson);
       
       // Remove the event at index
       history.splice(index, 1);
       
-      await AsyncStorage.setItem('debug_porter_history', JSON.stringify(history));
+      await AsyncStorage.setItem(DEBUG_KEYS.HISTORY, JSON.stringify(history));
       
       // Refresh UI
-      loadDebugLogs();
+      await loadDebugLogs();
       
       showToastOverlay('🗑️ Event deleted');
-    } catch {
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Delete event failed:', {
+        errorCode: safeErrorSummary(error),
+      });
       showToastOverlay('❌ Failed to delete event');
     }
   };
 
   const deleteAllHistory = async () => {
     try {
-      await AsyncStorage.setItem('debug_porter_history', JSON.stringify([]));
-      loadDebugLogs();
+      await AsyncStorage.setItem(DEBUG_KEYS.HISTORY, JSON.stringify([]));
+      await loadDebugLogs();
       showToastOverlay('🗑️ All history deleted');
-    } catch {
+    } catch (error) {
+      if (__DEV__) console.error('[PorterTest] Delete history failed:', {
+        errorCode: safeErrorSummary(error),
+      });
       showToastOverlay('❌ Failed to delete history');
     }
   };
@@ -473,6 +624,15 @@ function PorterTestScreenContent() {
     
     Clipboard.setString(text);
     showToastOverlay('✅ Debugger info copied');
+  };
+
+  const refreshDebugLogs = () => {
+    loadDebugLogs().catch(error => {
+      if (__DEV__) console.error('[PorterTest] Manual refresh failed:', {
+        errorCode: safeErrorSummary(error),
+      });
+      showToastOverlay('Refresh failed');
+    });
   };
 
   return (
@@ -761,7 +921,7 @@ function PorterTestScreenContent() {
               <TouchableOpacity onPress={clearDebugLogs}>
                 <Text style={[typography.caption, { color: '#ef4444', fontWeight: '600' }]}>CLEAR</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={loadDebugLogs}>
+              <TouchableOpacity onPress={refreshDebugLogs}>
                 <Text style={[typography.caption, { color: colors.accent, fontWeight: '600' }]}>REFRESH</Text>
               </TouchableOpacity>
             </View>
@@ -782,7 +942,7 @@ function PorterTestScreenContent() {
               }}>
                 <Text style={{ fontSize: 16, marginRight: 8 }}>⚠️</Text>
                 <Text style={[typography.caption, { color: '#f59e0b', flex: 1, fontWeight: '600' }]}>
-                  API Key Missing — GOOGLE_MAPS_API_KEY not found in .env.{'\n'}
+                  Maps API unavailable.{'\n'}
                   Using free Haversine estimation (less accurate).
                 </Text>
               </View>
@@ -873,14 +1033,21 @@ function PorterTestScreenContent() {
               <TouchableOpacity onPress={shareAllLogs}>
                 <MaterialCommunityIcons name="share-variant-outline" size={18} color="#10b981" />
               </TouchableOpacity>
-              <TouchableOpacity onPress={loadDebugLogs}>
+              <TouchableOpacity onPress={refreshDebugLogs}>
                 <MaterialCommunityIcons name="refresh" size={18} color={colors.accent} />
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={async () => {
-                  await clearPorterNativeDebugLogs();
-                  setNativeInbox([]);
-                  loadDebugLogs();
+                  try {
+                    await clearPorterNativeDebugLogs();
+                    setNativeInbox([]);
+                    await loadDebugLogs();
+                  } catch (error) {
+                    if (__DEV__) console.error('[PorterTest] Native inbox clear failed:', {
+                      errorCode: safeErrorSummary(error),
+                    });
+                    showToastOverlay('Native inbox clear failed');
+                  }
                 }}>
                 <MaterialCommunityIcons name="delete-sweep-outline" size={18} color="#ef4444" />
               </TouchableOpacity>
@@ -920,7 +1087,7 @@ function PorterTestScreenContent() {
                     )}
                     {!!log.sample && (
                       <Text style={[typography.caption, { color: colors.subtext, marginTop: 4, fontFamily: 'monospace', fontSize: 10 }]}>
-                        {log.sample}
+                        {safeTextSummary(log.sample)}
                       </Text>
                     )}
                   </View>
@@ -971,13 +1138,13 @@ function PorterTestScreenContent() {
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981', marginRight: 4 }} />
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
-                      {debugHistory.filter(e => e.status.includes('Success')).length}
+                      {debugHistory.filter(eventIsSuccess).length}
                     </Text>
                   </View>
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#ef4444', marginRight: 4 }} />
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
-                      {debugHistory.filter(e => e.status.includes('Failed') || e.status.includes('Error')).length}
+                      {debugHistory.filter(eventIsFailure).length}
                     </Text>
                   </View>
                 </View>
@@ -1001,26 +1168,26 @@ function PorterTestScreenContent() {
               </View>
             )}
 
-            {showHistory && debugHistory.map((event, index) => (
+            {showHistory && debugHistory.slice(0, HISTORY_RENDER_LIMIT).map((event, index) => (
               <Card key={index} style={{ 
                 marginBottom: spacing.sm, 
-                borderColor: event.status.includes('Success') ? '#10b98140' : 
-                            event.status.includes('Failed') || event.status.includes('Error') ? '#ef444440' : 
+                borderColor: eventIsSuccess(event) ? '#10b98140' : 
+                            eventIsFailure(event) ? '#ef444440' : 
                             colors.border,
                 borderWidth: 1 
               }}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs }}>
                   <Text style={[typography.caption, { 
-                    color: event.status.includes('Success') ? '#10b981' : 
-                           event.status.includes('Failed') || event.status.includes('Error') ? '#ef4444' : 
+                    color: eventIsSuccess(event) ? '#10b981' : 
+                           eventIsFailure(event) ? '#ef4444' : 
                            colors.accent,
                     fontWeight: 'bold' 
                   }]}>
-                    #{index + 1} • {event.eventType}
+                    #{index + 1} • {event.eventType || 'N/A'}
                   </Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
-                      {new Date(event.timestamp).toLocaleTimeString()}
+                      {safeEventClock(event.timestamp)}
                     </Text>
                     <TouchableOpacity 
                       onPress={() => deleteEvent(index)}
@@ -1040,13 +1207,13 @@ function PorterTestScreenContent() {
                     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
                       <MaterialCommunityIcons name="map-marker" size={12} color="#10b981" />
                       <Text style={[typography.caption, { color: colors.text, marginLeft: 4, flex: 1 }]} numberOfLines={1}>
-                        {event.pickup}
+                        {safeTextSummary(event.pickup)}
                       </Text>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       <MaterialCommunityIcons name="map-marker" size={12} color="#ef4444" />
                       <Text style={[typography.caption, { color: colors.text, marginLeft: 4, flex: 1 }]} numberOfLines={1}>
-                        {event.drop}
+                        {safeTextSummary(event.drop)}
                       </Text>
                     </View>
                   </View>
@@ -1060,7 +1227,7 @@ function PorterTestScreenContent() {
                     marginBottom: spacing.xs 
                   }}>
                     <Text style={[typography.caption, { color: colors.text, fontFamily: 'monospace', fontSize: 11 }]}>
-                      {event.result}
+                      {safeTextSummary(event.result)}
                     </Text>
                   </View>
                 )}
@@ -1071,12 +1238,12 @@ function PorterTestScreenContent() {
                     fontSize: 10,
                     marginBottom: spacing.xs 
                   }]}>
-                    API: {event.apiError}
+                    API: {safeTextSummary(event.apiError)}
                   </Text>
                 )}
 
                 <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]} numberOfLines={2}>
-                  {event.status}
+                  {safeTextSummary(event.status)}
                 </Text>
               </Card>
             ))}

@@ -1,3 +1,26 @@
 {
-    "typescript.autoClosingTags": false
+    "typescript.autoClosingTags": false,
+    "java.import.gradle.enabled": false,
+    "java.import.exclusions": [
+        "**/node_modules/**",
+        "**/.metadata/**",
+        "**/archetype-resources/**",
+        "**/META-INF/maven/**",
+        "**/android/.gradle/**",
+        "**/android/build/**",
+        "**/android/app/build/**"
+    ],
+    "java.project.resourceFilters": [
+        "node_modules",
+        ".git",
+        ".gradle",
+        "build"
+    ],
+    "java.configuration.checkProjectSettingsExclusions": true,
+    "files.exclude": {
+        "**/.classpath": true,
+        "**/.project": true,
+        "**/.settings": true,
+        "**/.factorypath": true
+    }
 }

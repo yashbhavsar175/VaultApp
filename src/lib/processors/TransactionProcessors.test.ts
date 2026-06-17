@@ -197,7 +197,7 @@ describe('background transaction processors', () => {
       { id: 'bank_kotak_1447', user_id: 'user_1', bank_name: 'Kotak', account_last4: '1447' },
     ];
 
-    await processNotification({
+    const firstResult = await processNotification({
       app: 'com.google.android.apps.nbu.paisa.user',
       title: '₹1.00 received from YASH LALIT',
       text: 'Amount credited to XX1447. Check out details.',
@@ -224,21 +224,17 @@ describe('background transaction processors', () => {
       to_account_id: 'bank_kotak_1447',
       is_transfer_pending: true,
     }));
-    expect(showTransactionConfirmation).toHaveBeenCalledTimes(1);
-    expect(showTransactionConfirmation).toHaveBeenLastCalledWith(
-      mockDb.transactions[0].id,
-      'transfer',
-      'Bank to Bank',
-      1,
-      undefined,
-      expect.anything(),
-      undefined,
-      undefined,
-      expect.objectContaining({
+    expect(showTransactionConfirmation).not.toHaveBeenCalled();
+    expect(firstResult).toEqual(expect.objectContaining({
+      transactionId: mockDb.transactions[0].id,
+      type: 'transfer',
+      note: 'Bank to Bank',
+      amount: 1,
+      classificationOptions: expect.objectContaining({
         classificationReason: 'self_transfer',
         classificationStatus: 'ignored',
-      })
-    );
+      }),
+    }));
     expect(emitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
       source: 'notification:transaction',
       transactionId: mockDb.transactions[0].id,
@@ -258,7 +254,7 @@ describe('background transaction processors', () => {
       text: 'Deposited into your Kotak Bank AC X1447. Tap to view details.',
       time: now,
     });
-    await processSms({
+    const upgradeResult = await processSms({
       sender: 'JK-BOBSMS-S',
       body: 'Rs.1.00 Dr. from A/C XXXXX5191 and Cr. to 6351300811. Ref:61565238943.',
       timestamp: now + 1000,
@@ -274,20 +270,18 @@ describe('background transaction processors', () => {
       to_account_id: 'bank_kotak_1447',
       is_transfer_pending: true,
     }));
-    expect(showTransactionConfirmation).toHaveBeenLastCalledWith(
-      mockDb.transactions[0].id,
-      'transfer',
-      'Bank of Baroda to Kotak',
-      1,
-      '1447',
-      expect.anything(),
-      undefined,
-      undefined,
-      expect.objectContaining({
+    expect(showTransactionConfirmation).not.toHaveBeenCalled();
+    expect(upgradeResult).toEqual(expect.objectContaining({
+      transactionId: mockDb.transactions[0].id,
+      type: 'transfer',
+      note: 'Bank of Baroda to Kotak',
+      amount: 1,
+      accountLast4: '1447',
+      classificationOptions: expect.objectContaining({
         classificationReason: 'self_transfer',
         classificationStatus: 'ignored',
-      })
-    );
+      }),
+    }));
   });
 
   it('classifies own-name payment credit notifications as self transfers', async () => {
@@ -297,7 +291,7 @@ describe('background transaction processors', () => {
       { id: 'bank_kotak_1447', user_id: 'user_1', bank_name: 'Kotak', account_last4: '1447' },
     ];
 
-    await processNotification({
+    const result = await processNotification({
       app: 'money.super.payments',
       title: '₹1.00 received from YASH LALITKUMAR BHAVSAR',
       text: 'Deposited into your Kotak Bank AC X1447. Tap to view details.',
@@ -314,24 +308,22 @@ describe('background transaction processors', () => {
       is_transfer_pending: true,
     }));
     expect(JSON.stringify(mockDb.transactions[0])).not.toContain('YASH LALITKUMAR BHAVSAR');
-    expect(showTransactionConfirmation).toHaveBeenLastCalledWith(
-      mockDb.transactions[0].id,
-      'transfer',
-      'Bank to Bank',
-      1,
-      '1447',
-      expect.anything(),
-      undefined,
-      undefined,
-      expect.objectContaining({
+    expect(showTransactionConfirmation).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      transactionId: mockDb.transactions[0].id,
+      type: 'transfer',
+      note: 'Bank to Bank',
+      amount: 1,
+      accountLast4: '1447',
+      classificationOptions: expect.objectContaining({
         classificationReason: 'self_transfer',
         classificationStatus: 'ignored',
-      })
-    );
+      }),
+    }));
   });
 
   it('saves a generic debit immediately but leaves it uncounted for detail classification', async () => {
-    await processSms({
+    const result = await processSms({
       sender: 'AD-HDFCBK',
       body: 'Rs.20.00 debited from A/C XX0719. Ref 123456789.',
       timestamp: Date.now(),
@@ -344,20 +336,17 @@ describe('background transaction processors', () => {
       account_match_status: 'review_required',
       account_match_reason: 'unverified_debit',
     }));
-    expect(showTransactionConfirmation).toHaveBeenLastCalledWith(
-      mockDb.transactions[0].id,
-      'expense',
-      expect.any(String),
-      20,
-      '0719',
-      expect.anything(),
-      undefined,
-      undefined,
-      expect.objectContaining({
+    expect(showTransactionConfirmation).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      transactionId: mockDb.transactions[0].id,
+      type: 'expense',
+      amount: 20,
+      accountLast4: '0719',
+      classificationOptions: expect.objectContaining({
         classificationReason: 'unverified_debit',
         classificationStatus: 'review_required',
-      })
-    );
+      }),
+    }));
   });
 
   it('saves a generic credit immediately but leaves it uncounted for detail classification', async () => {
@@ -376,6 +365,55 @@ describe('background transaction processors', () => {
     }));
   });
 
+  it('processes Kotak bank app notification as credit income', async () => {
+    mockDb.bank_accounts = [
+      { id: 'bank_kotak_1447', user_id: 'user_1', bank_name: 'Kotak', account_last4: '1447' },
+    ];
+
+    const result = await processNotification({
+      app: 'com.kotak.mahindra.kotakbanking',
+      title: '₹165.00 received',
+      text: 'Amount credited to XX1447. Check out details.',
+      time: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 165,
+      type: 'income',
+      account_last4: '1447',
+      sms_source: 'bank',
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      transactionId: mockDb.transactions[0].id,
+      type: 'income',
+      amount: 165,
+      skipped: false,
+    }));
+  });
+
+  it('deduplicates same-type bank and UPI reports of one incoming transaction', async () => {
+    const now = Date.now();
+
+    await processNotification({
+      app: 'com.google.android.apps.nbu.paisa.user',
+      title: '₹235 received from RAVI KUMAR',
+      text: 'Amount credited to XX1447.',
+      time: now,
+    });
+    await processSms({
+      sender: 'AD-HDFCBK',
+      body: 'Rs.235.00 credited to A/C XX1447. Ref 123456789.',
+      timestamp: now + 500,
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 235,
+      type: 'income',
+    }));
+  });
+
   it('saves a clear merchant debit as a counted expense', async () => {
     await processSms({
       sender: 'AD-HDFCBK',
@@ -389,6 +427,48 @@ describe('background transaction processors', () => {
       type: 'expense',
       account_match_status: 'manual_confirmed',
       account_match_reason: 'auto_confirmed_expense',
+    }));
+  });
+
+  it('parses completed transactions even when the text also contains offer copy', async () => {
+    await processSms({
+      sender: 'AD-SBIINB',
+      body: 'Your SBI account debited Rs.500. Offer: Free YONO transfer enabled.',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 500,
+      type: 'expense',
+    }));
+  });
+
+  it('processes INDDEM investment payout SMS as income credit', async () => {
+    await processSms({
+      sender: 'AD-INDDEM-S',
+      body: 'Hi Investor, Refund from INDstocks Wallet Balance initiated on 06-06-2026 to your registered bank account as part of MONTHLY PAYOUT settlement. Transaction ID:3e3d45c50040839 Amount: Rs.42.14',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 42.14,
+      type: 'income',
+    }));
+  });
+
+  it('processes Kotak Rs: format SMS correctly as credit', async () => {
+    await processSms({
+      sender: 'VK-KOTAKB-S',
+      body: 'Rs: 38.55 has been transferred to your account XXXXXX1447 on 06-Jun-2026. From Kotak Bank',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
+      amount: 38.55,
+      type: 'income',
     }));
   });
 });

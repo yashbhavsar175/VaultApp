@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -36,6 +36,11 @@ type SettingsFormState = {
   target_debt_free_months: string;
   strategy: 'balanced' | 'snowball' | 'avalanche';
 };
+
+type ThemeColors = ReturnType<typeof useTheme>['colors'];
+type ThemeTypography = ReturnType<typeof useTheme>['typography'];
+type ThemeSpacing = ReturnType<typeof useTheme>['spacing'];
+type DebtMarkerKind = 'hidden' | 'duplicate' | 'review';
 
 export const APPROVED_DEBT_FREEDOM_ICONS = [
   'alert-circle-outline',
@@ -207,7 +212,15 @@ function DebtFreedomIcon({
   size: number;
   color: string;
 }) {
-  return <MaterialCommunityIcons name={safeDebtFreedomIconName(name)} size={size} color={color} />;
+  return (
+    <MaterialCommunityIcons
+      name={safeDebtFreedomIconName(name)}
+      size={size}
+      color={color}
+      accessibilityElementsHidden
+      importantForAccessibility="no"
+    />
+  );
 }
 
 function rupee(value: number | null | undefined): string {
@@ -226,22 +239,67 @@ function paceGapLabel(value: number | null): string {
   return `Behind target: ${rupee(Math.abs(value))}`;
 }
 
-function looksUnsafeLabel(value: string): boolean {
-  return (
-    /\b(?:otp|one\s*time\s*password|verification\s*code)\b/i.test(value)
-    || /\b(?:\+?91[-\s]?)?[6-9]\d{9}\b/.test(value)
-    || /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i.test(value)
-    || /\b[\w.-]+@[a-z]{2,}\b/i.test(value)
-    || /\b\d(?:[ -]?\d){5,}\b/.test(value)
-    || /\b(?:address|flat|tower|road|street|society|sector|near|landmark|pincode|pin code)\b/i.test(value)
-  );
+const SAFE_DEBT_LABEL_ALLOWLIST = new Set([
+  'HDFC',
+  'HDFC Bank',
+  'SBI',
+  'State Bank of India',
+  'ICICI',
+  'ICICI Bank',
+  'Axis Bank',
+  'Kotak',
+  'Kotak Bank',
+  'Amazon Pay Later',
+]);
+
+const DECORATIVE_EMAIL_PATTERN = /\s*<[^<>@\s]+@[^<>\s]+\.[A-Z]{2,}>\s*/gi;
+const OTP_OR_CODE_PATTERN = /\b(?:otp|one\s*time\s*password|verification\s*code)\b/i;
+const PHONE_PATTERN = /\b(?:\+?91[-\s]?)?[6-9]\d{9}\b/;
+const LONG_CARD_OR_ACCOUNT_PATTERN = /\b(?:\d[ -]?){12,19}\b/;
+const IFSC_PATTERN = /\b[A-Z]{4}0[A-Z0-9]{6}\b/i;
+const MASKED_ACCOUNT_PATTERN = /\b(?:x{2,}|\*{2,}|•{2,})\s*\d{3,4}\b/i;
+const UPI_HANDLE_PATTERN = /\b[\w.-]+@[a-z]{2,}\b/i;
+const ADDRESS_HINT_PATTERN = /\b(?:address|flat|tower|road|street|society|sector|near|landmark|pincode|pin code)\b/i;
+
+function stripDecorativeEmail(value: string): string {
+  return value.replace(DECORATIVE_EMAIL_PATTERN, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function safeDebtLabel(debt: DebtItem): string {
-  const label = (debt.label || '').trim();
-  const base = label && !looksUnsafeLabel(label) ? label : 'Debt';
+export function looksUnsafeLabel(value: string): boolean {
+  try {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    if (SAFE_DEBT_LABEL_ALLOWLIST.has(trimmed)) return false;
+
+    const label = stripDecorativeEmail(trimmed);
+    const hasDigit = /\d/.test(label);
+
+    return (
+      OTP_OR_CODE_PATTERN.test(label)
+      || PHONE_PATTERN.test(label)
+      || LONG_CARD_OR_ACCOUNT_PATTERN.test(label)
+      || IFSC_PATTERN.test(label)
+      || MASKED_ACCOUNT_PATTERN.test(label)
+      || UPI_HANDLE_PATTERN.test(label)
+      || (hasDigit && ADDRESS_HINT_PATTERN.test(label))
+    );
+  } catch {
+    return true;
+  }
+}
+
+function fallbackDebtLabel(debt: DebtItem): string {
+  if (debt.sourceType === 'credit_card') return 'Credit card';
+  if (debt.sourceType === 'loan' || debt.sourceType === 'loan_account') return 'Loan';
+  if (debt.sourceType === 'people_borrowed') return 'Borrowed money';
+  return 'Debt';
+}
+
+export function safeDebtLabel(debt: DebtItem): string {
+  const label = stripDecorativeEmail((debt.label || '').trim());
+  const base = label && !looksUnsafeLabel(label) ? label : fallbackDebtLabel(debt);
   const last4 = (debt.metadata?.last4 || '').replace(/\D/g, '').slice(-4);
-  return last4 ? `${base} ••${last4}` : base;
+  return last4 ? `${base} ending ${last4}` : base;
 }
 
 function minimumPaymentLabel(debt: DebtItem): string {
@@ -340,6 +398,23 @@ function markerTone(marker: 'hidden' | 'duplicate' | 'review') {
   return '#06b6d4';
 }
 
+function validateSettingsForm(form: SettingsFormState): {
+  ok: true;
+  input: DebtFreedomSettingsInput;
+} | {
+  ok: false;
+  message: string;
+} {
+  try {
+    return { ok: true, input: buildSettingsInputFromForm(form) };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Review planning targets before saving.',
+    };
+  }
+}
+
 export function warningCopyForCode(code: DebtFreedomWarningCode) {
   return WARNING_COPY[code] || {
     title: 'Review needed',
@@ -347,6 +422,47 @@ export function warningCopyForCode(code: DebtFreedomWarningCode) {
     icon: DEBT_FREEDOM_ICONS.alert,
   };
 }
+
+const DebtRow = React.memo(function DebtRow({
+  debt,
+  colors,
+  typography,
+  spacing,
+  renderMarker,
+}: {
+  debt: DebtItem;
+  colors: ThemeColors;
+  typography: ThemeTypography;
+  spacing: ThemeSpacing;
+  renderMarker: (label: string, marker: DebtMarkerKind) => React.ReactNode;
+}) {
+  return (
+    <View style={[styles.debtRow, { borderBottomColor: colors.border }]}>
+      <View style={{ flex: 1, marginRight: spacing.sm }}>
+        <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>
+          {safeDebtLabel(debt)}
+        </Text>
+        <Text style={[typography.caption, { color: colors.subtext, marginTop: 3 }]} numberOfLines={1}>
+          {minimumPaymentLabel(debt)} · {aprLabel(debt.annualInterestRate)}
+        </Text>
+        <View style={styles.markerRow}>
+          {debt.isHidden ? renderMarker('Hidden included', 'hidden') : null}
+          {debt.duplicateGroupKey ? renderMarker('Duplicate risk', 'duplicate') : null}
+          {debt.confidence === 'needs_review' || debt.confidence === 'low'
+            ? renderMarker('Review', 'review')
+            : null}
+        </View>
+      </View>
+      <Text
+        style={[typography.bodyBold, { color: colors.text }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}>
+        {`Outstanding ${rupee(debt.outstanding)}`}
+      </Text>
+    </View>
+  );
+});
 
 export default function DebtFreedomScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
@@ -359,15 +475,24 @@ export default function DebtFreedomScreen() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const lastLoadStartedAtRef = useRef(0);
+  const loadBackoffMsRef = useRef(0);
 
   const loadCoach = useCallback(async (isRefresh = false) => {
+    const now = Date.now();
+    if (!isRefresh && loadBackoffMsRef.current > 0 && now - lastLoadStartedAtRef.current < loadBackoffMsRef.current) {
+      return;
+    }
+    lastLoadStartedAtRef.current = now;
     if (isRefresh) setRefreshing(true);
     try {
       const next = await getDebtFreedomCoachViewModel();
       setViewModel(next);
       setError(false);
+      loadBackoffMsRef.current = 0;
     } catch {
       setError(true);
+      loadBackoffMsRef.current = Math.min(loadBackoffMsRef.current ? loadBackoffMsRef.current * 2 : 1000, 8000);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -399,10 +524,16 @@ export default function DebtFreedomScreen() {
   };
 
   const savePlanningTargets = async () => {
+    const validation = validateSettingsForm(settingsForm);
+    if (!validation.ok) {
+      setSettingsError(validation.message);
+      return;
+    }
+
     try {
       setSavingSettings(true);
       setSettingsError(null);
-      await upsertDebtFreedomSettings(buildSettingsInputFromForm(settingsForm));
+      await upsertDebtFreedomSettings(validation.input);
       setSettingsSuccess('Planning targets saved.');
       setSettingsModalVisible(false);
       await loadCoach(true);
@@ -442,41 +573,25 @@ export default function DebtFreedomScreen() {
     </Card>
   );
 
-  const renderMarker = (label: string, marker: 'hidden' | 'duplicate' | 'review') => {
+  const renderMarker = useCallback((label: string, marker: DebtMarkerKind) => {
     const color = markerTone(marker);
     return (
       <View style={[styles.marker, { borderColor: `${color}55`, backgroundColor: `${color}12` }]}>
         <Text style={[typography.caption, styles.markerText, { color }]}>{label}</Text>
       </View>
     );
-  };
+  }, [typography.caption]);
 
-  const renderDebtRow = (debt: DebtItem) => (
-    <View key={debt.id} style={[styles.debtRow, { borderBottomColor: colors.border }]}>
-      <View style={{ flex: 1, marginRight: spacing.sm }}>
-        <Text style={[typography.bodyBold, { color: colors.text }]} numberOfLines={1}>
-          {safeDebtLabel(debt)}
-        </Text>
-        <Text style={[typography.caption, { color: colors.subtext, marginTop: 3 }]} numberOfLines={1}>
-          {minimumPaymentLabel(debt)} · {aprLabel(debt.annualInterestRate)}
-        </Text>
-        <View style={styles.markerRow}>
-          {debt.isHidden ? renderMarker('Hidden included', 'hidden') : null}
-          {debt.duplicateGroupKey ? renderMarker('Duplicate risk', 'duplicate') : null}
-          {debt.confidence === 'needs_review' || debt.confidence === 'low'
-            ? renderMarker('Review', 'review')
-            : null}
-        </View>
-      </View>
-      <Text
-        style={[typography.bodyBold, { color: colors.text }]}
-        numberOfLines={1}
-        adjustsFontSizeToFit
-        minimumFontScale={0.75}>
-        {`Outstanding ${rupee(debt.outstanding)}`}
-      </Text>
-    </View>
-  );
+  const renderDebtRow = useCallback((debt: DebtItem) => (
+    <DebtRow
+      key={debt.id}
+      debt={debt}
+      colors={colors}
+      typography={typography}
+      spacing={spacing}
+      renderMarker={renderMarker}
+    />
+  ), [colors, typography, spacing, renderMarker]);
 
   const renderWarnings = (vm: DebtFreedomCoachViewModel) => {
     if (!vm.plan.warnings.length) {
@@ -502,7 +617,11 @@ export default function DebtFreedomScreen() {
         </Text>
         {vm.plan.warnings.map(warning => {
           const copy = warningCopyForCode(warning.code);
-          const color = warning.severity === 'high' ? '#ef4444' : warning.severity === 'caution' ? '#f59e0b' : '#06b6d4';
+          const color = warning.severity === 'high'
+            ? colors.error
+            : warning.severity === 'caution'
+              ? colors.warning
+              : colors.info;
           return (
             <View key={warning.code} style={[styles.warningRow, { borderTopColor: colors.border }]}>
               <DebtFreedomIcon name={copy.icon} size={20} color={color} />
@@ -575,6 +694,7 @@ export default function DebtFreedomScreen() {
         placeholder={placeholder}
         placeholderTextColor={colors.subtext}
         keyboardType="numeric"
+        accessibilityLabel={label}
         style={[
           styles.input,
           {
@@ -611,13 +731,24 @@ export default function DebtFreedomScreen() {
   };
 
   const renderSettingsModal = () => (
-    <Modal visible={settingsModalVisible} animationType="slide" transparent onRequestClose={closeSettingsModal}>
+    <Modal
+      visible={settingsModalVisible}
+      animationType="slide"
+      transparent
+      presentationStyle="overFullScreen"
+      onRequestClose={closeSettingsModal}>
       <View style={styles.modalBackdrop}>
         <View style={[styles.modalCard, { backgroundColor: colors.card, borderRadius: borderRadius.lg }]}>
           <ScrollView keyboardShouldPersistTaps="handled">
             <View style={styles.modalHeader}>
               <Text style={[typography.h3, { color: colors.text }]}>Set planning targets</Text>
-              <TouchableOpacity onPress={closeSettingsModal} style={styles.iconButton}>
+              <TouchableOpacity
+                onPress={closeSettingsModal}
+                style={styles.iconButton}
+                disabled={savingSettings}
+                accessibilityRole="button"
+                accessibilityLabel="Close planning targets"
+                accessibilityState={{ disabled: savingSettings }}>
                 <DebtFreedomIcon name={DEBT_FREEDOM_ICONS.close} size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
@@ -668,13 +799,20 @@ export default function DebtFreedomScreen() {
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={[styles.secondaryButton, { borderColor: colors.border, borderRadius: borderRadius.md }]}
-                onPress={closeSettingsModal}>
+                onPress={closeSettingsModal}
+                disabled={savingSettings}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel planning targets"
+                accessibilityState={{ disabled: savingSettings }}>
                 <Text style={[typography.caption, { color: colors.text, fontWeight: '800' }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.primaryButton, { backgroundColor: colors.accent, borderRadius: borderRadius.md }]}
                 onPress={savePlanningTargets}
-                disabled={savingSettings}>
+                disabled={savingSettings}
+                accessibilityRole="button"
+                accessibilityLabel="Save planning targets"
+                accessibilityState={{ disabled: savingSettings }}>
                 {savingSettings ? <ActivityIndicator size="small" color="#ffffff" /> : null}
                 <Text style={[typography.caption, { color: '#ffffff', fontWeight: '800', marginLeft: savingSettings ? 6 : 0 }]}>
                   Save settings
@@ -682,6 +820,14 @@ export default function DebtFreedomScreen() {
               </TouchableOpacity>
             </View>
           </ScrollView>
+          {savingSettings ? (
+            <View style={[styles.savingOverlay, { backgroundColor: `${colors.card}dd`, borderRadius: borderRadius.lg }]}>
+              <ActivityIndicator color={colors.accent} />
+              <Text style={[typography.caption, { color: colors.text, marginTop: spacing.sm, fontWeight: '700' }]}>
+                Saving planning targets...
+              </Text>
+            </View>
+          ) : null}
         </View>
       </View>
     </Modal>
@@ -1082,6 +1228,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  savingOverlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
