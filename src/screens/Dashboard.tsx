@@ -556,14 +556,14 @@ export default function Dashboard() {
             
             <View style={{ flexDirection: 'row', marginTop: spacing.md, gap: 12 }}>
               <View style={styles.heroPill}>
-                <MaterialCommunityIcons name="arrow-down" size={14} color="#fff" />
+                <MaterialCommunityIcons name="check" size={14} color="#fff" />
                 <Text style={[typography.caption, { color: '#fff', marginLeft: 4, fontSize: 11 }]}>
                   {formatAmount(totalIncome)}
                 </Text>
               </View>
               <Text style={{ color: 'rgba(255,255,255,0.5)' }}>|</Text>
               <View style={styles.heroPill}>
-                <MaterialCommunityIcons name="arrow-up" size={14} color="#fff" />
+                <MaterialCommunityIcons name="close" size={14} color="#fff" />
                 <Text style={[typography.caption, { color: '#fff', marginLeft: 4, fontSize: 11 }]}>
                   {formatAmount(netExpense)}
                 </Text>
@@ -599,7 +599,7 @@ export default function Dashboard() {
               <View>
                 <View style={{ flexDirection: 'row', gap: 12, marginBottom: spacing.md }}>
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                    <MaterialCommunityIcons name="arrow-down-circle" size={24} color={colors.income} />
+                    <MaterialCommunityIcons name="check-circle" size={24} color={colors.income} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                       Income
                     </Text>
@@ -609,7 +609,7 @@ export default function Dashboard() {
                   </Card>
 
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                    <MaterialCommunityIcons name="arrow-up-circle" size={24} color={colors.expense} />
+                    <MaterialCommunityIcons name="close-circle" size={24} color={colors.expense} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                       Net Expense
                     </Text>

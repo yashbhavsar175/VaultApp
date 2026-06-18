@@ -125,15 +125,21 @@ export const getBankEmoji = (bankName: string): string => {
   return '🏦'; // default
 };
 
-export const getBankSuggestions = (query: string): string[] => {
+export const getBankSuggestions = (query: string, userBankNames?: string[]): string[] => {
   if (!query || query.length < 1) return [];
   
   // Sanitize input to prevent issues with special characters
   const sanitized = query.replace(/[^a-zA-Z\s]/g, '').toLowerCase();
   
   if (!sanitized) return [];
+
+  // Merge hardcoded bank names with user's actual bank names from Supabase
+  const allBankNames = new Set([
+    ...Object.keys(BANK_DOMAINS),
+    ...(userBankNames || []).map(name => name.toLowerCase()),
+  ]);
   
-  const suggestions = Object.keys(BANK_DOMAINS)
+  const suggestions = Array.from(allBankNames)
     .filter(key => key.toLowerCase().includes(sanitized))
     .map(key => {
       // Capitalize first letter of each word

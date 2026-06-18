@@ -1257,7 +1257,7 @@ export function BanksScreen() {
               <View style={{ position: 'relative', zIndex: 10 }}>
                 <AppInput
                   label="Bank Name *"
-                  placeholder="e.g. Slice, Kotak, HDFC"
+                  placeholder="e.g. Enter bank name"
                   value={bankName}
                   onChangeText={handleBankNameChange}
                 />
@@ -1534,16 +1534,12 @@ export function BanksScreen() {
 // ADD CREDIT CARD SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const BANKS = [
-  'HDFC Bank',
-  'Utkarsh Bank',
+const POPULAR_BANKS = [
+  'HDFC',
   'SBI',
-  'ICICI Bank',
-  'Axis Bank',
-  'Kotak Bank',
-  'IndusInd Bank',
-  'Yes Bank',
-  'IDFC First Bank',
+  'ICICI',
+  'Axis',
+  'Kotak',
   'Custom',
 ];
 
@@ -1628,7 +1624,7 @@ export function AddCreditCardScreen() {
 
         {showBankPicker && (
           <Card style={{ marginTop: spacing.sm, marginBottom: spacing.md }}>
-            {BANKS.map((bank) => (
+            {POPULAR_BANKS.map((bank) => (
               <TouchableOpacity
                 key={bank}
                 style={[styles.pickerItem, { borderBottomColor: colors.border, padding: spacing.md }]}
@@ -2119,8 +2115,8 @@ export function AnalyticsScreen() {
     ? (Number(largestTransaction.amount) / totalSpent) * 100
     : 0;
   const typeMix = [
-    { label: 'Income', value: totalIncome, color: '#10b981', icon: 'arrow-down-circle-outline' },
-    { label: 'Expense', value: totalSpent, color: '#ef4444', icon: 'arrow-up-circle-outline' },
+    { label: 'Income', value: totalIncome, color: '#10b981', icon: 'check-circle-outline' },
+    { label: 'Expense', value: totalSpent, color: '#ef4444', icon: 'close-circle-outline' },
     { label: 'Investment', value: totalInvestment, color: '#7c3aed', icon: 'chart-line' },
     { label: 'EMI', value: totalEMI, color: '#f59e0b', icon: 'credit-card-clock-outline' },
     { label: 'Borrowed', value: totalBorrowed, color: '#ec4899', icon: 'account-arrow-left-outline' },
@@ -2222,8 +2218,8 @@ export function AnalyticsScreen() {
 
           <View style={styles.kpiGrid}>
             {[
-              { label: 'Income', value: formatAmount(totalIncome), icon: 'arrow-down-circle-outline', color: '#10b981', trend: incomeTrend.text },
-              { label: 'Outflow', value: formatAmount(totalOutflow), icon: 'arrow-up-circle-outline', color: '#ef4444', trend: outflowTrend.text },
+              { label: 'Income', value: formatAmount(totalIncome), icon: 'check-circle-outline', color: '#10b981', trend: incomeTrend.text },
+              { label: 'Outflow', value: formatAmount(totalOutflow), icon: 'close-circle-outline', color: '#ef4444', trend: outflowTrend.text },
               { label: 'Net Savings', value: formatAmount(netSavings), icon: 'piggy-bank-outline', color: netSavings >= 0 ? '#3b82f6' : '#ef4444', trend: formatPercent(savingsRate) },
               { label: 'Avg Spend / Day', value: formatAmount(avgDailySpend), icon: 'calendar-clock', color: '#f59e0b', trend: `${activeDays}/${periodDays} days` },
               { label: 'Cash & Bank', value: formatAmount(accountBalance), icon: 'bank-outline', color: '#7c3aed', trend: incomeCoverageDays > 0 ? `${incomeCoverageDays.toFixed(0)} day cover` : 'No cover yet' },

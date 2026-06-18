@@ -28,8 +28,8 @@ import { emitFinanceDataChanged } from '../../lib/services/dataEvents';
 import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../../lib/services/userScopedQueues';
 
 const TYPE_OPTIONS = [
-  { value: 'income', label: 'Income', icon: 'arrow-down-circle', color: '#10b981' },
-  { value: 'expense', label: 'Expense', icon: 'arrow-up-circle', color: '#ef4444' },
+  { value: 'income', label: 'Income', icon: 'check-circle', color: '#10b981' },
+  { value: 'expense', label: 'Expense', icon: 'close-circle', color: '#ef4444' },
   { value: 'investment', label: 'Investment', icon: 'chart-line', color: '#7c3aed' },
   { value: 'emi', label: 'EMI', icon: 'credit-card', color: '#f59e0b' },
   { value: 'lent', label: 'Lent', icon: 'account-arrow-right', color: '#06b6d4' },
@@ -243,10 +243,17 @@ export default function Add() {
 
   const handleParseWithAI = async () => {
     if (!aiInput.trim()) {
-      Toast.show({
-        type: 'error',
-        text1: 'Error',
-        text2: 'Please describe your transaction',
+      Toast.show({ type: 'error', text1: 'Error', text2: 'Please describe your transaction' });
+      return;
+    }
+
+    // PRE-VALIDATE amount before AI call
+    const amountMatch = aiInput.match(/₹?\s*([\d,]+\.?\d*)/i);
+    if (!amountMatch) {
+      Toast.show({ 
+        type: 'info', 
+        text1: '🤔 No Amount', 
+        text2: 'Try: "500 pizza" or "₹200 petrol"' 
       });
       return;
     }
@@ -254,27 +261,31 @@ export default function Add() {
     setParsing(true);
     try {
       const result = await parseTransactionWithAI(aiInput);
-
-      setParsedReview({
-        ...result,
-        confidence: 80,
-      });
+      setParsedReview({ ...result, confidence: 85 });
+      setAiInput(''); // Clear input after successful parsing
       HapticFeedback.trigger('notificationSuccess', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-      Toast.show({
-        type: 'success',
-        text1: 'Parsed Successfully',
-        text2: 'Review before using this transaction',
-      });
+      Toast.show({ type: 'success', text1: '✅ Parsed', text2: 'Review transaction' });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      const isConfigError = errorMessage.includes('not configured');
+      const msg = error instanceof Error ? error.message : '';
+      let title = 'AI Failed';
+      let text2 = 'Use manual mode';
+
+      if (msg.includes('not configured') || msg.includes('API key')) {
+        title = '🚫 AI Not Ready';
+        text2 = 'Configure Edge Function API key';
+      } else if (msg.includes('timeout')) {
+        title = '⏰ Timeout';
+        text2 = 'Try shorter text';
+      } else if (msg.includes('2xx') || msg.includes('Edge')) {
+        title = '⚠️ Service Error';
+        text2 = 'Server issue, retry later';
+      } else if (msg.includes('incomplete')) {
+        title = '🤔 Unclear';
+        text2 = 'Try: "500 pizza" format';
+      }
+
       HapticFeedback.trigger('notificationError', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
-      Toast.show({
-        type: 'error',
-        text1: isConfigError ? 'API Key Missing' : 'Parsing Failed',
-        text2: isConfigError ? 'Please configure API key or use Manual mode' : 'Please try manual mode',
-      });
-      console.error('Error: Failed to parse transaction with AI', error);
+      Toast.show({ type: 'error', text1: title, text2 });
     } finally {
       setParsing(false);
     }
@@ -546,10 +557,11 @@ export default function Add() {
             <Text style={[typography.caption, { color: colors.accent }]}>• 200 rs petrol</Text>
             <Text style={[typography.caption, { color: colors.accent }]}>• 5000 SIP Zerodha</Text>
             <Text style={[typography.caption, { color: colors.accent }]}>• 35000 salary</Text>
+            <Text style={[typography.caption, { color: colors.accent }]}>• 500 pizza</Text>
           </Card>
 
           <AppButton
-            title="Parse with AI"
+            title="Submit"
             onPress={handleParseWithAI}
             loading={parsing}
             fullWidth

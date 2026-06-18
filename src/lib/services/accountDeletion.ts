@@ -124,10 +124,60 @@ export async function deletePlacePhotosForUser(userId: string): Promise<void> {
   }
 }
 
+export async function exportUserDataBeforeDeletion(userId: string): Promise<string> {
+  const exportData: Record<string, unknown> = {
+    exportedAt: new Date().toISOString(),
+    userId,
+    tables: {},
+  };
+
+  // Export data from all critical tables before deletion
+  const CRITICAL_TABLES = [
+    'transactions',
+    'bank_accounts',
+    'credit_cards',
+    'loans',
+    'vault_items',
+    'people_ledger',
+    'places',
+    'debt_freedom_settings',
+    'balance_snapshots',
+  ];
+
+  for (const table of CRITICAL_TABLES) {
+    try {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .eq('user_id', userId);
+
+      if (!error && data) {
+        (exportData.tables as Record<string, unknown>)[table] = data;
+      }
+    } catch {
+      // Best effort — skip tables that fail
+    }
+  }
+
+  const exportJson = JSON.stringify(exportData);
+  const exportKey = `data_export_${userId}_${Date.now()}`;
+  await AsyncStorage.setItem(exportKey, exportJson);
+
+  return exportKey;
+}
+
 export async function deleteCurrentUserAppData(): Promise<void> {
   try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new AccountDataDeletionError('session');
+
+  // Export all user data before deletion (safety net)
+  try {
+    await exportUserDataBeforeDeletion(user.id);
+  } catch {
+    // Export failure should not block deletion if user explicitly chose to delete
+    if (__DEV__) console.warn('[AccountDeletion] Data export failed, proceeding with deletion');
+  }
 
   await deletePlacePhotosForUser(user.id);
 

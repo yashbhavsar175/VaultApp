@@ -91,15 +91,47 @@ function hashString(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
+  confidenceScore: number;
+  confidenceLevel: ConfidenceLevel;
+  decision: Decision;
+  duplicateFingerprints: DuplicateFingerprint[];
+  redactedPreview: RedactedPreview;
+};
+
+const TRUSTED_SOURCES = [
+  'UTKSPR', 'UTKSFB', 'UTKARSH', 'SFBL', 'SuperCard',
+  'super.money', 'money.super.payments', 'slice bank', 'slice',
+  'HDFC', 'SBI', 'ICICI', 'Axis', 'Kotak',
+  'GPay', 'Google Pay', 'com.google.android.apps.nbu.paisa.user',
+  'PhonePe', 'com.phonepe.app',
+  'Paytm', 'net.one97.paytm',
+  'CRED', 'com.dreamplug.androidapp',
+  'OneCard'
+];
+
+function hashString(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
     hash = hash & hash; // Convert to 32bit integer
   }
   return Math.abs(hash).toString(16);
 }
 
-function isTrustedSource(senderOrPackage: string): boolean {
+function isTrustedSource(senderOrPackage: string, rawText?: string): boolean {
   const lowerSrc = senderOrPackage.toLowerCase();
-  return TRUSTED_SOURCES.some(ts => lowerSrc.includes(ts.toLowerCase()));
+  if (TRUSTED_SOURCES.some(ts => lowerSrc.includes(ts.toLowerCase()))) return true;
+  
+  // Dynamic trust: if sender looks like a bank/financial SMS sender code (2-letter prefix + alphanumeric)
+  // AND the message has strong transaction evidence, treat as trusted
+  if (rawText) {
+    const hasFinancialSender = /^[A-Z]{2}-[A-Z]+$/i.test(senderOrPackage) || /bank|pay|money|finance|wallet/i.test(lowerSrc);
+    const hasStrongEvidence = /\b(?:debited|credited|paid|received|transferred|withdrawn|deposited)\b/i.test(rawText) &&
+      /(?:INR|Rs\.?|₹)\s*[0-9,]+/i.test(rawText);
+    if (hasFinancialSender && hasStrongEvidence) return true;
+  }
+  return false;
 }
 
 function extractAmount(text: string): number | null {
@@ -415,7 +447,7 @@ function decide(autoClass: AutoTransactionClass, level: ConfidenceLevel, trusted
 }
 
 export function processSignal(signal: RawTransactionSignal): SmartCandidate {
-  const trustedSource = isTrustedSource(signal.senderOrPackage) || 
+  const trustedSource = isTrustedSource(signal.senderOrPackage, signal.rawText) || 
                         /\b(supercard|super\.money)\b/i.test(signal.rawText);
   
   const amount = extractAmount(signal.rawText);

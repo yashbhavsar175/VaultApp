@@ -1,196 +1,183 @@
 # SpendSense / VaultApp Deep Project Introduction
 
-## Source Note
+Last updated: 2026-06-17
 
-This document describes the current checkout of the repository named `VaultApp`.
-The user-facing product name in the app is `SpendSense`.
+Use this document as the first file to give any AI assistant before asking it to
+debug, review, or modify this project. It is written as an AI handoff: it explains
+what the app is, how the code is shaped, what must never be broken, which files
+matter for each feature, and how to verify changes safely.
 
-The description is source-based. It reflects the files currently present in this
-workspace, especially `docs/codex_context.md`, `App.tsx`, the navigation files,
-the TypeScript services, and the Supabase SQL setup. It is not proof that every
-local SQL script has already been deployed to the live Supabase project.
+The repository name is `VaultApp`. The user-facing product name is `SpendSense`.
 
-## Executive Summary
+## Quick Prompt For Another AI
 
-SpendSense is a React Native CLI personal-finance app for Indian users. It is
-built around INR money tracking, bank accounts, credit cards, loans,
-transactions, people-ledger tracking, saved places, reminders, and a client-side
-encrypted secure vault.
+Paste this before sharing a bug, file, stack trace, or feature request:
 
-The app is not just a manual expense tracker. It also has Android-specific
-automation for SMS and app-notification processing, balance signal detection,
-bank account detection, transaction evidence capture, geofencing, notification
-reminders, and Porter-style delivery-driver diagnostics. Because it handles
-real financial and personal data, its most important design values are:
+```text
+You are working on SpendSense, a React Native CLI + TypeScript personal finance
+app for Indian users. The repo is named VaultApp. Read
+docs/PROJECT_DEEP_INTRODUCTION.md and docs/codex_context.md first, then inspect
+the relevant source files before making assumptions.
 
-- Do not invent financial records.
-- Preserve privacy by redacting raw sensitive input.
-- Keep Supabase RLS as the durable cloud security boundary.
-- Keep the UI cache-first without treating local cache as the source of truth.
-- Keep Vault secrets encrypted on the client before they reach Supabase.
-- Keep financial mutations user-owned, duplicate-safe, and reversible where the
-  product requires review.
+Important rules:
+- Preserve cache-first loading.
+- Preserve Supabase RLS and user ownership checks.
+- Never invent fake financial records.
+- Do not convert balance-only, statement, reminder, or ambiguous messages into
+  income or expense transactions.
+- Keep Vault secrets encrypted client-side.
+- Do not expose raw SMS, notification text, OTPs, phone numbers, addresses,
+  full account/card numbers, full emails, raw profile objects, or Vault secrets
+  in UI, logs, cache, tests, or diagnostics.
+- User-facing app copy must be English-only.
+- Do not define React components inline inside other components.
+- Prefer the smallest safe fix, add focused tests when behavior changes, and run
+  the right verification commands.
 
-## Product Identity
+When I give you one file, understand how it connects to navigation, data
+services, cache, Supabase tables/RPCs, Android native modules, and tests before
+debugging it.
+```
 
-The repo name, package name, and some internal references use `VaultApp`. The
-product experience is branded as `SpendSense`. The app combines ordinary
-personal finance workflows with safety-focused automation.
+## One-Paragraph Product Summary
 
-Primary user jobs include:
+SpendSense is a mobile personal-finance app that tracks transactions, bank
+accounts, credit cards, loans, people-ledger money, saved places, reminders, and
+secure personal vault records. It is more than a manual expense tracker: it also
+processes Android SMS and notification signals, records privacy-safe transaction
+evidence, detects account and balance signals, supports offline transaction
+queues, and includes optional delivery-driver diagnostics such as Porter distance
+tools. Because the app handles real financial and personal data, correctness,
+privacy, ownership, duplicate safety, and cache consistency are product-critical.
 
-- Track monthly income, spending, investment, EMI, and balance.
-- Add transactions manually or by natural-language parsing.
-- Capture bank, UPI, and payment-app events from Android SMS and notifications.
-- Maintain bank accounts, credit cards, debit cards, and loans.
-- Track balances and balance history without converting balance-only messages
-  into fake income or expense.
-- Track money lent to or borrowed from people.
-- Store sensitive personal records in a biometric-protected Vault.
-- Save places and location-based reminders.
-- Plan debt payoff with Debt Freedom Coach.
-- Use optional Android delivery-driver tools for Porter distance diagnostics and
-  overlays.
-
-## Technology Stack
-
-### Client
+## Tech Stack
 
 - React Native CLI, not Expo.
 - TypeScript.
 - React 19 and React Native 0.84.
-- React Navigation with bottom tabs and nested stacks.
-- MaterialCommunityIcons through `react-native-vector-icons`.
-- AsyncStorage for normal cache, route hints, local preferences, and offline
-  queues.
+- React Navigation with bottom tabs and nested stack navigators.
+- Supabase Auth, Postgres, Storage, RLS, Edge Functions, SQL triggers, and RPCs.
+- AsyncStorage for cache, route hints, local settings, and offline queues.
 - EncryptedStorage for Supabase auth session storage.
-- React Native Biometrics and AES crypto for the secure vault flow.
+- React Native Biometrics and AES crypto for Vault unlock/encryption flows.
 - Notifee and Android notification-listener support.
-- Android native Kotlin/Java modules for SMS, notification processing,
-  geofencing, boot handling, accessibility, overlays, and secure-window control.
+- Android Kotlin/Java native modules for SMS, notifications, geofencing, boot
+  handling, accessibility, overlay behavior, and secure-window behavior.
+- Jest, TypeScript, ESLint, Android Gradle/Kotlin compile for verification.
 
-### Backend
+## Source Of Truth Rules
 
-- Supabase Auth.
-- Supabase Postgres.
-- Supabase Row Level Security policies for user-owned data.
-- Supabase Storage for place photos.
-- Supabase Edge Function `parse-transaction` for remote AI parsing when used by
-  the core parser path.
-- SQL triggers, RPC functions, and policies in `supabase-fresh-setup.sql` and
-  modular SQL files.
+- `docs/codex_context.md` is the compact current project contract. Read it first.
+- Current source code beats old README/docs when they disagree.
+- Local SQL files do not prove live Supabase is updated. SQL/RLS/RPC changes need
+  live Supabase verification when the task depends on deployed behavior.
+- Cache can make stale behavior look correct. Always trace both cache reads and
+  Supabase writes for data bugs.
+- Android runtime behavior can differ from TypeScript tests. Native, permission,
+  startup, SMS, notification, geofence, accessibility, and overlay changes need
+  Android compile or runtime QA as appropriate.
 
-## Application Bootstrap
+## App Startup And Routing
 
-`App.tsx` is the real root of the app. It coordinates:
+`App.tsx` is the real app root. It coordinates:
 
 - Google Sign-In setup.
-- Supabase session restoration.
-- Cached profile route hints.
-- Live profile checks.
-- Startup timeouts and a startup repair path.
-- Offline transaction sync on app foreground and network reconnect.
+- Supabase session restoration through EncryptedStorage.
+- Profile route hints from cache.
+- Live profile lookup and startup retry/repair screens.
+- Offline transaction sync on foreground and network reconnect.
 - Foreground notification listener initialization.
 - Porter distance calculator initialization.
 - Place-reminder location monitoring after login.
 - Background prefetch of core app data.
-- Theme provider, navigation container, toast UI, and error boundary.
+- Theme provider, navigation container, toast UI, permission prompt, and error
+  boundary.
 
-The startup route is:
+Startup flow:
 
-1. Show intro flow.
-2. Restore or detect auth session.
-3. If logged out, show login or signup.
-4. If logged in but profile is incomplete, show profile setup.
-5. If profile is complete, show the main app navigator.
-6. If startup state becomes inconsistent or stalls, expose repair behavior
-   instead of leaving the user stuck.
+1. Show intro flow while auth/profile startup prepares.
+2. If logged out, show login or signup.
+3. If logged in but profile is incomplete, show profile setup.
+4. If profile is complete, show the main app.
+5. If startup stalls or cannot confirm state, show retry/repair UI instead of a
+   blank app.
 
-## Current Navigation Shape
+Current main tabs in `src/navigation/BottomTabNavigator.tsx`:
 
-The main bottom tabs are:
+- `Dashboard`
+- `Add`
+- `People`
+- `Vault`
+- `Settings`
 
-- Dashboard
-- Add
-- People
-- Vault
-- Settings
-
-The root navigator currently contains:
+Current root stack in `src/navigation/RootNavigator.tsx`:
 
 - `MainTabs`
 - `Places`
 - `PorterTest` in development builds only
 
-The Dashboard stack currently exposes:
+Important nested stacks:
 
-- Dashboard home
-- Banks
-- Bank and card configuration redirect
-- Detected accounts
-- Legacy bank auto-detection
-- SMS test screen
-- Transactions
-- Analytics
-- Transaction detail
+- `src/navigation/DashboardStack.tsx`
+- `src/navigation/SettingsStack.tsx`
+- `src/navigation/RouteRedirects.tsx`
 
-The Settings stack currently exposes:
+## Major Feature Areas
 
-- Settings home
-- Banks
-- Bank and card configuration redirect
-- Detected accounts
-- SMS test screen
-- Debt Freedom Coach
-- Places
-- Place reminders
-- Edit place reminder
-- Place reminder map picker
-- Porter Test in development builds only
+### Authentication
 
-Some older or reviewer-oriented documents mention additional screens such as
-Review Queue, Income Review, and Reconciliation Proposals. In the current source
-snapshot, income-review and evidence services still exist, but those extra
-screens are not all visible in the current navigation files. Treat historical
-docs as context and verify current wiring from source before assuming a screen
-is active.
+Primary files:
 
-## Major User-Facing Feature Areas
+- `src/screens/auth/AuthScreens.tsx`
+- `src/lib/core.ts`
+- `App.tsx`
+- `src/config/index.ts`
+
+Auth supports email/password, Google Sign-In, persisted Supabase sessions,
+profile completion routing, biometric quick login against an existing valid
+session, startup timeouts, and local repair behavior.
+
+Debugging tips:
+
+- Login success may rely on `supabase.auth.onAuthStateChange`, not only direct UI
+  callbacks.
+- `LoginScreen` can call `onAuthenticated` for retry/startup recovery.
+- Supabase auth session storage uses EncryptedStorage in `src/lib/core.ts`.
+- Profile completion is decided from `profiles.full_name`.
+- Do not log full email, tokens, sessions, or raw profile objects.
 
 ### Dashboard
 
-Dashboard is the main financial overview. It loads cached data first and then
-refreshes from Supabase. It summarizes:
+Primary files:
 
-- Monthly income.
-- Expenses.
-- Investments.
-- EMI.
-- Monthly balance.
-- People-ledger summary.
-- Bank and account context.
-- Links to analytics, transactions, and finance setup.
+- `src/screens/Dashboard.tsx`
+- `src/lib/services/financeSummary.ts`
+- `src/lib/services/cache.ts`
+- `src/lib/services/dataEvents.ts`
+- `src/lib/core.ts`
 
-Important dashboard invariants:
+Dashboard is cache-first. It summarizes income, expenses, investments, EMI,
+monthly balance, people-ledger exposure, and account context.
 
-- Refunds should reduce spending rather than become ordinary income.
-- Transfers should stay neutral.
-- Ambiguous credits should not be treated as earned income unless reviewed.
-- Deleted or edited transactions should refresh summaries and dependent views.
+Financial invariants:
 
-### Add Transaction
+- Refunds reduce spending; they are not normal income.
+- Transfers are neutral.
+- Ambiguous credits should not become income unless reviewed/confirmed.
+- Balance-only messages must not create transactions.
+- Deleting or editing transactions must refresh dependent summaries.
 
-The Add tab supports manual transaction creation and parsed transaction entry.
-It can:
+### Add Transaction And Transactions
 
-- Accept amount, type, category, note, account, and date.
-- Use cash or a selected bank account.
-- Parse natural-language input through local and remote parser paths.
-- Queue transactions offline when needed.
-- Update caches after successful writes.
-- Adjust selected bank account balances where the workflow requires it.
+Primary files:
 
-Core transaction types include:
+- `src/screens/transactions/Add.tsx`
+- `src/screens/transactions/Transactions.tsx`
+- `src/screens/transactions/TransactionDetail.tsx`
+- `src/lib/core.ts`
+- `src/types/index.ts`
+
+Transaction types currently include:
 
 - `income`
 - `expense`
@@ -201,173 +188,191 @@ Core transaction types include:
 - `borrowed`
 - `refund`
 
-The UI does not necessarily expose every backend transaction type in every
-workflow. When changing transaction behavior, compare UI options, TypeScript
-types, parser behavior, SQL constraints, dashboard math, and analytics.
+Core mutation functions in `src/lib/core.ts` include transaction add, update,
+delete, bulk delete, transfer creation, refund creation, parser helpers, and
+offline sync.
 
-### Transactions
+Debugging tips:
 
-The Transactions screen is a cache-first list with filtering, pagination,
-detail navigation, editing, selection, and bulk deletion. Transaction detail can
-show financial metadata, source traces, account matching, masked identifiers,
-and evidence-derived context.
+- Check both UI transaction types and `TransactionType`.
+- Check cache update/invalidation after every write.
+- Check `emitFinanceDataChanged` after financial mutations.
+- Check user ownership in Supabase queries.
+- Offline queues are user-scoped and should not replay another user's data.
 
-Raw SMS and raw notification text should never be exposed here. Transaction
-records should use redacted or sanitized evidence fields.
+### Accounts, Cards, Loans, Balances
 
-### Accounts, Cards, Loans, and Balances
+Primary files:
 
-Finance setup centers on `bank_accounts`, separate `credit_cards`, `loans`,
-`emi_payments`, `cc_transactions`, `debit_cards`, `balance_snapshots`, and
-detected account candidates.
+- `src/screens/financial/FinancialScreens.tsx`
+- `src/screens/financial/BankConfigScreen.tsx`
+- `src/screens/financial/DetectedAccountsScreen.tsx`
+- `src/lib/database/financial.ts`
+- `src/lib/services/balanceViewModel.ts`
+- `src/lib/services/balanceSignalRecorder.ts`
+- `src/lib/services/detectedAccounts.ts`
+- `src/lib/services/detectedAccountReview.ts`
+- `src/lib/services/accountRemoval.ts`
+- `src/types/index.ts`
 
-The app supports:
+The app handles:
 
-- Savings and current bank accounts.
-- Legacy credit-card and loan account shapes inside `bank_accounts`.
-- Separate credit-card records and credit-card transactions.
-- Loan records with EMI payment history.
-- Debit-card detection and linking.
-- Balance snapshots from SMS, notification, calculated, manual, review, and
-  import sources.
-- Balance history views and manual balance corrections.
+- Bank accounts: `savings`, `current`, `credit_card`, `loan`.
+- Separate credit cards and credit-card transactions.
+- Separate loans and EMI payments.
+- Debit cards and linked bank accounts.
+- Balance snapshots from SMS, notifications, manual corrections, calculated
+  values, review, and import sources.
+- Detected account/card/loan candidates.
 
-Balance data is evidence. A balance-only message should update balance evidence
-or a balance snapshot, not create fake income or expense.
+Critical rule: account and balance evidence is not automatically a financial
+transaction. A balance message can update balance evidence, but must not invent
+income or expense.
 
-### Detected Accounts
+### SMS, Notifications, Evidence, And Automation
 
-Detected account support helps the app identify accounts, cards, and loans from
-financial signals. Candidates can be confirmed, linked, merged, or ignored where
-the current source and SQL support that behavior.
-
-This surface is high-risk because it connects evidence, ownership, balances,
-and account records. Live Supabase RPC behavior must be verified separately from
-local SQL files.
-
-### People Ledger
-
-The People tab tracks money lent and borrowed. It supports:
-
-- Active and settled ledger entries.
-- One-time and installment repayment plans.
-- Payment recording.
-- Payment history.
-- Settlement.
-- Deletion.
-- Overdue and due-today calculations.
-- WhatsApp reminder shortcuts.
-- Local scheduled reminders.
-
-The Dashboard usually cares about active financial exposure, while the People
-screen can include settled history.
-
-### Secure Vault
-
-The Vault stores sensitive records such as bank PINs, UPI PINs, card details,
-netbanking details, app passwords, and custom secrets.
-
-Security behavior:
-
-- Biometric unlock is required where available.
-- Secret fields and notes are encrypted client-side before Supabase writes.
-- Vault cache is purged during prefetch rather than kept as normal app cache.
-- The screen locks when the user leaves or backgrounds the app.
-- Android secure-window support can be toggled through a native module while
-  Vault content is visible.
-
-Vault correctness is both a product feature and a security boundary. Avoid
-putting decrypted content into AsyncStorage, logs, screenshots, bug reports, or
-analytics.
-
-### Places and Reminders
-
-Places allow users to store useful locations with category, note, coordinates,
-address, and optional photo. Place photos use Supabase Storage through the
-`place-photos` bucket.
-
-Place reminders add geofencing and local notification behavior. Android native
-geofence receivers and processor services support this flow.
-
-Privacy considerations include location permission handling, photo cleanup,
-storage path ownership, and exposure of exact coordinates to external map or
-reverse-geocoding services.
-
-### Debt Freedom Coach
-
-Debt Freedom Coach is a planning tool. It reads loans, credit-card balances,
-income signals, income-review decisions, and user settings to produce payoff
-guidance.
-
-It can model:
-
-- Total debt.
-- Debt-free date or duration.
-- Daily and monthly target pace.
-- Safe spend.
-- Free cash flow after debt.
-- Debt-to-income ratio.
-- Debt priority.
-- Warning states such as missing income, low buffer, stale balances, missing
-  interest rates, or high debt load.
-
-It must not fabricate transactions or mutate real financial balances merely to
-make a plan look better.
-
-### Android Transaction Automation
-
-SpendSense has Android-specific automation for:
-
-- SMS receive and read flows.
-- Notification listener processing.
-- Headless JS processing.
-- Boot restart handling.
-- Foreground transaction notifications.
-- Queueing notification and SMS signals so related events can be paired.
-
-The main JavaScript processing files are:
+Primary files:
 
 - `src/lib/processors/TransactionProcessors.ts`
 - `src/lib/processors/TransactionQueue.ts`
 - `src/lib/services/smsParser.ts`
+- `src/lib/services/balanceParser.ts`
 - `src/lib/services/automaticTransactionPolicy.ts`
 - `src/lib/services/transactionIntelligence.ts`
-- `src/lib/services/runtimeTransactionEvidence.ts`
 - `src/lib/services/transactionEvidence.ts`
+- `src/lib/services/runtimeTransactionEvidence.ts`
 - `src/lib/services/balanceSignalRecorder.ts`
+- Android files under `android/app/src/main/java/com/spendsense`
 
-The automation pipeline tries to classify financial signals, detect duplicate
-events, attach account hints, record sanitized evidence, update balance signals,
-and create transactions only when the policy allows it.
+This pipeline processes SMS and notification signals, classifies financial
+events, records sanitized evidence, detects duplicate/replayed events, matches
+accounts/cards, records balance snapshots, and creates transactions only when
+policy allows.
 
-Important rule: clear financial automation is useful, but safety wins. A missed
-transaction that can be reviewed later is safer than a fabricated or wrongly
-classified transaction.
+High-risk cases:
 
-### Porter and Delivery Diagnostics
+- Duplicate SMS/notification pairs.
+- Boot or foreground-service replay.
+- Ambiguous credits.
+- Credit-card bill payments.
+- Refunds/reversals.
+- Balance-only messages.
+- Statement summaries.
+- Payment reminders.
+- Loan disbursal or EMI messages.
 
-The app includes optional Android delivery-driver tools, mainly in
-`src/lib/services/porter.ts` and native classes such as
-`PorterAccessibilityService.kt` and `PorterModule.kt`.
+When in doubt, prefer review/safe evidence over automatic posting.
 
-These tools can:
+### People Ledger
 
-- Check accessibility service state.
-- Process delivery-app screen signals.
-- Calculate route distance.
-- Use overlay permissions.
-- Show issue bubbles.
-- Export or clear privacy-reduced debug logs.
+Primary files:
 
-This is one of the most privacy-sensitive parts of the app because
-accessibility data can contain customer names, phones, addresses, OTPs, and raw
-screen text. Diagnostic storage and exports must stay redacted.
+- `src/screens/people/PeopleScreen.tsx`
+- `src/lib/database/userdata.ts`
+- `src/lib/services/scheduledNotifications.ts`
 
-## Data Architecture
+People Ledger tracks money lent and borrowed, active/settled entries, repayment
+plans, payment history, settlement, deletion, due/overdue state, WhatsApp
+reminders, and local reminders.
 
-### Supabase Tables and Storage
+Dashboard usually cares about active exposure. People screen can include settled
+history.
 
-The main SQL setup references user-owned tables such as:
+### Secure Vault
+
+Primary files:
+
+- `src/screens/vault/SecureVaultScreen.tsx`
+- `src/lib/database/vaultDb.ts`
+- `src/utils/encryption.ts`
+- `src/lib/services/vaultSecurity.ts`
+- `android/app/src/main/java/com/spendsense/VaultSecurityModule.kt`
+
+The Vault stores sensitive records such as PINs, card/account details, IDs,
+passwords, and notes.
+
+Vault security contract:
+
+- Unlock with biometrics where available.
+- Encrypt secret fields client-side before Supabase writes.
+- Do not keep decrypted secrets in AsyncStorage.
+- Purge Vault cache during prefetch instead of caching secrets.
+- Lock on screen leave/background.
+- Avoid decrypted content in logs, screenshots, crash reports, tests, or
+  analytics.
+
+### Places And Reminders
+
+Primary files:
+
+- `src/screens/places/PlacesScreen.tsx`
+- `src/screens/reminders/PlaceRemindersScreen.tsx`
+- `src/screens/reminders/EditPlaceReminderScreen.tsx`
+- `src/screens/reminders/PlaceReminderMapPickerScreen.tsx`
+- `src/lib/database/userdata.ts`
+- `src/lib/services/placeReminders.ts`
+- `src/lib/services/geofenceProcessor.ts`
+- Native geofence files under `android/app/src/main/java/com/spendsense`
+
+Places use Supabase Storage bucket `place-photos`. Reminders use location and
+geofence behavior. Treat exact location, photos, and notification content as
+privacy-sensitive.
+
+### Debt Freedom Coach
+
+Primary files:
+
+- `src/screens/financial/DebtFreedomScreen.tsx`
+- `src/lib/services/debtFreedom.ts`
+- `src/lib/services/debtFreedomViewModel.ts`
+- `src/lib/services/debtFreedomSettings.ts`
+
+Debt Freedom Coach models payoff guidance from loans, credit cards, balances,
+income signals, review decisions, and user settings.
+
+Important rule: the pure engine should not mutate real data, import Supabase,
+import React Native UI, or fabricate transactions. It should calculate guidance
+from supplied inputs.
+
+### Porter And Delivery Diagnostics
+
+Primary files:
+
+- `src/screens/porter/PorterTestScreen.tsx`
+- `src/lib/services/porter.ts`
+- `src/lib/services/deliveryDebugBlackBox.ts`
+- `android/app/src/main/java/com/spendsense/PorterAccessibilityService.kt`
+- `android/app/src/main/java/com/spendsense/PorterModule.kt`
+
+These tools support delivery-driver distance/overlay diagnostics. This is very
+privacy-sensitive because accessibility or screen data can include customer
+names, phone numbers, addresses, OTPs, order details, and raw screen text.
+
+Diagnostic rule: store/export compact redacted diagnostics only.
+
+## Data Model Overview
+
+Important TypeScript types live in `src/types/index.ts`:
+
+- `Transaction`
+- `TransactionType`
+- `BankAccount`
+- `BalanceSnapshot`
+- `DetectedAccount`
+- `DebitCard`
+- `TransactionEvidence`
+- `AccountAppMapping`
+- `CreditCardStatement`
+- `PeopleLedger`
+- `Place`
+
+Important financial service types also live in `src/lib/database/financial.ts`:
+
+- `CreditCard`
+- `Loan`
+- EMI/payment helper types
+
+Important Supabase tables in `supabase-fresh-setup.sql` and modular SQL files:
 
 - `profiles`
 - `debt_freedom_settings`
@@ -390,79 +395,69 @@ The main SQL setup references user-owned tables such as:
 - `detected_accounts`
 - `credit_card_statements`
 
-Storage includes:
+Storage:
 
 - `place-photos`
 
-### RLS and Ownership
+## Cache And Refresh Contract
 
-Supabase Row Level Security is the main cloud data boundary. Most client calls
-also include explicit `user_id` filters. RPC functions should validate
-ownership internally as well, because client-side filters are not enough for
-privileged mutation safety.
+Primary files:
 
-### Cache-First Contract
+- `src/lib/services/cache.ts`
+- `src/lib/services/dataEvents.ts`
+- `src/lib/services/userScopedQueues.ts`
+- `src/lib/core.ts`
 
-Cache-first behavior is intentional. Screens commonly:
+Screens commonly follow stale-while-revalidate behavior:
 
-1. Read cached data from AsyncStorage.
-2. Render immediately if cache exists.
-3. Refresh from Supabase in the background.
-4. Write through cache after mutations.
-5. Emit finance data-change events so other screens can refresh.
+1. Read AsyncStorage cache.
+2. Render quickly if cache exists.
+3. Refresh from Supabase in background.
+4. Write through cache after mutation.
+5. Emit finance data-change events.
 
-Cache keys live in `CACHE_KEYS` inside `src/lib/services/cache.ts`.
+Important cache keys live in `CACHE_KEYS`:
 
-Important cache rules:
+- `cache_transactions`
+- `cache_people_ledger`
+- `cache_places`
+- `cache_vault_items`
+- `cache_bank_accounts`
+- `cache_unique_categories`
+- `cache_user_profile`
+- `cache_ledger_payments`
+- `cache_dashboard_summary`
+- `cache_balance_views`
+- `cache_income_review_decisions`
 
-- Cache is a performance layer, not the durable truth.
+Cache rules:
+
+- Cache is best-effort and not the durable truth.
 - Transaction cache sanitizes raw SMS fields.
-- Profile cache removes unnecessary identity fields.
+- Profile cache removes identity fields.
 - Vault cache is purged, not prefetched.
-- User-scoped queues are cleared or quarantined on sign-out and user changes.
+- Offline transaction/delete queues are user-scoped.
+- Sign-out and account deletion should clear/quarantine local financial queues.
 
-### Event-Driven Refresh
+## Non-Negotiable Financial Rules
 
-`src/lib/services/dataEvents.ts` exposes a small app-level event bus for finance
-refresh events. Events can affect:
+Do not break these:
 
-- `transactions`
-- `accounts`
-- `ledger`
-- `balances`
-- `review`
-
-After financial mutations, emitters notify interested screens so cache-first UI
-does not become stale.
-
-### Offline Queues
-
-Offline transaction creation and delete replay are handled through user-scoped
-AsyncStorage queues. Sync runs when the app returns to foreground or network
-connectivity returns.
-
-Offline support is strongest for transactions. Other feature areas may still
-depend on online Supabase calls and should be reviewed before claiming full
-offline behavior.
-
-## Financial Invariants
-
-These rules are core acceptance criteria:
-
+- Do not create fake financial records.
 - Balance-only messages must not create transactions.
 - Statement summaries must not create transactions.
 - Payment reminders must not create transactions.
 - Ambiguous credits must not count as earned income until reviewed.
-- Refunds reduce spending and must not be treated as ordinary income.
+- Refunds reduce expense and must not become normal income.
 - Self-transfers are neutral.
-- Credit-card bill payments must not become generic expense or income.
-- Loan EMI payments must preserve loan-specific accounting.
-- Duplicate SMS, notification, retry, boot, and offline replay paths must not
+- Credit-card bill payments must not become generic expense/income.
+- Loan EMI behavior must preserve loan/account semantics.
+- Duplicate SMS, notifications, retries, boot events, and offline replay must not
   create duplicate records.
-- Account removal must not silently destroy financial history.
+- Account/card removal must not silently destroy financial history.
 - Manual balance corrections must not invent income or expense.
 
-## Privacy and Security Invariants
+## Non-Negotiable Privacy And Security Rules
 
 Do not expose or store raw:
 
@@ -474,223 +469,236 @@ Do not expose or store raw:
 - Addresses.
 - Full account numbers.
 - Full card numbers.
-- Full email addresses.
-- Full profile objects.
+- Full emails.
+- Raw profile objects.
 - Vault secrets.
 - Raw accessibility screen text.
+- Auth tokens or session payloads.
 
-Use masked, redacted, hashed, or reduced forms when evidence is necessary.
+Use masked, redacted, hashed, summarized, or structural metadata instead.
 
-Security-critical expectations:
+Security expectations:
 
-- Supabase RLS isolates every user-owned table.
-- RPCs validate ownership internally.
-- Storage paths isolate user-owned photos.
-- Session and cache cleanup works on sign-out and account deletion.
+- Supabase RLS isolates user-owned rows.
+- Client queries still include explicit `user_id`/ownership filters.
+- RPC functions validate ownership internally.
+- Storage paths isolate user-owned files.
 - Vault secrets are encrypted before remote storage.
-- Android diagnostic exports do not leak sensitive raw data.
+- Diagnostic exports are privacy-reduced.
 
-## Important Code Map
+## UI And React Rules
 
-### App and Navigation
+- App-facing UI copy must be English-only.
+- Do not add Hindi/Hinglish to screens, modals, buttons, toasts, empty states, or
+  tests that assert visible app copy.
+- Avoid visible fallback icons such as `?`; use verified MaterialCommunityIcons
+  names or a safe icon wrapper.
+- Do not define React components inside another component's render/function body.
+  Inline components can remount on every render and cause bugs like keyboard
+  closing after one typed character.
+- Preserve the existing design system and theme context unless the task is
+  explicitly a redesign.
 
-- `App.tsx`: bootstrap, auth, startup repair, sync triggers, prefetch, providers.
-- `src/navigation/RootNavigator.tsx`: root stack.
-- `src/navigation/BottomTabNavigator.tsx`: main tabs.
-- `src/navigation/DashboardStack.tsx`: dashboard-related stack.
-- `src/navigation/SettingsStack.tsx`: settings-related stack.
-- `src/navigation/RouteRedirects.tsx`: route compatibility redirects.
+## How An AI Should Debug A File In This Project
 
-### Core Data and Auth
+When given a single file, do not debug it in isolation. Follow this order:
 
-- `src/lib/core.ts`: Supabase client, Google Sign-In, transaction CRUD, offline
-  transaction sync.
-- `src/config/index.ts`: config imports from environment.
-- `src/types/index.ts`: shared domain types.
+1. Read `docs/codex_context.md` and this document.
+2. Identify the feature area: auth, dashboard, transaction, account/card/loan,
+   parser, cache, native Android, Vault, People, Places, Debt Freedom, or Porter.
+3. Find inbound callers: navigation route, screen parent, service callers,
+   native bridge, tests, or background processor.
+4. Find outbound effects: Supabase table/RPC, AsyncStorage cache key, event bus,
+   Android native module, notification, permission, or storage bucket.
+5. Check whether it touches high-risk areas: money movement, SQL/RLS/RPC,
+   auth/session/cache, financial mutations, native dependencies, privacy logs,
+   parser/transaction automation, or Vault encryption.
+6. Inspect tests near the feature before editing.
+7. Make the smallest safe change.
+8. Add or update focused tests for changed behavior.
+9. Run focused verification first, then broader verification if the surface
+   warrants it.
+10. For SQL/RPC/native/runtime flows, verify beyond local TypeScript/Jest.
 
-### Financial Data
+## Verification Commands
 
-- `src/lib/database/financial.ts`: bank accounts, credit cards, loans, EMI
-  payments.
-- `src/lib/services/balanceViewModel.ts`: balance display, balance history,
-  snapshot ranking.
-- `src/lib/services/balanceSignalRecorder.ts`: balance evidence capture.
-- `src/lib/services/detectedAccounts.ts`: detected account candidate support.
-- `src/lib/services/detectedAccountReview.ts`: detected-account confirmation,
-  merge, and ignore RPC flow.
-- `src/lib/services/accountRemoval.ts`: safe account/card removal.
-
-### Transactions and Evidence
-
-- `src/lib/processors/TransactionProcessors.ts`: SMS and notification parsing,
-  duplicate detection, transaction creation, balance signals, evidence writes.
-- `src/lib/processors/TransactionQueue.ts`: short-batch processing and final
-  notification dispatch.
-- `src/lib/services/automaticTransactionPolicy.ts`: auto-post/review policy.
-- `src/lib/services/transactionIntelligence.ts`: financial signal
-  classification helpers.
-- `src/lib/services/transactionEvidence.ts`: durable privacy-safe evidence and
-  app-account mappings.
-- `src/lib/services/runtimeTransactionEvidence.ts`: runtime evidence recording
-  from processors.
-
-### Cache and Refresh
-
-- `src/lib/services/cache.ts`: AsyncStorage cache, privacy reductions, prefetch.
-- `src/lib/services/dataEvents.ts`: finance data-change event bus.
-- `src/lib/services/userScopedQueues.ts`: user-owned offline queue storage and
-  legacy queue quarantine.
-
-### People and Places
-
-- `src/lib/database/userdata.ts`: people ledger, ledger payments, places,
-  place-photo upload.
-- `src/lib/services/placeReminders.ts`: location reminder orchestration.
-- `src/lib/services/geofenceProcessor.ts`: geofence notification processing.
-- Native geofence files under `android/app/src/main/java/com/spendsense`.
-
-### Vault
-
-- `src/screens/vault/SecureVaultScreen.tsx`: Vault UI and lock behavior.
-- `src/lib/database/vaultDb.ts`: encrypted Vault persistence.
-- `src/utils/encryption.ts`: AES encryption helpers.
-- `src/lib/services/vaultSecurity.ts`: Android secure-window bridge.
-- `android/app/src/main/java/com/spendsense/VaultSecurityModule.kt`: native
-  secure-window implementation.
-
-### Planning and Diagnostics
-
-- `src/lib/services/debtFreedom.ts`: pure debt planning engine.
-- `src/lib/services/debtFreedomViewModel.ts`: data-to-view-model bridge.
-- `src/lib/services/debtFreedomSettings.ts`: persisted coach settings.
-- `src/lib/services/porter.ts`: Porter distance, overlay, and debug behavior.
-- `src/lib/services/deliveryDebugBlackBox.ts`: privacy-reduced delivery
-  diagnostic snapshot.
-
-### Screens
-
-- `src/screens/Dashboard.tsx`
-- `src/screens/transactions/Add.tsx`
-- `src/screens/transactions/Transactions.tsx`
-- `src/screens/transactions/TransactionDetail.tsx`
-- `src/screens/people/PeopleScreen.tsx`
-- `src/screens/financial/FinancialScreens.tsx`
-- `src/screens/financial/BankConfigScreen.tsx`
-- `src/screens/financial/DetectedAccountsScreen.tsx`
-- `src/screens/financial/BankAutoDetectScreen.tsx`
-- `src/screens/financial/SMSTestScreen.tsx`
-- `src/screens/financial/DebtFreedomScreen.tsx`
-- `src/screens/vault/SecureVaultScreen.tsx`
-- `src/screens/places/PlacesScreen.tsx`
-- `src/screens/reminders/PlaceRemindersScreen.tsx`
-- `src/screens/user/Settings.tsx`
-- `src/screens/porter/PorterTestScreen.tsx`
-
-## Android Native Surface
-
-Important Android files include:
-
-- `AndroidManifest.xml`
-- `SmsReceiver.kt`
-- `SmsProcessorService.kt`
-- `NotificationListener.kt`
-- `NotificationProcessorService.kt`
-- `BootReceiver.kt`
-- `BootProcessorService.kt`
-- `GeofenceBroadcastReceiver.kt`
-- `GeofenceProcessorService.kt`
-- `GeofenceModule.kt`
-- `PorterAccessibilityService.kt`
-- `PorterModule.kt`
-- `VaultSecurityModule.kt`
-
-The manifest requests or uses permissions for internet, notifications, SMS,
-boot, foreground service, location, audio recording, camera, biometrics,
-overlay display, and accessibility service behavior. These permissions should
-be treated as product-sensitive and privacy-sensitive.
-
-## Development and Verification
-
-Common commands:
+Common local checks:
 
 ```powershell
 npx tsc --noEmit
 npx eslint . --quiet
 npx jest --runInBand
-npm run android
-npm run start
 ```
 
-For Android native changes, also compile from the Android project:
+Run focused Jest tests first when practical:
+
+```powershell
+npx jest path\to\test --runInBand
+```
+
+Android native compile:
 
 ```powershell
 cd android
 .\gradlew.bat :app:compileDebugKotlin --console=plain
 ```
 
-For SQL, RLS, or RPC changes, local tests are not enough. Verify the deployed
-Supabase function, policy, or table behavior directly.
+For SQL/RLS/RPC changes:
 
-For runtime QA with seeded data:
+- Check local SQL and TypeScript call sites.
+- Apply/verify the deployed Supabase SQL body or policy.
+- Confirm behavior with a real authenticated user/session or controlled test
+  data.
+- Do not claim live success from local tests alone.
 
-- Tag temporary records.
+For seeded runtime QA:
+
+- Tag temporary records clearly.
 - Avoid touching real user data.
 - Verify Supabase cleanup.
-- Clear local AsyncStorage or RKStorage artifacts when relevant.
+- Clear local AsyncStorage/RKStorage artifacts when relevant.
 - Confirm temporary record count returns to zero.
 
-## How to Safely Work in This Codebase
+## File Map For Fast Orientation
 
-Before changing behavior:
+App/root:
 
-1. Identify whether the request touches money movement, account ownership,
-   auth/session/cache, SQL/RLS/RPC, native Android behavior, privacy logging, or
-   parser behavior.
-2. If yes, inspect source and tests before editing.
-3. Preserve cache-first loading unless the user explicitly asks to change it.
-4. Preserve RLS and explicit user ownership filters.
-5. Avoid broad refactors around financial flows.
-6. Prefer the smallest safe fix and focused tests first.
-7. Run the broad test suite after code changes that affect shared behavior.
-8. Use Android runtime verification when native, startup, permission, or
-   background processing behavior changes.
+- `App.tsx`
+- `index.js`
+- `src/config/index.ts`
 
-## Current Architectural Cautions
+Navigation:
 
-- Do not assume `README.md` or older docs are fully current.
-- Compare current navigation files before assuming a screen is active.
-- SQL files, generated TypeScript types, service calls, and deployed Supabase
-  can drift.
-- Local cache can hide live-data bugs if mutation events or invalidation are
-  incomplete.
-- Background SMS and notification processing can replay events, so duplicate
-  safety is essential.
-- Android logs and diagnostic exports must be treated as sensitive.
-- Vault code is security-critical even when UI changes look simple.
-- Account removal, detected account confirmation, and reconciliation-like
-  evidence flows must protect financial history and ownership.
+- `src/navigation/RootNavigator.tsx`
+- `src/navigation/BottomTabNavigator.tsx`
+- `src/navigation/DashboardStack.tsx`
+- `src/navigation/SettingsStack.tsx`
+- `src/navigation/RouteRedirects.tsx`
+
+Shared UI/theme:
+
+- `src/components`
+- `src/context/ThemeContext.tsx`
+- `src/theme`
+
+Types:
+
+- `src/types/index.ts`
+
+Auth/core:
+
+- `src/screens/auth/AuthScreens.tsx`
+- `src/screens/user/ProfileScreen.tsx`
+- `src/lib/core.ts`
+
+Transactions:
+
+- `src/screens/transactions/Add.tsx`
+- `src/screens/transactions/Transactions.tsx`
+- `src/screens/transactions/TransactionDetail.tsx`
+- `src/lib/core.ts`
+
+Finance/accounts:
+
+- `src/screens/financial/FinancialScreens.tsx`
+- `src/screens/financial/BankConfigScreen.tsx`
+- `src/screens/financial/DetectedAccountsScreen.tsx`
+- `src/screens/financial/BankAutoDetectScreen.tsx`
+- `src/lib/database/financial.ts`
+- `src/lib/services/balanceViewModel.ts`
+- `src/lib/services/accountRemoval.ts`
+
+Automation/parsing/evidence:
+
+- `src/screens/financial/SMSTestScreen.tsx`
+- `src/lib/processors/TransactionProcessors.ts`
+- `src/lib/processors/TransactionQueue.ts`
+- `src/lib/services/smsParser.ts`
+- `src/lib/services/balanceParser.ts`
+- `src/lib/services/automaticTransactionPolicy.ts`
+- `src/lib/services/transactionIntelligence.ts`
+- `src/lib/services/transactionEvidence.ts`
+- `src/lib/services/runtimeTransactionEvidence.ts`
+- `src/lib/services/balanceSignalRecorder.ts`
+
+Cache/events/offline:
+
+- `src/lib/services/cache.ts`
+- `src/lib/services/dataEvents.ts`
+- `src/lib/services/userScopedQueues.ts`
+
+People/places:
+
+- `src/screens/people/PeopleScreen.tsx`
+- `src/screens/places/PlacesScreen.tsx`
+- `src/screens/reminders`
+- `src/lib/database/userdata.ts`
+- `src/lib/services/placeReminders.ts`
+- `src/lib/services/geofenceProcessor.ts`
+
+Vault:
+
+- `src/screens/vault/SecureVaultScreen.tsx`
+- `src/lib/database/vaultDb.ts`
+- `src/utils/encryption.ts`
+- `src/lib/services/vaultSecurity.ts`
+
+Debt Freedom:
+
+- `src/screens/financial/DebtFreedomScreen.tsx`
+- `src/lib/services/debtFreedom.ts`
+- `src/lib/services/debtFreedomViewModel.ts`
+- `src/lib/services/debtFreedomSettings.ts`
+
+Porter/delivery diagnostics:
+
+- `src/screens/porter/PorterTestScreen.tsx`
+- `src/lib/services/porter.ts`
+- `src/lib/services/deliveryDebugBlackBox.ts`
+- `android/app/src/main/java/com/spendsense/PorterAccessibilityService.kt`
+- `android/app/src/main/java/com/spendsense/PorterModule.kt`
+
+Backend/schema:
+
+- `supabase-fresh-setup.sql`
+- `supabase`
+
+Tests:
+
+- `__tests__`
+- `*.test.ts`
+- `*.test.tsx`
+- `*.test.js`
+- `jest.setup.js`
+- `jest.config.js`
 
 ## Mental Model
 
-Think of SpendSense as four layers working together:
+Think of SpendSense as four connected layers:
 
-1. Product screens: Dashboard, Add, People, Vault, Settings, finance setup,
-   places, reminders, transactions, analytics, and Debt Freedom Coach.
-2. Local runtime layer: cache, offline queues, event bus, route hints, and
-   background prefetch.
-3. Financial intelligence layer: SMS/notification parsing, transaction policy,
-   balance detection, evidence capture, account matching, income review, and
-   debt planning.
-4. Durable backend layer: Supabase Auth, Postgres, RLS, Storage, triggers, and
-   RPCs.
+1. Product screens: Dashboard, Add, Transactions, People, Vault, Settings,
+   finance setup, places, reminders, Debt Freedom, and Porter tools.
+2. Local runtime: cache, offline queues, event bus, route hints, startup repair,
+   permissions, and background prefetch.
+3. Financial intelligence: parsers, transaction policy, balance detection,
+   evidence capture, account matching, income review, debt planning, and
+   duplicate safety.
+4. Durable backend/native layer: Supabase Auth/Postgres/RLS/Storage/RPCs plus
+   Android receivers, services, permissions, accessibility, overlays, and
+   secure-window behavior.
 
-Most bugs in this app come from boundaries between those layers: stale cache
-after a write, local SQL differing from live SQL, a parser treating evidence as
-a transaction, a debug log leaking raw data, a native replay creating duplicate
-records, or a UI claiming that something was saved before the durable mutation
-is actually complete.
+Most difficult bugs happen at layer boundaries: stale cache after a write, live
+SQL drifting from local SQL, parser evidence becoming a fake transaction, raw
+diagnostic data leaking, native replay duplicating financial records, or UI
+claiming success before a durable mutation actually happened.
 
-The safest engineering posture is therefore: understand the data boundary,
-preserve privacy, verify ownership, keep cache and source of truth aligned, and
-prove financial side effects with focused tests or live runtime checks when the
-surface requires it.
+The safest debugging posture is:
+
+```text
+Understand the data boundary.
+Preserve privacy.
+Verify ownership.
+Keep cache and source of truth aligned.
+Avoid invented financial side effects.
+Prove risky behavior with focused tests or runtime checks.
+```

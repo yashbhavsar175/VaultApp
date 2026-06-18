@@ -408,6 +408,7 @@ function App() {
 
         const initialSession = initialSessionResult?.data.session ?? null;
         if (initialSession?.user) {
+          void AsyncStorage.setItem('app_user_id', initialSession.user.id);
           const routeRevision = ++authRouteRevisionRef.current;
           setSession(initialSession);
           setProfileStatus('checking');
@@ -440,6 +441,7 @@ function App() {
     const applyAuthStateChange = async (nextSession: Session | null) => {
       const routeRevision = ++authRouteRevisionRef.current;
       if (nextSession?.user) {
+        void AsyncStorage.setItem('app_user_id', nextSession.user.id);
         setSession(nextSession);
         setProfileStatus('checking');
         const nextProfileStatus = await resolveProfileRoute(nextSession, routeRevision);

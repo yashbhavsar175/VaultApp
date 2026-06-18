@@ -533,7 +533,7 @@ export default function QuickAddModal({ visible, onClose, onSuccess }: QuickAddM
                   <Text style={{ color: colors.subtext, fontSize: 11 }}>Type</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
                     <MaterialCommunityIcons 
-                      name={parsed.type === 'income' ? 'arrow-down' : parsed.type === 'expense' ? 'arrow-up' : 'swap-horizontal'} 
+                      name={parsed.type === 'income' ? 'check' : parsed.type === 'expense' ? 'close' : 'swap-horizontal'} 
                       size={14} 
                       color={parsed.type === 'income' ? '#10b981' : parsed.type === 'expense' ? '#ef4444' : colors.text} 
                       style={{ marginRight: 4 }}

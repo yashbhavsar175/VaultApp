@@ -184,7 +184,8 @@ export async function clearCache(): Promise<void> {
     }
 
     if (currentUserId) {
-      await clearFinancialQueuesForUser(currentUserId);
+      // Do NOT clear financial queues here! They are user-scoped and should survive
+      // logouts if there are unsync'd offline transactions.
     }
     await Promise.all([
       quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),

@@ -163,8 +163,11 @@ const TransactionRow = React.memo(({
               >
                 {getTransactionDisplayName(item)}
               </Text>
-              {item.type === 'income' && item.account_match_status === 'manual_confirmed' && (
+              {(item.type?.toLowerCase() === 'income' || item.type?.toLowerCase() === 'refund') && (
                 <MaterialCommunityIcons name="check-decagram" size={14} color="#10b981" style={{ marginLeft: 4 }} />
+              )}
+              {item.type?.toLowerCase() === 'expense' && (
+                <MaterialCommunityIcons name="check-decagram" size={14} color="#ef4444" style={{ marginLeft: 4 }} />
               )}
             </View>
             <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>{formatTransactionDate(item.created_at)}</Text>

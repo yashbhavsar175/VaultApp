@@ -5,6 +5,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import HapticFeedback from 'react-native-haptic-feedback';
+import notifee, { AndroidImportance } from '@notifee/react-native';
 import { supabase, deleteTransaction, updateTransaction } from '../../lib/core';
 import { BankAccount, Transaction, TransactionEvidence } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -817,10 +818,16 @@ export default function TransactionDetail({ route, navigation }: Props) {
           <Text style={[typography.h1, { color: txColor, fontSize: 36, fontWeight: 'bold', marginTop: spacing.md }]}>
             {getTransactionAmountPrefix(transaction.type)}{formatAmount(Number(transaction.amount))}
           </Text>
-          <View style={[styles.typeBadge, { backgroundColor: txColor + '20', borderRadius: borderRadius.full, marginTop: spacing.sm }]}>
+          <View style={[styles.typeBadge, { backgroundColor: txColor + '20', borderRadius: borderRadius.full, marginTop: spacing.sm, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 4 }]}>
             <Text style={[typography.caption, { color: txColor, fontWeight: '600' }]}>
               {getTransactionTypeLabel(transaction.type)}
             </Text>
+            {(transaction.type?.toLowerCase() === 'income' || transaction.type?.toLowerCase() === 'refund') && (
+              <MaterialCommunityIcons name="check-decagram" size={14} color="#10b981" style={{ marginLeft: 4 }} />
+            )}
+            {transaction.type?.toLowerCase() === 'expense' && (
+              <MaterialCommunityIcons name="check-decagram" size={14} color="#ef4444" style={{ marginLeft: 4 }} />
+            )}
           </View>
         </Card>
 
@@ -1058,6 +1065,29 @@ export default function TransactionDetail({ route, navigation }: Props) {
             variant={activeReminder ? "secondary" : "primary"}
             fullWidth
             style={activeReminder ? {} : { backgroundColor: '#f59e0b', borderColor: '#f59e0b' }}
+          />
+
+          <AppButton
+            title="🧪 Test Alarm NOW"
+            onPress={async () => {
+              try {
+                const ids = await notifee.getTriggerNotificationIds();
+                console.log('📱 Pending alarms:', ids);
+                
+                await notifee.displayNotification({
+                  title: '🧪 TEST ALARM WORKS!',
+                  body: `Found ${ids.length} pending. Your ID: tx-meetup-${transaction.id.slice(-8)}`,
+                  android: { 
+                    channelId: 'transaction-reminders', 
+                    importance: AndroidImportance.HIGH,
+                    smallIcon: 'ic_notification'
+                  }
+                });
+                Toast.show({type: 'success', text1: 'Test sent! Check sound'});
+              } catch(e) { console.log('Test failed:', e); }
+            }}
+            variant="secondary"
+            style={{ marginTop: spacing.md }}
           />
         </Card>
 

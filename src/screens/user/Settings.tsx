@@ -486,6 +486,26 @@ export default function Settings() {
             if (__DEV__) console.warn('[Settings] Failed to clear geofences on signout', e);
           }
 
+          // Flush any unsync'd offline transactions before logout
+          const currentUserId = await AsyncStorage.getItem('app_user_id');
+          if (currentUserId) {
+            try {
+              const { loadUserScopedQueue } = require('../../lib/services/userScopedQueues');
+              const pendingQueue = await loadUserScopedQueue('offline_tx_queue', currentUserId);
+              if (pendingQueue && pendingQueue.length > 0) {
+                try {
+                  const { syncOfflineQueue } = require('../../lib/core');
+                  await syncOfflineQueue();
+                  if (__DEV__) console.log('[Settings] Flushed offline queue before logout');
+                } catch {
+                  if (__DEV__) console.warn('[Settings] Offline queue sync failed, data preserved in local storage');
+                }
+              }
+            } catch {
+              // Queue check failure should not block logout
+            }
+          }
+
           await clearCache();
           await AsyncStorage.removeItem('app_user_id');
           await supabase.auth.signOut();

@@ -27,8 +27,8 @@ interface EditTransactionModalProps {
 }
 
 const TRANSACTION_TYPES: { value: TransactionType; label: string; icon: string; color: string }[] = [
-  { value: 'income', label: 'Income', icon: 'arrow-down-circle', color: '#10b981' },
-  { value: 'expense', label: 'Expense', icon: 'arrow-up-circle', color: '#ef4444' },
+  { value: 'income', label: 'Income', icon: 'check-circle', color: '#10b981' },
+  { value: 'expense', label: 'Expense', icon: 'close-circle', color: '#ef4444' },
   { value: 'investment', label: 'Investment', icon: 'chart-line', color: '#7c6af7' },
   { value: 'emi', label: 'EMI', icon: 'credit-card', color: '#f59e0b' },
 ];

@@ -182,10 +182,31 @@ function firstContextAmount(text: string, patterns: RegExp[]): number | null {
 function detectBank(text: string, senderOrPackage?: string | null): Pick<BalanceParseResult, 'detectedBankCode' | 'detectedBankName'> {
   const source = `${senderOrPackage || ''} ${text}`;
   const match = BANK_ALIASES.find(bank => bank.patterns.some(pattern => pattern.test(source)));
-  return {
-    detectedBankCode: match?.code || null,
-    detectedBankName: match?.name || null,
-  };
+  if (match) {
+    return {
+      detectedBankCode: match.code,
+      detectedBankName: match.name,
+    };
+  }
+
+  // Dynamic fallback: try to extract bank name from text
+  const bankMention = text.match(/(?:your|from|at|in)\s+([A-Z][a-zA-Z\s]{2,20})\s+(?:bank|Bank|BANK)/i);
+  if (bankMention) {
+    const name = bankMention[1].trim() + ' Bank';
+    const code = name.replace(/\s+/g, '_').toUpperCase().slice(0, 12);
+    return { detectedBankCode: code, detectedBankName: name };
+  }
+
+  // Dynamic fallback: extract from sender ID pattern (e.g., VK-MYBANK -> MYBANK)
+  if (senderOrPackage) {
+    const senderMatch = senderOrPackage.match(/^[A-Z]{2}-([A-Z]{3,})/i);
+    if (senderMatch) {
+      const code = senderMatch[1].toUpperCase();
+      return { detectedBankCode: code, detectedBankName: null };
+    }
+  }
+
+  return { detectedBankCode: null, detectedBankName: null };
 }
 
 function extractLast4WithPatterns(text: string, patterns: RegExp[]): string | null {

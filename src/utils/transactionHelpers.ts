@@ -4,9 +4,9 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const getTransactionIcon = (type: string): string => {
-  switch (type) {
-    case 'income': return 'arrow-down-circle';
-    case 'expense': return 'arrow-up-circle';
+  switch (type?.toLowerCase()) {
+    case 'income': return 'check-circle';
+    case 'expense': return 'close-circle';
     case 'refund': return 'cash-refund';
     case 'investment': return 'chart-line';
     case 'emi': return 'credit-card';
@@ -18,7 +18,7 @@ export const getTransactionIcon = (type: string): string => {
 };
 
 export const getTransactionColor = (type: string): string => {
-  switch (type) {
+  switch (type?.toLowerCase()) {
     case 'income': return '#10b981';
     case 'expense': return '#ef4444';
     case 'refund': return '#14b8a6';
@@ -32,7 +32,7 @@ export const getTransactionColor = (type: string): string => {
 };
 
 export const getTransactionAmountPrefix = (type: string): string => {
-  switch (type) {
+  switch (type?.toLowerCase()) {
     case 'income':
     case 'refund':
       return '+';

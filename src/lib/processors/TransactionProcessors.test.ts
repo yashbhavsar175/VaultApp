@@ -471,4 +471,27 @@ describe('background transaction processors', () => {
       type: 'income',
     }));
   });
+
+  it('processes super.money notification successfully', async () => {
+    const result = await processNotification({
+      app: 'money.super.payments',
+      title: 'super.money',
+      text: '₹88.00 received from RUSHIL SANJAYKUMAR BAROT Deposited in your Kotak bank on 17 June at 02:50 PM. Tap to view details',
+      time: Date.now(),
+    });
+    
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0].amount).toBe(88);
+  });
+
+  it('processes Kotak SMS successfully', async () => {
+    const result = await processSms({
+      sender: 'JD-KOTAKB-S',
+      body: 'Received Rs.88.00 in your Kotak Bank AC X1447 from samir.rushil@okaxis on 17-06-26.UPI Ref:653405954864.',
+      timestamp: Date.now(),
+    });
+    
+    expect(mockDb.transactions).toHaveLength(1);
+    expect(mockDb.transactions[0].amount).toBe(88);
+  });
 });

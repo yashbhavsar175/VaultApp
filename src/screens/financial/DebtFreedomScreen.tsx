@@ -239,18 +239,20 @@ function paceGapLabel(value: number | null): string {
   return `Behind target: ${rupee(Math.abs(value))}`;
 }
 
+import { BANK_INFO } from '../../config';
+
 const SAFE_DEBT_LABEL_ALLOWLIST = new Set([
-  'HDFC',
-  'HDFC Bank',
-  'SBI',
-  'State Bank of India',
-  'ICICI',
-  'ICICI Bank',
-  'Axis Bank',
-  'Kotak',
-  'Kotak Bank',
   'Amazon Pay Later',
+  'Simpl',
+  'Lazypay',
+  'ZestMoney'
 ]);
+
+function isKnownBankOrApp(label: string): boolean {
+  const lower = label.toLowerCase();
+  if (SAFE_DEBT_LABEL_ALLOWLIST.has(label)) return true;
+  return Object.keys(BANK_INFO).some(bank => lower.includes(bank));
+}
 
 const DECORATIVE_EMAIL_PATTERN = /\s*<[^<>@\s]+@[^<>\s]+\.[A-Z]{2,}>\s*/gi;
 const OTP_OR_CODE_PATTERN = /\b(?:otp|one\s*time\s*password|verification\s*code)\b/i;
@@ -269,7 +271,7 @@ export function looksUnsafeLabel(value: string): boolean {
   try {
     const trimmed = value.trim();
     if (!trimmed) return false;
-    if (SAFE_DEBT_LABEL_ALLOWLIST.has(trimmed)) return false;
+    if (isKnownBankOrApp(trimmed)) return false;
 
     const label = stripDecorativeEmail(trimmed);
     const hasDigit = /\d/.test(label);

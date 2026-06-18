@@ -127,6 +127,18 @@ const PACKAGE_TO_SENDER: { [key: string]: string } = {
   'com.fbl': 'FEDBK',
 };
 
+/** Dynamically derive a short sender code from an unknown Android package name */
+function deriveSenderFromPackage(packageName: string): string {
+  const IGNORE_TOKENS = new Set(['com', 'in', 'net', 'org', 'co', 'app', 'android', 'apps', 'user', 'mobile', 'banking', 'mobilebanking']);
+  const parts = packageName.split(/[._-]/).filter(p => !IGNORE_TOKENS.has(p.toLowerCase()));
+  if (parts.length === 0) return packageName.toUpperCase().slice(0, 8);
+  // Take the most meaningful parts and create a sender-like code
+  return parts
+    .slice(0, 2)
+    .map(p => p.toUpperCase())
+    .join('')
+    .slice(0, 8);
+}
 const BANK_SENDERS = [
   'HDFC', 'ICICI', 'ICICIB', 'SBI', 'SBIINB', 'AXIS', 'AXISBK', 'KOTAK', 'PNB',
   'SCBANK', 'YESBNK', 'INDBNK', 'IDFCFB', 'FEDBK', 'UNIONB', 'UTKARSH', 'UTKSPR', 'UTKSFB', 'SFBL', 'BOB', 'SLCBNK'
@@ -705,13 +717,20 @@ function hashFromRedactedRawText(value: string): string | null {
 
 function parseTransaction(body: string, sender: string): ParsedTransaction | null {
   try {
-    const source = identifySource(sender, body);
-    if (source === 'unknown') {
-      if (__DEV__) console.warn('[ParseTransaction] Skipped: source unknown — sender not in BANK/UPI lists');
+    let source = identifySource(sender, body);
+    
+    if (!shouldAttemptTransactionParse(body)) {
+      if (source === 'unknown') {
+        if (__DEV__) console.warn('[ParseTransaction] Skipped: source unknown and no transaction evidence');
+        return null;
+      }
       return null;
     }
 
-    if (!shouldAttemptTransactionParse(body)) return null;
+    if (source === 'unknown') {
+      if (__DEV__) console.warn('[ParseTransaction] Warning: source unknown but has transaction evidence. Parsing dynamically.');
+      source = 'upi'; // Fallback to UPI format rules to attempt extraction
+    }
 
     // Extract amount
     const amountPatterns = [
@@ -1247,8 +1266,11 @@ export const processSms = async (
     }
 
     if (!isLegitimateFinancialSender(taskData.sender)) {
-      if (__DEV__) console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(taskData.sender));
-      return;
+      if (!(hasAmount(taskData.body) && hasCompletedTransactionEvidence(taskData.body) && !isNonTransactionalAmountMention(taskData.body))) {
+        if (__DEV__) console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(taskData.sender));
+        return;
+      }
+      if (__DEV__) console.log('✅ Unlisted sender, but looks like a transaction - attempting parse:', taskData.sender);
     }
 
     if (isSpamMessage(taskData.body)) {
@@ -1667,11 +1689,6 @@ export const processNotification = async (
     const notif = normalizeNotificationPayload(taskData);
     if (__DEV__) console.log('Parsed notification:', summarizeNotificationForLog(notif));
 
-    if (!ALLOWED_PACKAGES.includes(notif.app)) {
-      if (__DEV__) console.log('Notification from non-financial app - ignoring:', notif.app);
-      return;
-    }
-
     const combinedText = [
       notif.title,
       notif.text,
@@ -1682,13 +1699,21 @@ export const processNotification = async (
       .filter((part, index, parts): part is string => Boolean(part) && parts.indexOf(part) === index)
       .join(' ')
       .trim();
+
+    if (!ALLOWED_PACKAGES.includes(notif.app)) {
+      if (!(hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText) && !isNonTransactionalAmountMention(combinedText))) {
+        if (__DEV__) console.log('Notification from non-financial app - ignoring:', notif.app);
+        return;
+      }
+      if (__DEV__) console.log('✅ Notification from unlisted app, but looks like a transaction - attempting parse:', notif.app);
+    }
     
     if (isSpamMessage(combinedText)) {
       if (__DEV__) console.log('⚠️ Spam notification - skipping');
       return;
     }
 
-    const sender = PACKAGE_TO_SENDER[notif.app] || 'UNKNOWN';
+    const sender = PACKAGE_TO_SENDER[notif.app] || deriveSenderFromPackage(notif.app);
 
     if (isBlockedSender(sender)) {
       if (__DEV__) console.log('⛔ Blocked sender - skipping:', summarizeSenderForLog(sender));
@@ -1696,8 +1721,11 @@ export const processNotification = async (
     }
 
     if (!isLegitimateFinancialSender(sender)) {
-      if (__DEV__) console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(sender));
-      return;
+      if (!(hasAmount(combinedText) && hasCompletedTransactionEvidence(combinedText) && !isNonTransactionalAmountMention(combinedText))) {
+        if (__DEV__) console.log('⛔ Non-financial sender - skipping:', summarizeSenderForLog(sender));
+        return;
+      }
+      if (__DEV__) console.log('✅ Unlisted sender, but looks like a transaction - attempting parse:', sender);
     }
 
     const userId = await getProcessorUserId();

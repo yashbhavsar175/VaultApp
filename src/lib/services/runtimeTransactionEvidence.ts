@@ -239,9 +239,17 @@ function safeUpiHash(upiId?: string | null): string | null {
 }
 
 function sourceAppLabel(packageName: string, explicit?: string | null): string | null {
-  const value = explicit || PACKAGE_LABELS[packageName] || null;
+  const value = explicit || PACKAGE_LABELS[packageName] || dynamicPackageLabel(packageName);
   if (!value) return null;
   return value.replace(/[^A-Za-z0-9 ._-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 64) || null;
+}
+
+/** Dynamically extract a readable app label from any Android package name */
+function dynamicPackageLabel(packageName: string): string | null {
+  const IGNORE = new Set(['com', 'in', 'net', 'org', 'co', 'app', 'android', 'apps', 'user', 'mobile', 'banking']);
+  const parts = packageName.split(/[._-]/).filter(p => !IGNORE.has(p.toLowerCase()));
+  if (parts.length === 0) return null;
+  return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 
 export function mapParsedTransactionToEvidence(
@@ -306,7 +314,8 @@ export function mapNotificationToEvidence(
   const sourceHash = safeHash(input.text);
   const reference_number = normalizeReference(parsed.reference || parsed.reference_number);
   const upiId = parsed.upiId || extractUpiIdFromText(input.text);
-  const paymentAppEvidenceOnly = PAYMENT_APP_PACKAGES.has(sourcePackage);
+  const paymentAppEvidenceOnly = PAYMENT_APP_PACKAGES.has(sourcePackage) ||
+    /\b(?:pay|wallet|money|payment|upi)\b/i.test(sourcePackage);
   const paymentAppBankHint = paymentAppEvidenceOnly
     ? extractPaymentAppBankHint(input.text, sourcePackage)
     : null;

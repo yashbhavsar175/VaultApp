@@ -513,11 +513,22 @@ export async function scheduleTransactionReminder(
       id: notifId,
       title: '💸 Action Required: Meetup Reminder',
       body: `${note} — You need to recover ${amountStr}. Don't forget to ask them now!`,
+      data: {
+        action: 'transaction_reminder_meetup',
+        transactionId,
+        amount: String(amount),
+        note,
+      },
       android: {
         channelId: CHANNELS.TRANSACTION_REMINDER,
         importance: AndroidImportance.HIGH,
         pressAction: { id: 'default' },
         smallIcon: 'ic_launcher',
+        actions: [
+          { title: 'Snooze 10m', pressAction: { id: 'snooze_10m' } },
+          { title: 'Snooze 30m', pressAction: { id: 'snooze_30m' } },
+          { title: 'Snooze 1H', pressAction: { id: 'snooze_1h' } },
+        ]
       },
     },
     {

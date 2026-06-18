@@ -22,7 +22,7 @@ import {
 } from '../../lib/services/scheduledNotifications';
 
 // AsyncStorage key format for storing reminder metadata locally
-const REMINDER_STORAGE_KEY = (txId: string) => `tx_reminder_${txId}`;
+export const REMINDER_STORAGE_KEY = (txId: string) => `tx_reminder_${txId}`;
 
 export interface TransactionReminderData {
   transactionId: string;
@@ -53,11 +53,11 @@ export async function getStoredTransactionReminder(
   }
 }
 
-async function storeTransactionReminder(data: TransactionReminderData): Promise<void> {
+export async function storeTransactionReminder(data: TransactionReminderData): Promise<void> {
   await AsyncStorage.setItem(REMINDER_STORAGE_KEY(data.transactionId), JSON.stringify(data));
 }
 
-async function removeStoredTransactionReminder(transactionId: string): Promise<void> {
+export async function removeStoredTransactionReminder(transactionId: string): Promise<void> {
   await AsyncStorage.removeItem(REMINDER_STORAGE_KEY(transactionId));
 }
 

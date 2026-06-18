@@ -374,8 +374,8 @@ describe('QuickAddModal', () => {
       'close-circle',
       'microphone-settings',
       'microphone',
-      'arrow-down',
-      'arrow-up',
+      'check',
+      'close',
       'swap-horizontal',
       'tag-outline',
     ];

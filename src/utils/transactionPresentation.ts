@@ -116,7 +116,7 @@ const CATEGORY_ICON_MAP: Record<string, string> = {
   Education: 'school-outline',
   Entertainment: 'movie-open-outline',
   'UPI Payments': 'qrcode-scan',
-  Income: 'arrow-down-circle-outline',
+  Income: 'check-circle-outline',
   Refunds: 'cash-refund',
   Investments: 'chart-line',
   EMI: 'credit-card-clock-outline',

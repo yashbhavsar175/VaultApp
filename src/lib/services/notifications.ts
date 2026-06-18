@@ -712,6 +712,9 @@ export async function onBackgroundEvent(event: SafeNotifeeEvent | NotifeeEvent) 
     if (action === 'transaction_confirmation' || action === 'sms_failed') {
       await handleTransactionNotificationEvent(event);
       return;
+    } else if (action === 'transaction_reminder_meetup') {
+      await handleMeetupReminderEvent(event);
+      return;
     }
   }
 
@@ -737,6 +740,8 @@ export function initializeForegroundListener() {
       const action = detail?.notification?.data?.action;
       if (action === 'transaction_confirmation' || action === 'sms_failed') {
         await handleTransactionNotificationEvent(event);
+      } else if (action === 'transaction_reminder_meetup') {
+        await handleMeetupReminderEvent(event);
       }
     }
   });
@@ -745,6 +750,52 @@ export function initializeForegroundListener() {
     clearInterval(cleanupInterval);
     unsubscribe();
   };
+}
+
+async function handleMeetupReminderEvent(event: SafeNotifeeEvent | NotifeeEvent) {
+  const { type, detail } = event;
+  const actionId = detail?.pressAction?.id;
+  
+  if (type === EventType.ACTION_PRESS && actionId?.startsWith('snooze_')) {
+    const data = detail.notification?.data;
+    const txId = data?.transactionId as string;
+    const amount = Number(data?.amount);
+    const note = data?.note as string;
+    
+    if (txId && !isNaN(amount) && note) {
+      if (__DEV__) console.log('[Meetup Reminder] Snoozing action triggered:', actionId);
+      
+      // Cancel the original notification
+      if (detail.notification?.id) {
+        await notifee.cancelNotification(detail.notification.id);
+      }
+      
+      // Calculate new time
+      const newTime = new Date();
+      if (actionId === 'snooze_10m') {
+        newTime.setMinutes(newTime.getMinutes() + 10);
+      } else if (actionId === 'snooze_30m') {
+        newTime.setMinutes(newTime.getMinutes() + 30);
+      } else if (actionId === 'snooze_1h') {
+        newTime.setHours(newTime.getHours() + 1);
+      } else {
+        // Fallback to 1 hour
+        newTime.setHours(newTime.getHours() + 1);
+      }
+      
+      // Schedule new reminder
+      const { scheduleTransactionReminder } = require('./scheduledNotifications');
+      await scheduleTransactionReminder(txId, amount, note, newTime);
+      
+      // Update local storage so the modal shows the correct time if opened
+      const { storeTransactionReminder } = require('../../components/modals/TransactionReminderModal');
+      await storeTransactionReminder({
+        transactionId: txId,
+        scheduledAt: newTime.toISOString(),
+        note,
+      });
+    }
+  }
 }
 
 /**

@@ -24,6 +24,8 @@
 
     <!-- Alarm-style notifications for place reminders -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- Overlay permission for floating debug bubble -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -43,6 +45,10 @@
       <meta-data
         android:name="com.google.android.geo.API_KEY"
         android:value="${GOOGLE_MAPS_API_KEY}" />
+
+      <meta-data
+        android:name="com.google.firebase.messaging.default_notification_icon"
+        android:resource="@drawable/ic_notification" />
 
       <activity
         android:name=".MainActivity"

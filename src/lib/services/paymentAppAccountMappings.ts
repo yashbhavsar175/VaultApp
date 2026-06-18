@@ -70,8 +70,15 @@ function safeLabel(value?: string | null, fallback = 'Payment app'): string {
 }
 
 function appLabel(sourcePackage: string, explicit?: string | null): string {
-  return PAYMENT_APP_LABELS[sourcePackage] ||
-    safeLabel(explicit, displayToken(sourcePackage.split('.')[0]));
+  if (PAYMENT_APP_LABELS[sourcePackage]) return PAYMENT_APP_LABELS[sourcePackage];
+  
+  const ignore = new Set(['com', 'in', 'net', 'org', 'co', 'app', 'android', 'apps', 'user']);
+  const parts = sourcePackage.split(/[._-]/).filter(p => !ignore.has(p.toLowerCase()));
+  const dynamicName = parts.length > 0 
+    ? parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
+    : sourcePackage;
+
+  return safeLabel(explicit, dynamicName);
 }
 
 function safeLast4(value?: string | null): string | undefined {

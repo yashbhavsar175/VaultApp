@@ -226,6 +226,11 @@ export interface ParsedTransaction {
   upiId: string | null;  // UPI ID (e.g., user@paytm, user@ybl)
   confidence: number; // 0-100
   rawText: string;
+  transactionType: 'debit' | 'credit' | 'payment' | 'unknown';
+  merchant: string | null;
+  upiId: string | null;  // UPI ID (e.g., user@paytm, user@ybl)
+  confidence: number; // 0-100
+  rawText: string;
 }
 
 /**
@@ -237,6 +242,16 @@ export function detectBankFromSender(senderId: string): string | null {
   for (const bank of INDIAN_BANKS) {
     if (bank.senderIds.some(id => upperSender.includes(id))) {
       return bank.name;
+    }
+  }
+  
+  // Dynamic fallback: extract bank-like name from sender ID pattern (e.g., VK-KOTAKB-S -> KOTAKB)
+  const senderMatch = senderId.match(/^[A-Z]{2}-([A-Z]+)/i);
+  if (senderMatch) {
+    const code = senderMatch[1];
+    // Check if sender code contains a recognizable bank keyword
+    if (/bank|bnk|bk|fin|pay/i.test(code)) {
+      return code.charAt(0).toUpperCase() + code.slice(1).toLowerCase() + ' Bank';
     }
   }
   
@@ -253,6 +268,12 @@ export function detectBankFromContent(text: string): string | null {
     if (bank.keywords.some(keyword => upperText.includes(keyword.toUpperCase()))) {
       return bank.name;
     }
+  }
+  
+  // Dynamic fallback: try to extract bank name from SMS body patterns
+  const bankMention = text.match(/(?:your|from|at|in)\s+([A-Z][a-zA-Z\s]{2,20})\s+(?:bank|Bank|BANK)/i);
+  if (bankMention) {
+    return bankMention[1].trim() + ' Bank';
   }
   
   return null;

@@ -76,7 +76,20 @@ export function getUpiProviderName(upiId?: string | null): string | null {
   const handle = getUpiHandle(upiId);
   if (!handle) return null;
 
-  return UPI_PROVIDER_BY_HANDLE[handle] || null;
+  // Check known providers first
+  if (UPI_PROVIDER_BY_HANDLE[handle]) return UPI_PROVIDER_BY_HANDLE[handle];
+
+  // Dynamic fallback: derive provider name from handle
+  // Remove common suffixes like 'upi', 'pay', 'bank' and capitalize
+  const cleaned = handle
+    .replace(/upi$/i, '')
+    .replace(/pay$/i, '')
+    .replace(/bank$/i, ' Bank')
+    .trim();
+
+  if (!cleaned) return null;
+
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 export function maskUpiId(upiId?: string | null): string | null {

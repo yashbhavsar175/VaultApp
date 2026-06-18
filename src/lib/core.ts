@@ -95,13 +95,16 @@ export async function parseTransactionWithAI(text: string): Promise<ParsedTransa
       body: { text: trimmedText },
     });
 
-    const { data, error } = await Promise.race([invokePromise, timeoutPromise])
+    const result = await Promise.race([invokePromise, timeoutPromise])
       .finally(() => {
         if (timeoutId) clearTimeout(timeoutId);
       });
 
-    if (error) {
-      throw new Error(error.message || 'AI parsing failed. Please use manual mode.');
+    const { data, error } = result as any;
+
+    if (error || !data) {
+      console.log('[AIParser] Edge failed, using local parser');
+      return parseTransaction(text);
     }
 
     const parsed = data as Partial<ParsedTransaction> | null;
@@ -118,7 +121,8 @@ export async function parseTransactionWithAI(text: string): Promise<ParsedTransa
     };
   } catch (error) {
     console.error('[AIParser] parseTransactionWithAI failed:', error);
-    throw error;
+    // FINAL FALLBACK: local parser
+    return parseTransaction(text);
   }
 }
 
@@ -258,7 +262,6 @@ export const signOutFromGoogle = async () => {
     }
     await GoogleSignin.signOut();
     await supabase.auth.signOut();
-    await EncryptedStorage.clear();
   } catch (error) {
     console.error('Sign out error:', error);
   }
