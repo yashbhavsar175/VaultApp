@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import EncryptedStorage from 'react-native-encrypted-storage';
 import { supabase } from '../core';
 import {
   ACCOUNT_DELETION_COPY,
@@ -10,6 +11,7 @@ import {
   PLACE_PHOTOS_BUCKET,
   AccountDataDeletionError,
   deleteCurrentUserAppData,
+  exportUserDataBeforeDeletion,
 } from './accountDeletion';
 import {
   OFFLINE_TX_QUEUE_BASE_KEY,
@@ -118,6 +120,7 @@ describe('whole-account app-data deletion', () => {
       ['bank_auto_detection_result', 'cached bank scan'],
       ['bank_auto_detection_date', '2026-06-03'],
       ['debug_bug_reports', 'cached reports'],
+      ['data_export_user_a_123', '{"tables":{"transactions":[{"amount":1}]}}'],
       [OFFLINE_TX_QUEUE_BASE_KEY, 'legacy queue'],
 
       [getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'), JSON.stringify([{ queueOwnerId: 'user_a' }])],
@@ -144,7 +147,9 @@ describe('whole-account app-data deletion', () => {
     }
     expect(await AsyncStorage.getItem('cache_transactions')).toBeNull();
     expect(await AsyncStorage.getItem('cache_ledger_payments:ledger_a')).toBeNull();
+    expect(await AsyncStorage.getItem('data_export_user_a_123')).toBeNull();
     expect(await AsyncStorage.getItem(OFFLINE_TX_QUEUE_BASE_KEY)).toBeNull();
+    expect(EncryptedStorage.removeItem).toHaveBeenCalledWith('vault:data-key:v2:user_a');
 
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'))).not.toBeNull();
@@ -157,6 +162,14 @@ describe('whole-account app-data deletion', () => {
     expect(ACCOUNT_DELETION_COPY.successMessage).toContain('Contact support to remove the remaining sign-in account.');
     expect(ACCOUNT_DELETION_COPY.failureMessage).toContain('Some app data may already be deleted.');
     expect(ACCOUNT_DELETION_COPY.dangerButton).toBe('Delete App Data');
+  });
+
+  it('does not allow plaintext financial export into AsyncStorage before deletion', async () => {
+    await expect(exportUserDataBeforeDeletion('user_a')).rejects.toEqual(
+      new AccountDataDeletionError('plaintext-export-disabled'),
+    );
+    const keys = await AsyncStorage.getAllKeys();
+    expect(keys.some(key => key.startsWith('data_export_'))).toBe(false);
   });
 
   it('stops safely when storage cleanup fails without logging raw errors', async () => {

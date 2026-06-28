@@ -33,14 +33,20 @@ export default function EditPlaceReminderScreen() {
   const [title, setTitle] = useState(existingReminder?.title || '');
   const [note, setNote] = useState(existingReminder?.note || '');
   const [address, setAddress] = useState(existingReminder?.address || '');
-  const [radiusOption, setRadiusOption] = useState<string>(existingReminder ? existingReminder.radius_meters.toString() : '100');
-  const [customRadius, setCustomRadius] = useState<string>('');
+  
+  const isStandardRadius = ['100', '500', '1000'].includes(existingReminder?.radius_meters.toString() || '');
+  const [radiusOption, setRadiusOption] = useState<string>(
+    existingReminder ? (isStandardRadius ? existingReminder.radius_meters.toString() : 'custom') : '100'
+  );
+  const [customRadius, setCustomRadius] = useState<string>(
+    existingReminder && !isStandardRadius ? existingReminder.radius_meters.toString() : ''
+  );
+  
   const [triggerType, setTriggerType] = useState<TriggerType>(existingReminder?.trigger_type || 'arriving');
-  const [scheduleType] = useState<ScheduleType>(existingReminder?.schedule_type || 'always');
   const [intensity, setIntensity] = useState<'normal' | 'important'>(existingReminder?.intensity || 'normal');
   const [isOneTime, setIsOneTime] = useState(existingReminder ? existingReminder.is_one_time : true);
-  const [latitude, setLatitude] = useState<number | null>(existingReminder?.latitude || null);
-  const [longitude, setLongitude] = useState<number | null>(existingReminder?.longitude || null);
+  const [latitude, setLatitude] = useState<number | null>(existingReminder?.latitude ?? null);
+  const [longitude, setLongitude] = useState<number | null>(existingReminder?.longitude ?? null);
   const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const appliedLocationRef = useRef<string | null>(null);
@@ -110,7 +116,7 @@ export default function EditPlaceReminderScreen() {
       Alert.alert('Missing Field', 'Add a reminder title.');
       return;
     }
-    if (!latitude || !longitude) {
+    if (latitude === null || longitude === null) {
       Alert.alert('Missing Field', 'Choose or capture a location.');
       return;
     }
@@ -135,7 +141,7 @@ export default function EditPlaceReminderScreen() {
         longitude,
         radius_meters: finalRadius,
         trigger_type: triggerType,
-        schedule_type: scheduleType,
+        schedule_type: 'always',
         intensity,
         is_one_time: isOneTime,
         is_enabled: existingReminder ? existingReminder.is_enabled : true,
@@ -244,7 +250,7 @@ export default function EditPlaceReminderScreen() {
             <View style={styles.locationCapture}>
               <View style={{ flex: 1, marginRight: spacing.md }}>
                 <Text style={[typography.caption, { color: colors.text }]}>
-                  {latitude && longitude ? 'Location saved' : 'No coordinates captured'}
+                  {latitude !== null && longitude !== null ? 'Location saved' : 'No coordinates captured'}
                 </Text>
                 {locationAccuracy && (
                   <Text style={[typography.caption, { color: colors.subtext, fontSize: 10 }]}>
@@ -254,7 +260,7 @@ export default function EditPlaceReminderScreen() {
               </View>
               <View style={{ gap: spacing.sm }}>
                 <AppButton
-                  title={latitude ? "Update current" : "Use current"}
+                  title={latitude !== null ? "Update current" : "Use current"}
                   variant="secondary"
                   onPress={handleUseCurrentLocation}
                   style={{ minWidth: 140 }}

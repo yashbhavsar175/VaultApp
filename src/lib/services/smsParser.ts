@@ -11,6 +11,8 @@
  * Supports all major Indian banks with extensible pattern system
  */
 
+import { parseTransactionAmount, stripBalanceAndLimitSpans } from '../../utils/amountParsing';
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANK SENDER ID PATTERNS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -155,13 +157,6 @@ export const INDIAN_BANKS: BankPattern[] = [
 // REGEX PATTERNS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Amount patterns - handles INR, Rs, ₹, with/without decimals
-const AMOUNT_PATTERNS = [
-  /(?:INR|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i,
-  /(?:amount|amt|paid|debited|credited|received|sent|transferred)\s*(?:of|:)?\s*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i,
-  /\b([0-9,]+\.[0-9]{2})\b/,  // Decimal amounts like 4925.68
-];
-
 const BALANCE_PATTERNS = [
   /(?:available|avail|avl|clear|closing|current|new|updated)?\s*(?:bal(?:ance)?|bal\.?)\s*(?:is|:|=|-)?\s*(?:INR|Rs\.?|₹)?\s*(-?[0-9,]+(?:\.[0-9]{1,2})?)/i,
   /(?:available balance|avl bal|avbl bal|total balance|ledger balance|effective balance)\s*(?:is|:|=|-)?\s*(?:INR|Rs\.?|₹)?\s*(-?[0-9,]+(?:\.[0-9]{1,2})?)/i,
@@ -226,11 +221,6 @@ export interface ParsedTransaction {
   upiId: string | null;  // UPI ID (e.g., user@paytm, user@ybl)
   confidence: number; // 0-100
   rawText: string;
-  transactionType: 'debit' | 'credit' | 'payment' | 'unknown';
-  merchant: string | null;
-  upiId: string | null;  // UPI ID (e.g., user@paytm, user@ybl)
-  confidence: number; // 0-100
-  rawText: string;
 }
 
 /**
@@ -280,18 +270,21 @@ export function detectBankFromContent(text: string): string | null {
 }
 
 /**
- * Extract amount from SMS
+ * Extract amount from SMS.
+ * Routes through the shared parser so balance / available-credit-limit figures are never
+ * mistaken for the spend and foreign-currency amounts are converted to approximate INR.
  */
 export function extractAmount(text: string): number | null {
-  for (const pattern of AMOUNT_PATTERNS) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      const amountStr = match[1].replace(/,/g, '');
-      const amount = parseFloat(amountStr);
-      if (!isNaN(amount) && amount > 0) {
-        return amount;
-      }
-    }
+  const parsed = parseTransactionAmount(text);
+  if (parsed) return parsed.amountInr;
+
+  // Legacy fallback: a bare decimal (e.g. "4925.68"), but only after balance/limit
+  // spans are stripped so we still never pick up a balance figure.
+  const masked = stripBalanceAndLimitSpans(text);
+  const match = masked.match(/\b([0-9,]+\.[0-9]{2})\b/);
+  if (match && match[1]) {
+    const amount = parseFloat(match[1].replace(/,/g, ''));
+    if (!isNaN(amount) && amount > 0) return amount;
   }
   return null;
 }

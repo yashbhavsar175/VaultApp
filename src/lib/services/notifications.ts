@@ -36,6 +36,7 @@ import {
   appendUserScopedQueueItem,
   logUserQueueAction,
 } from './userScopedQueues';
+import { getAndroidNotificationBase } from './androidNotificationConfig';
 
 export function summarizeParsedSmsForLog(parsed: ParsedTransaction) {
   return {
@@ -201,19 +202,24 @@ export async function showFinancialEventNotification(
       route: input.route,
     });
 
+    // No action buttons here: this path only fires for balance-only updates, where there
+    // is no stored transaction to reclassify. Classification actions live on the
+    // confirmation notification (see executeShowTransactionConfirmation).
     await notifee.displayNotification({
       id: input.eventId ? `finance_${input.route}_${suffixId(input.eventId)}` : undefined,
       title: routeTitle(input.route),
       body: routeBody(input),
       android: {
-        channelId: CHANNELS.SMS_PARSED,
+        ...getAndroidNotificationBase(CHANNELS.SMS_PARSED),
         importance: AndroidImportance.DEFAULT,
-        pressAction: { id: 'default' },
       },
       data: {
         action: input.route,
         sourceKind: input.sourceKind,
         eventIdSuffix: suffixId(input.eventId) || '',
+        // Balance-only updates have no stored transaction to act on, so we keep only the
+        // redacted suffix here and never leak the raw event id into the notification.
+        transactionId: suffixId(input.eventId) || '',
       },
     });
 
@@ -447,14 +453,28 @@ async function executeShowTransactionConfirmation(
       title: titleText,
       body: bodyText,
       android: {
-        channelId: CHANNELS.SMS_PARSED,
+        ...getAndroidNotificationBase(CHANNELS.SMS_PARSED),
         importance: AndroidImportance.DEFAULT,
-        pressAction: { id: 'default' },
-        actions: [
-          { title: 'OK', pressAction: { id: 'ok' } },
-          { title: 'Delete', pressAction: { id: 'delete' } },
-          { title: 'Report Bug', pressAction: { id: 'report_bug' } },
-        ],
+        actions: (() => {
+          const notifActions: Array<{ title: string; pressAction: { id: string } }> = [];
+          // Context-aware override buttons. Income is counted by default, so we offer a
+          // way to drop it; expenses are NOT counted by default, so we offer to confirm.
+          const isCounted = options?.classificationStatus === 'manual_confirmed';
+          if (type === 'income') {
+            notifActions.push(isCounted
+              ? { title: 'This is not income', pressAction: { id: 'mark_not_income' } }
+              : { title: 'Count as income', pressAction: { id: 'mark_is_income' } });
+          } else if (type === 'expense') {
+            notifActions.push(isCounted
+              ? { title: 'Not an expense', pressAction: { id: 'mark_not_expense' } }
+              : { title: 'Is this an expense?', pressAction: { id: 'mark_is_expense' } });
+          } else if (type === 'transfer') {
+            notifActions.push({ title: 'Not a transfer', pressAction: { id: 'mark_not_transfer' } });
+          }
+          notifActions.push({ title: 'Delete', pressAction: { id: 'delete' } });
+          notifActions.push({ title: 'Report Bug', pressAction: { id: 'report_bug' } });
+          return notifActions;
+        })(),
       },
       data: {
         transactionId,
@@ -566,9 +586,8 @@ export async function showSmsFailedNotification(
       title: 'Transaction SMS Not Recognized',
       body: `From: ${safeSenderLabel(sender)}\n${redactedRawText}`,
       android: {
-        channelId: CHANNELS.SMS_FAILED,
+        ...getAndroidNotificationBase(CHANNELS.SMS_FAILED),
         importance: AndroidImportance.HIGH,
-        pressAction: { id: 'default' },
         actions: [
           { title: 'Report Bug', pressAction: { id: 'report_bug' } },
         ],
@@ -593,6 +612,68 @@ export async function showSmsFailedNotification(
 // ═══════════════════════════════════════════════════════════════════════════════
 // EVENT HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+type ClassificationOverrideUpdate = {
+  type?: 'income' | 'expense';
+  account_match_status: 'manual_confirmed' | 'ignored';
+  account_match_reason: string;
+  account_match_confidence?: 'high' | 'medium' | 'low';
+};
+
+const CLASSIFICATION_OVERRIDE_ACTIONS = new Set([
+  'mark_is_income',
+  'mark_not_income',
+  'mark_is_expense',
+  'mark_not_expense',
+  'mark_not_transfer',
+]);
+
+function isClassificationOverrideAction(actionId?: string): boolean {
+  return Boolean(actionId && CLASSIFICATION_OVERRIDE_ACTIONS.has(actionId));
+}
+
+/**
+ * Map a notification action to the transaction fields that decide whether it is counted.
+ * Reasons mirror the in-app review screen so behaviour is identical across surfaces.
+ */
+function classificationUpdatesForAction(actionId: string): ClassificationOverrideUpdate | null {
+  switch (actionId) {
+    case 'mark_is_income':
+      return {
+        type: 'income',
+        account_match_status: 'manual_confirmed',
+        account_match_reason: 'review_detail_income_confirmed',
+        account_match_confidence: 'high',
+      };
+    case 'mark_not_income':
+      return {
+        account_match_status: 'ignored',
+        account_match_reason: 'review_detail_not_income',
+      };
+    case 'mark_is_expense':
+      return {
+        type: 'expense',
+        account_match_status: 'manual_confirmed',
+        account_match_reason: 'review_queue_expense_confirmed',
+        account_match_confidence: 'high',
+      };
+    case 'mark_not_expense':
+      return {
+        account_match_status: 'ignored',
+        account_match_reason: 'review_detail_not_expense',
+      };
+    case 'mark_not_transfer':
+      // Not a transfer → it's a real expense the user wants counted.
+      return {
+        type: 'expense',
+        account_match_status: 'manual_confirmed',
+        account_match_reason: 'review_detail_expense_confirmed',
+        account_match_confidence: 'high',
+      };
+    default:
+      return null;
+  }
+}
 
 /**
  * Handle background notification events (when app is closed/background)
@@ -685,6 +766,29 @@ export async function handleTransactionNotificationEvent(
           errorCode: safeErrorCode(error),
         });
       }
+    } else if (isClassificationOverrideAction(pressAction?.id)) {
+      try {
+        const updates = classificationUpdatesForAction(pressAction!.id);
+        if (typeof transactionId === 'string' && updates) {
+          // Canonical "counted" mechanism — account_match_status drives dashboard totals
+          // (the old is_ignored field was never read, so overrides had no effect).
+          await supabase.from('transactions').update(updates).eq('id', transactionId);
+          await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
+            current
+              ? current.map(tx => (tx.id === transactionId ? { ...tx, ...updates } as Transaction : tx))
+              : current
+          );
+          emitFinanceDataChanged({
+            areas: ['transactions', 'review'],
+            source: 'notification:override',
+            transactionId,
+          });
+        }
+        if (notification?.id) await notifee.cancelNotification(notification.id);
+        logInfo('Transaction classification overridden via notification');
+      } catch (error) {
+        if (__DEV__) console.error('Error overriding transaction:', error);
+      }
     }
   }
 
@@ -709,7 +813,7 @@ export async function onBackgroundEvent(event: SafeNotifeeEvent | NotifeeEvent) 
 
   if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
     const action = detail?.notification?.data?.action;
-    if (action === 'transaction_confirmation' || action === 'sms_failed') {
+    if (action === 'transaction_confirmation' || action === 'sms_failed' || action === 'stored_transaction' || action === 'balance_only') {
       await handleTransactionNotificationEvent(event);
       return;
     } else if (action === 'transaction_reminder_meetup') {
@@ -738,7 +842,7 @@ export function initializeForegroundListener() {
 
     if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
       const action = detail?.notification?.data?.action;
-      if (action === 'transaction_confirmation' || action === 'sms_failed') {
+      if (action === 'transaction_confirmation' || action === 'sms_failed' || action === 'stored_transaction' || action === 'balance_only') {
         await handleTransactionNotificationEvent(event);
       } else if (action === 'transaction_reminder_meetup') {
         await handleMeetupReminderEvent(event);
@@ -757,6 +861,8 @@ async function handleMeetupReminderEvent(event: SafeNotifeeEvent | NotifeeEvent)
   const actionId = detail?.pressAction?.id;
   
   if (type === EventType.ACTION_PRESS && actionId?.startsWith('snooze_')) {
+    if (!detail) return;
+
     const data = detail.notification?.data;
     const txId = data?.transactionId as string;
     const amount = Number(data?.amount);

@@ -16,6 +16,7 @@ import { Platform } from 'react-native';
 import { PeopleLedger } from '../../types';
 import { isOverdue, isDueToday, getDaysUntilDue } from '../database/userdata';
 import { CreditCard, getCCDaysUntilDue } from '../database/financial';
+import { getAndroidNotificationBase } from './androidNotificationConfig';
 
 const CHANNELS = {
   PEOPLE_LEDGER: 'people-ledger',
@@ -130,9 +131,8 @@ async function showSchedulingFailureSummary(
       title: 'Reminder scheduling issue',
       body: `${failureCount} reminder${failureCount === 1 ? '' : 's'} could not be scheduled. Open the app to review notification settings.`,
       android: {
-        channelId,
+        ...getAndroidNotificationBase(channelId),
         importance: AndroidImportance.DEFAULT,
-        pressAction: { id: 'default' },
       },
     });
   } catch (error) {
@@ -222,7 +222,10 @@ function buildLedgerNotificationPlans(entries: PeopleLedger[]): LedgerNotificati
               id: `${entry.id}-due`,
               title: 'Payment Due Today',
               body: `${entry.person_name} needs to ${entry.type === 'lent' ? 'return' : 'receive'} ₹${Number(entry.remaining_amount).toFixed(0)} today`,
-              android: { channelId: CHANNELS.PEOPLE_LEDGER, importance: AndroidImportance.HIGH },
+              android: {
+                ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
+                importance: AndroidImportance.HIGH,
+              },
             },
             trigger: makeLedgerTrigger(dueDate.getTime()),
           });
@@ -237,7 +240,10 @@ function buildLedgerNotificationPlans(entries: PeopleLedger[]): LedgerNotificati
                 id: `${entry.id}-reminder`,
                 title: 'Payment Due Tomorrow',
                 body: `${entry.person_name} - ₹${Number(entry.remaining_amount).toFixed(0)} due tomorrow`,
-                android: { channelId: CHANNELS.PEOPLE_LEDGER, importance: AndroidImportance.DEFAULT },
+                android: {
+                  ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
+                  importance: AndroidImportance.DEFAULT,
+                },
               },
               trigger: makeLedgerTrigger(reminderDate.getTime()),
             });
@@ -256,7 +262,10 @@ function buildLedgerNotificationPlans(entries: PeopleLedger[]): LedgerNotificati
             id: `${entry.id}-installment`,
             title: 'Daily Installment Reminder',
             body: `${entry.person_name}'s daily ₹${Number(entry.installment_amount).toFixed(0)} - ₹${Number(entry.remaining_amount).toFixed(0)} remaining`,
-            android: { channelId: CHANNELS.PEOPLE_LEDGER, importance: AndroidImportance.DEFAULT },
+            android: {
+              ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
+              importance: AndroidImportance.DEFAULT,
+            },
           },
           trigger: makeLedgerTrigger(scheduledTime.getTime()),
         });
@@ -272,7 +281,10 @@ function buildLedgerNotificationPlans(entries: PeopleLedger[]): LedgerNotificati
           id: `${entry.id}-overdue`,
           title: 'Payment Overdue',
           body: `${entry.person_name} payment overdue by ${daysOverdue} days. ₹${Number(entry.remaining_amount).toFixed(0)} pending`,
-          android: { channelId: CHANNELS.PEOPLE_LEDGER, importance: AndroidImportance.HIGH },
+          android: {
+            ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
+            importance: AndroidImportance.HIGH,
+          },
         },
         trigger: makeLedgerTrigger(scheduledTime.getTime(), RepeatFrequency.DAILY),
       });
@@ -300,9 +312,8 @@ function buildLedgerSummaryPlan(hiddenPlansCount: number, entries: PeopleLedger[
       title: `${hiddenPlansCount} more payment reminders`,
       body: `Total pending across ledger: ₹${totalPending.toFixed(0)}. Open People to review all.`,
       android: {
-        channelId: CHANNELS.PEOPLE_LEDGER,
+        ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
         importance: AndroidImportance.DEFAULT,
-        pressAction: { id: 'default' },
       },
     },
     trigger: makeLedgerTrigger(scheduledTime.getTime()),
@@ -353,14 +364,20 @@ export async function showImmediateReminder(entries: PeopleLedger[]) {
     await notifee.displayNotification({
       title: 'Overdue Payment',
       body: `${entry.person_name} - ₹${Number(entry.remaining_amount).toFixed(0)} overdue`,
-      android: { channelId: CHANNELS.PEOPLE_LEDGER, importance: AndroidImportance.HIGH },
+      android: {
+        ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
+        importance: AndroidImportance.HIGH,
+      },
     });
   } else if (dueTodayEntries.length > 0) {
     const entry = dueTodayEntries[0];
     await notifee.displayNotification({
       title: 'Payment Due Today',
       body: `${entry.person_name} - ₹${Number(entry.remaining_amount).toFixed(0)} due today`,
-      android: { channelId: CHANNELS.PEOPLE_LEDGER, importance: AndroidImportance.DEFAULT },
+      android: {
+        ...getAndroidNotificationBase(CHANNELS.PEOPLE_LEDGER),
+        importance: AndroidImportance.DEFAULT,
+      },
     });
   }
 }
@@ -412,10 +429,8 @@ export async function scheduleDueReminders(card: CreditCard): Promise<void> {
               title: notif.title,
               body: `${card.bank_name} •••• ${card.last_4_digits}\nOutstanding: ₹${card.current_outstanding.toFixed(0)}`,
               android: {
-                channelId,
+                ...getAndroidNotificationBase(channelId),
                 importance: notif.priority === 'urgent' ? AndroidImportance.HIGH : AndroidImportance.DEFAULT,
-                pressAction: { id: 'default' },
-                smallIcon: 'ic_launcher',
               },
             },
             trigger
@@ -520,10 +535,8 @@ export async function scheduleTransactionReminder(
         note,
       },
       android: {
-        channelId: CHANNELS.TRANSACTION_REMINDER,
+        ...getAndroidNotificationBase(CHANNELS.TRANSACTION_REMINDER),
         importance: AndroidImportance.HIGH,
-        pressAction: { id: 'default' },
-        smallIcon: 'ic_launcher',
         actions: [
           { title: 'Snooze 10m', pressAction: { id: 'snooze_10m' } },
           { title: 'Snooze 30m', pressAction: { id: 'snooze_30m' } },

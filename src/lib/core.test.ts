@@ -10,7 +10,11 @@ import {
   updateTransaction,
 } from './core';
 import { emitFinanceDataChanged } from './services/dataEvents';
-import { OFFLINE_TX_QUEUE_BASE_KEY, getUserScopedQueueKey } from './services/userScopedQueues';
+import {
+  OFFLINE_DELETE_QUEUE_BASE_KEY,
+  OFFLINE_TX_QUEUE_BASE_KEY,
+  getUserScopedQueueKey,
+} from './services/userScopedQueues';
 
 jest.mock('./services/notifications', () => ({
   showTransactionConfirmation: jest.fn(),
@@ -39,11 +43,13 @@ jest.mock('@supabase/supabase-js', () => {
     single: mockSingle,
   }));
   const mockInsert = jest.fn(() => ({ select: mockSelect }));
+  const mockUpsert = jest.fn(() => ({ select: mockSelect }));
   const mockDelete = jest.fn(() => ({ eq: mockEq }));
   const mockUpdate = jest.fn(() => ({ eq: mockEq, select: mockSelect }));
   const mockFrom = jest.fn(() => ({
     delete: mockDelete,
     insert: mockInsert,
+    upsert: mockUpsert,
     select: mockSelect,
     update: mockUpdate,
   }));
@@ -58,6 +64,7 @@ jest.mock('@supabase/supabase-js', () => {
       __mocks: {
         mockFrom,
         mockInsert,
+        mockUpsert,
         mockSelect,
         mockEq,
         mockIn,
@@ -452,6 +459,7 @@ describe('transaction update cache invalidation', () => {
       ...cachedTransaction,
       account_match_status: 'ignored',
       account_match_reason: 'review_detail_not_expense',
+      raw_sms: 'Rs.20 debited from account XX1234 to TASK24F CACHE. OTP 123456. Call 9876543210.',
     };
     await AsyncStorage.setItem('cache_transactions', JSON.stringify({
       data: [cachedTransaction],
@@ -498,6 +506,10 @@ describe('transaction update cache invalidation', () => {
       account_match_status: 'ignored',
       account_match_reason: 'review_detail_not_expense',
     })]);
+    expect(cachedTransactions[0].raw_sms).toMatch(/^redacted_sms len=\d+ hash=[a-f0-9]{8}/);
+    expect(rawTransactions).not.toContain('TASK24F CACHE');
+    expect(rawTransactions).not.toContain('OTP');
+    expect(rawTransactions).not.toContain('9876543210');
     expect(await AsyncStorage.getItem('cache_dashboard_summary:user_1:2026-06')).toBeNull();
     expect(mockEmitFinanceDataChanged).toHaveBeenCalledWith(expect.objectContaining({
       areas: ['transactions'],
@@ -580,16 +592,88 @@ describe('offline transaction queue user isolation', () => {
       getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'),
       JSON.stringify([queuedTransaction('user_a')]),
     );
+    await AsyncStorage.setItem('cache_transactions', JSON.stringify({
+      data: [{
+        id: 'local_user_a',
+        user_id: 'user_a',
+        amount: 125,
+        type: 'expense',
+        note: 'Scoped queued transaction',
+        category: 'general',
+        created_at: '2026-06-02T00:00:00.000Z',
+        client_idempotency_key: 'local_user_a',
+      }],
+      timestamp: Date.now(),
+    }));
+    mockSupabase.__mocks.mockSingle.mockResolvedValueOnce({
+      data: {
+        id: 'tx_synced_1',
+        user_id: 'user_a',
+        amount: 125,
+        type: 'expense',
+        note: 'Scoped queued transaction',
+        category: 'general',
+        created_at: '2026-06-02T00:00:00.000Z',
+        client_idempotency_key: 'local_user_a',
+      },
+      error: null,
+    });
 
     await syncOfflineTransactions();
 
-    expect(mockSupabase.__mocks.mockInsert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockSupabase.__mocks.mockUpsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user_a',
       amount: 125,
       type: 'expense',
       note: 'Scoped queued transaction',
-    }));
+      client_idempotency_key: 'local_user_a',
+    }), { onConflict: 'user_id,client_idempotency_key' });
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+    const cachedTransactions = JSON.parse(await AsyncStorage.getItem('cache_transactions') || '{}').data;
+    expect(cachedTransactions).toHaveLength(1);
+    expect(cachedTransactions[0]).toEqual(expect.objectContaining({
+      id: 'tx_synced_1',
+      client_idempotency_key: 'local_user_a',
+    }));
+  });
+
+  it('deduplicates queued deletes by idempotency key before syncing', async () => {
+    await AsyncStorage.setItem(
+      getUserScopedQueueKey(OFFLINE_DELETE_QUEUE_BASE_KEY, 'user_a'),
+      JSON.stringify([
+        { user_id: 'user_a', queueOwnerId: 'user_a', transactionId: 'local_delete_1' },
+        { user_id: 'user_a', queueOwnerId: 'user_a', id: 'local_delete_1' },
+      ]),
+    );
+    await AsyncStorage.setItem('cache_transactions', JSON.stringify({
+      data: [{
+        id: 'local_delete_1',
+        user_id: 'user_a',
+        amount: 50,
+        type: 'expense',
+        note: 'Pending delete',
+        category: 'general',
+        created_at: '2026-06-02T00:00:00.000Z',
+        client_idempotency_key: 'local_delete_1',
+      }],
+      timestamp: Date.now(),
+    }));
+    await AsyncStorage.setItem(
+      getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'),
+      JSON.stringify([queuedTransaction('user_a', {
+        id: 'local_delete_1',
+        _localId: 'local_delete_1',
+        client_idempotency_key: 'local_delete_1',
+      })]),
+    );
+
+    await syncOfflineTransactions();
+
+    expect(mockSupabase.__mocks.mockDelete).not.toHaveBeenCalled();
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_DELETE_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+    const cachedTransactions = JSON.parse(await AsyncStorage.getItem('cache_transactions') || '{}').data;
+    expect(cachedTransactions).toEqual([]);
   });
 
   it('skips owner-mismatched scoped queue entries with privacy-safe structural logs only', async () => {

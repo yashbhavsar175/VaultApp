@@ -2,6 +2,7 @@ import notifee from '@notifee/react-native';
 import { PeopleLedger } from '../../types';
 import {
   cancelAllLedgerNotifications,
+  scheduleTransactionReminder,
   scheduleLedgerNotifications,
 } from './scheduledNotifications';
 
@@ -103,5 +104,28 @@ describe('scheduled notification safety', () => {
     expect(notifee.getTriggerNotificationIds).not.toHaveBeenCalled();
     expect(notifee.cancelNotification).not.toHaveBeenCalled();
     expect(notifee.createTriggerNotification).not.toHaveBeenCalled();
+  });
+
+  it('uses the shared Android notification icon for meetup reminders without removing snooze actions', async () => {
+    await scheduleTransactionReminder(
+      'tx-meetup-test',
+      250,
+      'PLACEHOLDER_PERSON',
+      new Date(Date.now() + 60_000)
+    );
+
+    const [notification] = (notifee.createTriggerNotification as jest.Mock).mock.calls[0];
+
+    expect(notification.title).toBe('💸 Action Required: Meetup Reminder');
+    expect(notification.android).toMatchObject({
+      channelId: 'transaction-reminders',
+      smallIcon: 'ic_notification',
+      color: '#FFFFFF',
+    });
+    expect(notification.android.actions).toEqual([
+      { title: 'Snooze 10m', pressAction: { id: 'snooze_10m' } },
+      { title: 'Snooze 30m', pressAction: { id: 'snooze_30m' } },
+      { title: 'Snooze 1H', pressAction: { id: 'snooze_1h' } },
+    ]);
   });
 });

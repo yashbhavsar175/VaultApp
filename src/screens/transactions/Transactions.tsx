@@ -24,6 +24,7 @@ if (
 }
 import { FlashList } from '@shopify/flash-list';
 import HapticFeedback from 'react-native-haptic-feedback';
+import NetInfo from '@react-native-community/netinfo';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -37,9 +38,12 @@ import { runWhenIdle } from '../../utils/runWhenIdle';
 import { ScreenWrapper, AppHeader, EditTransactionModal, AppConfirmModal } from '../../components';
 import { formatCurrency as formatAmount } from '../../utils/format';
 import {
-  getTransactionAmountPrefix,
-  getTransactionColor,
-  getTransactionIcon,
+  getCountedTransactionBadgeColor,
+  getTransactionDisplayAmountPrefix,
+  getTransactionDisplayColor,
+  getTransactionDisplayIcon,
+  getTransactionSyncStatusLabel,
+  isTransactionPendingSync,
   formatTransactionDate,
 } from '../../utils/transactionHelpers';
 import { getTransactionDisplayName } from '../../utils/transactionPresentation';
@@ -80,7 +84,9 @@ const TransactionRow = React.memo(({
   typography: any;
   spacing: any;
 }) => {
-  const color = getTransactionColor(item.type);
+  const color = getTransactionDisplayColor(item);
+  const countedBadgeColor = getCountedTransactionBadgeColor(item);
+  const syncStatusLabel = getTransactionSyncStatusLabel(item);
 
   // 120 FPS smooth native thread animation using built-in Animated
   const selectAnim = useRef(new Animated.Value(selectMode ? 1 : 0)).current;
@@ -149,7 +155,7 @@ const TransactionRow = React.memo(({
         }}>
           <View style={[styles.iconBox, { backgroundColor: color + '20', borderRadius: 10 }]}>
             <MaterialCommunityIcons
-              name={getTransactionIcon(item.type)}
+              name={getTransactionDisplayIcon(item)}
               size={20}
               color={color}
             />
@@ -163,14 +169,18 @@ const TransactionRow = React.memo(({
               >
                 {getTransactionDisplayName(item)}
               </Text>
-              {(item.type?.toLowerCase() === 'income' || item.type?.toLowerCase() === 'refund') && (
-                <MaterialCommunityIcons name="check-decagram" size={14} color="#10b981" style={{ marginLeft: 4 }} />
-              )}
-              {item.type?.toLowerCase() === 'expense' && (
-                <MaterialCommunityIcons name="check-decagram" size={14} color="#ef4444" style={{ marginLeft: 4 }} />
+              {countedBadgeColor && (
+                <MaterialCommunityIcons name="check-decagram" size={14} color={countedBadgeColor} style={{ marginLeft: 4 }} />
               )}
             </View>
-            <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs }]}>{formatTransactionDate(item.created_at)}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.xs }}>
+              <Text style={[typography.caption, { color: colors.subtext }]}>{formatTransactionDate(item.created_at)}</Text>
+              {syncStatusLabel && (
+                <Text style={[typography.caption, { color: '#f59e0b', fontWeight: '700' }]}>
+                  {syncStatusLabel}
+                </Text>
+              )}
+            </View>
           </View>
           {/* 🔴 MAGIC FIX: Animate Amount BACKWARDS by 36px so it stays pinned to the right edge and doesn't get clipped! */}
           <Animated.View style={{
@@ -183,7 +193,7 @@ const TransactionRow = React.memo(({
             }]
           }}>
             <Text style={{ color, fontSize: 14, fontWeight: '600' }} numberOfLines={1}>
-              {getTransactionAmountPrefix(item.type)}{formatAmount(Number(item.amount))}
+              {getTransactionDisplayAmountPrefix(item)}{formatAmount(Number(item.amount))}
             </Text>
           </Animated.View>
         </Animated.View>
@@ -254,6 +264,12 @@ export default function Transactions() {
     }
 
     try {
+      const netState = await NetInfo.fetch();
+      if (!netState.isConnected) {
+        if (__DEV__) console.log('[Transactions] Network refresh skipped — offline');
+        return;
+      }
+
       const data = await getTransactions(undefined, pageToLoad, TRANSACTIONS_PAGE_SIZE);
       const nextData = append
         ? [
@@ -262,10 +278,12 @@ export default function Transactions() {
           ]
         : data;
       const dataStr = JSON.stringify(nextData);
+      const dataMatchesCurrent = lastDataStringRef.current === dataStr;
+      const hasPendingSyncInCurrent = transactionsRef.current.some(isTransactionPendingSync);
 
 
       // Prevent unnecessary state updates and re-renders that drop touches!
-      if (!append && lastDataStringRef.current === dataStr) {
+      if (!append && dataMatchesCurrent && !hasPendingSyncInCurrent) {
         hasMoreRef.current = data.length === TRANSACTIONS_PAGE_SIZE;
         setHasMore(hasMoreRef.current);
         setPage(pageToLoad);
@@ -285,11 +303,14 @@ export default function Transactions() {
       // Cache for instant load next time
       setCache(CACHE_KEYS.TRANSACTIONS, nextData);
     } catch {
-      Toast.show({
-        type: 'error',
-        text1: 'Error',
-        text2: 'Failed to load transactions',
-      });
+      const netState = await NetInfo.fetch();
+      if (netState.isConnected) {
+        Toast.show({
+          type: 'error',
+          text1: 'Error',
+          text2: 'Failed to load transactions',
+        });
+      }
     } finally {
       setRefreshing(false);
       setLoading(false);
@@ -303,31 +324,36 @@ export default function Transactions() {
     const initLoad = async () => {
       // RECOVERY SCRIPT FOR BROKEN INCOME TRANSACTIONS
       try {
-        const { supabase } = require('../../lib/core');
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          throw new Error('User not authenticated');
-        }
-
-        const { data: brokenTxs } = await supabase
-          .from('transactions')
-          .select('id, type, category')
-          .eq('user_id', user.id)
-          .eq('type', 'income')
-          .is('category', null);
-          
-        if (brokenTxs && brokenTxs.length > 0) {
-          console.log(`[Recovery] Found ${brokenTxs.length} broken income transactions. Fixing...`);
-          for (const tx of brokenTxs) {
-            await supabase
+        const netState = await NetInfo.fetch();
+        if (!netState.isConnected) {
+          if (__DEV__) console.log('[Recovery] Skipped — offline');
+        } else {
+          const { supabase } = require('../../lib/core');
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            const { data: brokenTxs } = await supabase
               .from('transactions')
-              .update({ category: 'Income' })
-              .eq('id', tx.id)
-              .eq('user_id', user.id);
+              .select('id, type, category')
+              .eq('user_id', user.id)
+              .eq('type', 'income')
+              .is('category', null);
+
+            if (brokenTxs && brokenTxs.length > 0) {
+              console.log(`[Recovery] Found ${brokenTxs.length} broken income transactions. Fixing...`);
+              for (const tx of brokenTxs) {
+                await supabase
+                  .from('transactions')
+                  .update({ category: 'Income' })
+                  .eq('id', tx.id)
+                  .eq('user_id', user.id);
+              }
+              console.log(`[Recovery] Successfully fixed ${brokenTxs.length} transactions!`);
+              loadTransactions();
+              return;
+            }
+          } else if (__DEV__) {
+            console.log('[Recovery] Skipped — unauthenticated');
           }
-          console.log(`[Recovery] Successfully fixed ${brokenTxs.length} transactions!`);
-          loadTransactions();
-          return;
         }
       } catch (e) {
         console.error('[Recovery] Failed', e);
@@ -371,17 +397,25 @@ export default function Transactions() {
 
     eventRefreshTimerRef.current = setTimeout(() => {
       loadTransactions();
-    }, 350);
+    }, 750);
   }, [loadTransactions]);
 
   useFocusEffect(
     useCallback(() => {
       return subscribeFinanceDataChanged(payload => {
         if (financeDataChangedAffects(payload, ['transactions'])) {
-          scheduleEventRefresh();
+          const hasPendingSync = transactionsRef.current.some(isTransactionPendingSync);
+          if (hasPendingSync) {
+            if (eventRefreshTimerRef.current) {
+              clearTimeout(eventRefreshTimerRef.current);
+            }
+            loadTransactions();
+          } else {
+            scheduleEventRefresh();
+          }
         }
       });
-    }, [scheduleEventRefresh])
+    }, [loadTransactions, scheduleEventRefresh])
   );
 
   useEffect(() => {

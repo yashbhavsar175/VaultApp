@@ -7,6 +7,7 @@
 
 import notifee, { AndroidImportance, AuthorizationStatus } from '@notifee/react-native';
 import { showTransactionConfirmation, showSmsFailedNotification, isSpamMessage } from '../lib/services/notifications';
+import { getAndroidNotificationBase } from '../lib/services/androidNotificationConfig';
 
 // ─── Permission Helper ─────────────────────────────────────────────────────────
 
@@ -34,10 +35,8 @@ export const sendTestNotification = async (): Promise<boolean> => {
       title: 'HDFC Bank',
       body: 'Rs 500.00 debited from A/c XX1234 on 07-Apr-26. UPI/PhonePe/9876543210. Avl Bal: Rs 10,500.00',
       android: {
-        channelId,
-        smallIcon: 'ic_launcher',
+        ...getAndroidNotificationBase(channelId),
         importance: AndroidImportance.HIGH,
-        pressAction: { id: 'default' },
       },
     });
 
@@ -75,7 +74,7 @@ export const sendMultipleTestNotifications = async (): Promise<boolean> => {
       await notifee.displayNotification({
         title: scenarios[i].title,
         body: scenarios[i].body,
-        android: { channelId, smallIcon: 'ic_launcher' },
+        android: getAndroidNotificationBase(channelId),
       });
       console.log(`✅ Sent ${i + 1}/${scenarios.length}: ${scenarios[i].title}`);
       if (i < scenarios.length - 1) {
@@ -125,10 +124,8 @@ export const sendTypedTestNotification = async (type: 'debit' | 'credit'): Promi
     title: msg.title,
     body: msg.body,
     android: {
-      channelId,
+      ...getAndroidNotificationBase(channelId),
       importance: AndroidImportance.HIGH,
-      pressAction: { id: 'default' },
-      smallIcon: 'ic_launcher',
       sound: 'default',
       vibrationPattern: [300, 500],
       showTimestamp: true,

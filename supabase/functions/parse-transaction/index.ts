@@ -20,6 +20,7 @@ type ParsedTransaction = {
 
 const AI_TIMEOUT_MS = 15000;
 const OPENAI_MODEL = Deno.env.get('OPENAI_MODEL') || 'gpt-4o-mini';
+const MAX_TRANSACTION_TEXT_LENGTH = 2000;
 
 const jsonHeaders = {
   'Content-Type': 'application/json',
@@ -30,6 +31,28 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: jsonHeaders,
   });
+}
+
+async function verifyAuthenticatedRequest(req: Request): Promise<boolean> {
+  const authorization = req.headers.get('Authorization');
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    return false;
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
+  if (!supabaseUrl || !anonKey) {
+    throw new Error('Supabase auth environment is not configured');
+  }
+
+  const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    headers: {
+      Authorization: authorization,
+      apikey: anonKey,
+    },
+  });
+
+  return response.ok;
 }
 
 function isTransactionType(value: unknown): value is TransactionType {
@@ -129,11 +152,19 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    const isAuthenticated = await verifyAuthenticatedRequest(req);
+    if (!isAuthenticated) {
+      return jsonResponse({ error: 'Unauthorized' }, 401);
+    }
+
     const body = await req.json().catch(() => null);
     const text = String(body?.text || '').trim();
 
     if (!text) {
       return jsonResponse({ error: 'Transaction text is required' }, 400);
+    }
+    if (text.length > MAX_TRANSACTION_TEXT_LENGTH) {
+      return jsonResponse({ error: 'Transaction text is too long' }, 413);
     }
 
     const parsed = await callOpenAI(text);

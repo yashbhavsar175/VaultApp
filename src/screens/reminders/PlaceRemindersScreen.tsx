@@ -24,23 +24,23 @@ export default function PlaceRemindersScreen() {
   const checkPermissionsSilently = useCallback(async () => {
     try {
       const status = await checkPlaceReminderPermissions();
-      console.log('[PlaceRemindersScreen] Permission check result:', status);
+      if (__DEV__) console.log('[PlaceRemindersScreen] Permission check result:', status);
       setBackgroundPermissionStatus(status.backgroundLocation);
     } catch (error) {
-      console.warn('[PlaceRemindersScreen] Permission check error:', error);
+      if (__DEV__) console.warn('[PlaceRemindersScreen] Permission check error:', error);
       setBackgroundPermissionStatus('denied');
     }
   }, []);
 
   const loadReminders = useCallback(async () => {
-    console.log('[PlaceRemindersScreen] loadReminders called');
+    if (__DEV__) console.log('[PlaceRemindersScreen] loadReminders called');
     setLoading(true);
     try {
       const data = await getPlaceReminders();
-      console.log('[PlaceRemindersScreen] Loaded reminders:', { count: data.length, ids: data.map(r => r.id.slice(-6)), enabledCount: data.filter(r => r.is_enabled).length });
+      if (__DEV__) console.log('[PlaceRemindersScreen] Loaded reminders:', { count: data.length, ids: data.map(r => r.id.slice(-6)), enabledCount: data.filter(r => r.is_enabled).length });
       setReminders(data);
     } catch (e) {
-      console.warn('[PlaceRemindersScreen] loadReminders error:', e);
+      if (__DEV__) console.warn('[PlaceRemindersScreen] loadReminders error:', e);
     } finally {
       setLoading(false);
     }
@@ -48,7 +48,7 @@ export default function PlaceRemindersScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      console.log('[PlaceRemindersScreen] Screen focused — reloading reminders & checking permissions');
+      if (__DEV__) console.log('[PlaceRemindersScreen] Screen focused — reloading reminders & checking permissions');
       loadReminders();
       checkPermissionsSilently();
     }, [loadReminders, checkPermissionsSilently])
@@ -56,7 +56,7 @@ export default function PlaceRemindersScreen() {
 
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
-      console.log('[PlaceRemindersScreen] AppState changed to:', nextAppState);
+      if (__DEV__) console.log('[PlaceRemindersScreen] AppState changed to:', nextAppState);
       if (nextAppState === 'active') {
         await checkPermissionsSilently();
       }
@@ -69,10 +69,10 @@ export default function PlaceRemindersScreen() {
   }, [checkPermissionsSilently]);
 
   const handleEnableBackground = async () => {
-    console.log('[PlaceRemindersScreen] handleEnableBackground — requesting background location');
+    if (__DEV__) console.log('[PlaceRemindersScreen] handleEnableBackground — requesting background location');
     await requestPlaceReminderPermissions();
     const status = await requestBackgroundLocationPermission();
-    console.log('[PlaceRemindersScreen] Background location result:', status);
+    if (__DEV__) console.log('[PlaceRemindersScreen] Background location result:', status);
     if (status === 'granted') {
       setBackgroundPermissionStatus('granted');
       await syncAllGeofences();
@@ -106,17 +106,24 @@ export default function PlaceRemindersScreen() {
   };
 
   const handleDelete = (id: string) => {
-    console.log('[PlaceRemindersScreen] handleDelete tapped for id suffix:', id.slice(-6));
+    if (__DEV__) console.log('[PlaceRemindersScreen] handleDelete tapped for id suffix:', id.slice(-6));
     Alert.alert('Delete Reminder', 'Are you sure you want to delete this reminder?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          console.log('[PlaceRemindersScreen] Deleting reminder:', id.slice(-6));
-          await deletePlaceReminder(id);
-          console.log('[PlaceRemindersScreen] Deleted. Reloading list.');
-          loadReminders();
+          if (__DEV__) console.log('[PlaceRemindersScreen] Deleting reminder:', id.slice(-6));
+          // Optimistic removal
+          const previousReminders = reminders;
+          setReminders(prev => prev.filter(r => r.id !== id));
+          try {
+            await deletePlaceReminder(id);
+            if (__DEV__) console.log('[PlaceRemindersScreen] Deleted successfully.');
+          } catch (error) {
+            if (__DEV__) console.warn('[PlaceRemindersScreen] Delete failed, reverting:', error);
+            setReminders(previousReminders);
+          }
         },
       },
     ]);
@@ -124,13 +131,25 @@ export default function PlaceRemindersScreen() {
 
   const handleToggle = async (reminder: PlaceReminder) => {
     const newState = !reminder.is_enabled;
-    console.log('[PlaceRemindersScreen] handleToggle:', { idSuffix: reminder.id.slice(-6), title: reminder.title, from: reminder.is_enabled, to: newState });
+    if (__DEV__) console.log('[PlaceRemindersScreen] handleToggle:', { idSuffix: reminder.id.slice(-6), from: reminder.is_enabled, to: newState });
+
+    // ── Optimistic UI update: toggle immediately so user sees instant feedback ──
+    setReminders(prev =>
+      prev.map(r => r.id === reminder.id ? { ...r, is_enabled: newState } : r)
+    );
+
     try {
+      // Heavy async work runs after UI has already updated
       await savePlaceReminder({ ...reminder, is_enabled: newState });
-      console.log('[PlaceRemindersScreen] Toggle saved. Reloading list.');
-      loadReminders();
+      if (__DEV__) console.log('[PlaceRemindersScreen] Toggle saved successfully.');
     } catch (error) {
-      console.warn('[PlaceRemindersScreen] Toggle error:', error);
+      // Revert on failure
+      if (__DEV__) console.warn('[PlaceRemindersScreen] Toggle error, reverting UI:', {
+        error: error instanceof Error ? error.name : 'unknown',
+      });
+      setReminders(prev =>
+        prev.map(r => r.id === reminder.id ? { ...r, is_enabled: reminder.is_enabled } : r)
+      );
     }
   };
 

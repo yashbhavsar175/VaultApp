@@ -266,6 +266,30 @@ function buildEvidencePayload(userId: string, input: CreateTransactionEvidenceIn
   };
 }
 
+function isDuplicateEvidenceSignalError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
+  const maybeError = error as { code?: unknown; message?: unknown };
+  if (maybeError.code !== '23505') return false;
+
+  const message = typeof maybeError.message === 'string' ? maybeError.message : '';
+  return message.includes('idx_transaction_evidence_user_signal')
+    || message.includes('transaction_evidence')
+    || message.includes('signal_id');
+}
+
+async function getEvidenceBySignalId(userId: string, signalId: string): Promise<TransactionEvidence> {
+  const { data, error } = await supabase
+    .from('transaction_evidence')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('signal_id', signalId)
+    .single();
+
+  if (error) throw error;
+  return data as TransactionEvidence;
+}
+
 export async function createTransactionEvidence(
   input: CreateTransactionEvidenceInput
 ): Promise<TransactionEvidence> {
@@ -279,7 +303,12 @@ export async function createTransactionEvidence(
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) {
+    if (isDuplicateEvidenceSignalError(error)) {
+      return await getEvidenceBySignalId(userId, payload.signal_id);
+    }
+    throw error;
+  }
   return data as TransactionEvidence;
 
   } catch (err) {

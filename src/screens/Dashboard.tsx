@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, AppState, AppStateStatus, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, LayoutAnimation, Platform, UIManager, RefreshControl, AppState, AppStateStatus, Animated, Easing } from 'react-native';
 import { formatCurrency as formatAmount } from '../utils/format';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -546,24 +546,31 @@ export default function Dashboard() {
           <View style={[styles.heroCard, { backgroundColor: colors.accent }]}>
             <View style={styles.heroCircle1} />
             <View style={styles.heroCircle2} />
+            {monthlyBalance < 0 && <AnimatedArrows type="loss" />}
+            {monthlyBalance > 0 && <AnimatedArrows type="profit" />}
             
             <Text style={[typography.caption, { color: 'rgba(255,255,255,0.8)', fontSize: 13 }]}>
               Monthly Balance
             </Text>
-            <Text style={[typography.h1, { color: '#fff', fontSize: 36, fontWeight: 'bold', marginTop: 4 }]}>
-              {formatAmount(monthlyBalance)}
+            <Text style={[typography.h1, { 
+              color: monthlyBalance > 0 ? '#85FFB3' : (monthlyBalance < 0 ? '#FF9B9B' : '#fff'), 
+              fontSize: 36, 
+              fontWeight: 'bold', 
+              marginTop: 4 
+            }]}>
+              {formatAmount(Math.abs(monthlyBalance))}
             </Text>
             
             <View style={{ flexDirection: 'row', marginTop: spacing.md, gap: 12 }}>
               <View style={styles.heroPill}>
-                <MaterialCommunityIcons name="check" size={14} color="#fff" />
+                <MaterialCommunityIcons name="arrow-down" size={14} color="#fff" />
                 <Text style={[typography.caption, { color: '#fff', marginLeft: 4, fontSize: 11 }]}>
                   {formatAmount(totalIncome)}
                 </Text>
               </View>
               <Text style={{ color: 'rgba(255,255,255,0.5)' }}>|</Text>
               <View style={styles.heroPill}>
-                <MaterialCommunityIcons name="close" size={14} color="#fff" />
+                <MaterialCommunityIcons name="arrow-up" size={14} color="#fff" />
                 <Text style={[typography.caption, { color: '#fff', marginLeft: 4, fontSize: 11 }]}>
                   {formatAmount(netExpense)}
                 </Text>
@@ -599,7 +606,7 @@ export default function Dashboard() {
               <View>
                 <View style={{ flexDirection: 'row', gap: 12, marginBottom: spacing.md }}>
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                    <MaterialCommunityIcons name="check-circle" size={24} color={colors.income} />
+                    <MaterialCommunityIcons name="arrow-down-circle" size={24} color={colors.income} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                       Income
                     </Text>
@@ -609,7 +616,7 @@ export default function Dashboard() {
                   </Card>
 
                   <Card style={{ ...styles.summaryCard, flex: 1 }}>
-                    <MaterialCommunityIcons name="close-circle" size={24} color={colors.expense} />
+                    <MaterialCommunityIcons name="arrow-up-circle" size={24} color={colors.expense} />
                     <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11 }]}>
                       Net Expense
                     </Text>
@@ -942,3 +949,88 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
 });
+
+const AnimatedArrows = ({ type }: { type: 'loss' | 'profit' }) => {
+  const isLoss = type === 'loss';
+  return (
+    <View style={[StyleSheet.absoluteFill, { overflow: 'hidden' }]} pointerEvents="none">
+      {Array.from({ length: 20 }).map((_, i) => (
+        <FallingArrow key={i} isLoss={isLoss} index={i} />
+      ))}
+    </View>
+  );
+};
+
+const FallingArrow = ({ isLoss, index }: { isLoss: boolean, index: number }) => {
+  const anim = useRef(new Animated.Value(0)).current;
+  const startX = useRef(new Animated.Value(0)).current;
+  const size = useRef(20 + Math.random() * 12).current;
+  
+  useEffect(() => {
+    // Initial stagger delay
+    const initialDelay = Math.random() * 4000;
+    let isFirstRun = true;
+    
+    const runAnimation = () => {
+      // Pick a NEW random starting X position every time the arrow falls
+      // -100 to 500 covers the entire width of the screen, even for tablets
+      const randomStartX = (Math.random() * 600) - 100;
+      startX.setValue(randomStartX);
+      anim.setValue(0);
+      
+      const duration = 1500 + Math.random() * 2000;
+      
+      Animated.sequence([
+        Animated.delay(isFirstRun ? initialDelay : Math.random() * 500),
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: duration,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      ]).start(() => {
+        isFirstRun = false;
+        runAnimation();
+      });
+    };
+    
+    runAnimation();
+  }, [anim, startX]);
+
+  const translateY = anim.interpolate({ 
+    inputRange: [0, 1], 
+    // Card is ~200px tall. Start well above (-80), end well below (280)
+    outputRange: isLoss ? [-80, 280] : [280, -80] 
+  });
+  
+  const deltaX = anim.interpolate({ 
+    inputRange: [0, 1], 
+    // Loss falls diagonally left, profit rises diagonally right
+    outputRange: isLoss ? [100, -100] : [-100, 100] 
+  });
+  
+  // Combine the dynamic random start position with the movement delta
+  const translateX = Animated.add(startX, deltaX);
+
+  const opacity = anim.interpolate({ 
+    inputRange: [0, 0.1, 0.9, 1], 
+    outputRange: [0, 0.8, 0.8, 0] 
+  });
+
+  return (
+    <Animated.View style={{
+      position: 'absolute',
+      opacity,
+      transform: [
+        { translateX },
+        { translateY },
+      ]
+    }}>
+      <MaterialCommunityIcons 
+        name={isLoss ? "arrow-bottom-left" : "arrow-top-right"} 
+        size={size} 
+        color={isLoss ? "#ff6b6b" : "#4ade80"} 
+      />
+    </Animated.View>
+  );
+};

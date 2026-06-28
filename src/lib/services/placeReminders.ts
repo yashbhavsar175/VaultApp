@@ -135,7 +135,7 @@ export async function syncAllGeofences() {
   try {
     const reminders = await getPlaceReminders();
     const activeGeofences: NativeGeofenceReminder[] = reminders
-      .filter(r => r.is_enabled && r.latitude && r.longitude)
+      .filter(r => r.is_enabled && r.latitude !== null && r.longitude !== null)
       .map(r => ({
         id: r.id,
         latitude: r.latitude!,
@@ -199,16 +199,16 @@ async function triggerLocalNotification(reminder: PlaceReminder) {
     });
     if (__DEV__) console.log('[PlaceReminders] 🔔 ALARM notification displayed successfully');
 
-    // Update last_triggered_at and potentially disable if one_time
-    reminder.last_triggered_at = new Date().toISOString();
-    if (reminder.is_one_time) {
+    // Update last_triggered_at and potentially disable if one_time, using a copy
+    const updatedReminder = { ...reminder, last_triggered_at: new Date().toISOString() };
+    if (updatedReminder.is_one_time) {
       if (__DEV__) console.log('[PlaceReminders] triggerLocalNotification: one-time reminder, disabling after trigger');
-      reminder.is_enabled = false;
+      updatedReminder.is_enabled = false;
     }
-    await savePlaceReminder(reminder);
+    await savePlaceReminder(updatedReminder);
 
     if (__DEV__) console.log('[PlaceReminders] Alarm triggered', {
-      reminderIdSuffix: reminder.id.slice(-6),
+      reminderIdSuffix: updatedReminder.id.slice(-6),
     });
   } catch (error) {
     if (__DEV__) console.warn('[PlaceReminders] triggerLocalNotification error', {
@@ -230,7 +230,7 @@ export async function evaluateReminders(lat: number, lon: number, now: number = 
     });
 
     for (const reminder of reminders) {
-      if (!reminder.is_enabled || !reminder.latitude || !reminder.longitude) {
+      if (!reminder.is_enabled || reminder.latitude === null || reminder.longitude === null) {
         continue;
       }
 

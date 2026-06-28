@@ -726,19 +726,18 @@ async function fetchSnapshotsForOwners(
   ownerIds: string[]
 ): Promise<SnapshotRow[]> {
   try {
-  if (!ownerIds.length) return [];
+    if (!ownerIds.length) return [];
 
-  const { data, error } = await supabase
-    .from('balance_snapshots')
-    .select('id, owner_type, owner_id, balance_kind, amount, source, confidence, detected_at, created_at')
-    .eq('user_id', userId)
-    .eq('owner_type', ownerType)
-    .in('owner_id', ownerIds)
-    .order('detected_at', { ascending: false })
-    .limit(Math.max(100, ownerIds.length * 8));
+    const { data, error } = await supabase
+      .from('balance_snapshots')
+      .select('id, owner_type, owner_id, balance_kind, amount, source, confidence, detected_at, created_at')
+      .eq('user_id', userId)
+      .eq('owner_type', ownerType)
+      .in('owner_id', ownerIds)
+      .order('detected_at', { ascending: false });
 
-  if (error) throw error;
-  return (data || []) as SnapshotRow[];
+    if (error) throw error;
+    return (data || []) as SnapshotRow[];
 
   } catch (err) {
     if (__DEV__) console.error('[API] balanceViewModel.ts:fetchSnapshotsForOwners failed:', err);

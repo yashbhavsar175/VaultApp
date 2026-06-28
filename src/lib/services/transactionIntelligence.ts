@@ -1,3 +1,5 @@
+import { parseTransactionAmount } from '../../utils/amountParsing';
+
 export type RawTransactionSignal = {
   rawText: string;
   senderOrPackage: string;
@@ -91,28 +93,6 @@ function hashString(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-  confidenceScore: number;
-  confidenceLevel: ConfidenceLevel;
-  decision: Decision;
-  duplicateFingerprints: DuplicateFingerprint[];
-  redactedPreview: RedactedPreview;
-};
-
-const TRUSTED_SOURCES = [
-  'UTKSPR', 'UTKSFB', 'UTKARSH', 'SFBL', 'SuperCard',
-  'super.money', 'money.super.payments', 'slice bank', 'slice',
-  'HDFC', 'SBI', 'ICICI', 'Axis', 'Kotak',
-  'GPay', 'Google Pay', 'com.google.android.apps.nbu.paisa.user',
-  'PhonePe', 'com.phonepe.app',
-  'Paytm', 'net.one97.paytm',
-  'CRED', 'com.dreamplug.androidapp',
-  'OneCard'
-];
-
-function hashString(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
     hash = hash & hash; // Convert to 32bit integer
   }
@@ -135,18 +115,9 @@ function isTrustedSource(senderOrPackage: string, rawText?: string): boolean {
 }
 
 function extractAmount(text: string): number | null {
-  const patterns = [
-    /(?:inr|rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i,
-    /(?:amount|amt)[\s:]*(?:inr|rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i,
-    /(?:debited|credited|paid|received)[\s:]*(?:inr|rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i,
-  ];
-  for (const p of patterns) {
-    const m = text.match(p);
-    if (m && m[1]) {
-      return parseFloat(m[1].replace(/,/g, ''));
-    }
-  }
-  return null;
+  // Shared parser: never reads a balance/credit-limit figure as the amount, and
+  // converts foreign-currency spends to approximate INR.
+  return parseTransactionAmount(text)?.amountInr ?? null;
 }
 
 function normalizeLast4(value?: string | null): string | null {

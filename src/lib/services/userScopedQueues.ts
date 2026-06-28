@@ -16,8 +16,29 @@ export type OwnedQueueEntry<T extends object = Record<string, unknown>> = T & {
   queueOwnerId?: string;
 };
 
+const queueLocks = new Map<string, Promise<unknown>>();
+
 export function getUserScopedQueueKey(baseKey: string, userId: string): string {
   return `${baseKey}:user:${userId}`;
+}
+
+export async function withUserScopedQueueLock<T>(
+  baseKey: string,
+  userId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = getUserScopedQueueKey(baseKey, userId);
+  const previous = queueLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  queueLocks.set(key, current);
+
+  try {
+    return await current;
+  } finally {
+    if (queueLocks.get(key) === current) {
+      queueLocks.delete(key);
+    }
+  }
 }
 
 export function getQueueOwnerId(entry: unknown): string | null {
@@ -113,9 +134,11 @@ export async function appendUserScopedQueueItem<T extends object>(
   userId: string,
   item: T,
 ): Promise<void> {
-  const queue = await loadUserScopedQueue<OwnedQueueEntry<T>>(baseKey, userId);
-  queue.push(withQueueOwner(item, userId));
-  await saveUserScopedQueue(baseKey, userId, queue);
+  await withUserScopedQueueLock(baseKey, userId, async () => {
+    const queue = await loadUserScopedQueue<OwnedQueueEntry<T>>(baseKey, userId);
+    queue.push(withQueueOwner(item, userId));
+    await saveUserScopedQueue(baseKey, userId, queue);
+  });
 }
 
 export async function clearUserScopedQueue(baseKey: string, userId: string): Promise<void> {

@@ -263,6 +263,10 @@ describe('notification privacy paths', () => {
     const payload = (notifee.displayNotification as jest.Mock).mock.calls[0][0];
     const serializedPayload = JSON.stringify(payload);
     expect(payload.title).toBe('Balance updated');
+    expect(payload.android).toMatchObject({
+      smallIcon: 'ic_notification',
+      color: '#FFFFFF',
+    });
     expect(payload.body).toContain('₹1,250');
     expect(serializedPayload).not.toContain('runtime:notification:test:abcdef12');
   });

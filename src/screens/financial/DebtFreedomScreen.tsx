@@ -271,9 +271,11 @@ export function looksUnsafeLabel(value: string): boolean {
   try {
     const trimmed = value.trim();
     if (!trimmed) return false;
-    if (isKnownBankOrApp(trimmed)) return false;
 
     const label = stripDecorativeEmail(trimmed);
+    if (IFSC_PATTERN.test(label) || MASKED_ACCOUNT_PATTERN.test(label)) return true;
+    if (isKnownBankOrApp(trimmed)) return false;
+
     const hasDigit = /\d/.test(label);
 
     return (

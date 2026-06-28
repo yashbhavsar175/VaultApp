@@ -640,7 +640,13 @@ export async function confirmDetectedBankAccount(input: ConfirmDetectedBankAccou
   const snapshot = await getSnapshotFromDetection(userId, detectedAccount, 'bank_account', ownerId);
   
   if (input.startingBalance !== undefined && input.startingBalance !== null) {
-    await supabase.from('bank_accounts').update({ starting_balance: input.startingBalance }).eq('id', ownerId);
+    const { error: correctionError } = await supabase
+      .from('bank_accounts')
+      .update({ starting_balance: input.startingBalance })
+      .eq('id', ownerId)
+      .eq('user_id', userId);
+    if (correctionError) throw correctionError;
+    account.starting_balance = input.startingBalance;
   }
 
   await notifyAccountsChanged();
@@ -676,7 +682,12 @@ export async function confirmDetectedCreditCard(input: ConfirmDetectedCreditCard
   const ownerId = ownerIdFromRpc(rpcResult, detectedAccount);
   
   if (input.currentOutstanding !== undefined && input.currentOutstanding !== null) {
-    await supabase.from('credit_cards').update({ current_outstanding: input.currentOutstanding }).eq('id', ownerId);
+    const { error: correctionError } = await supabase
+      .from('credit_cards')
+      .update({ current_outstanding: input.currentOutstanding })
+      .eq('id', ownerId)
+      .eq('user_id', userId);
+    if (correctionError) throw correctionError;
   }
 
   const creditCard = await getCreditCardById(userId, ownerId);

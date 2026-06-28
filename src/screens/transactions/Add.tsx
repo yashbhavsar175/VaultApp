@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import NetInfo from '@react-native-community/netinfo';
 import Toast from 'react-native-toast-message';
@@ -20,12 +21,13 @@ import { Transaction, TransactionType, BankAccount } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { runWhenIdle } from '../../utils/runWhenIdle';
 import { ScreenWrapper, Card, AppButton, AppHeader } from '../../components';
-import { getBankAccounts, updateBankAccount } from '../../lib/database/financial';
+import { getBankAccounts } from '../../lib/database/financial';
 import { getBankColor } from '../../config';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import { CACHE_KEYS, getCached, setCache, updateCache } from '../../lib/services/cache';
+import { CACHE_KEYS, clearCache, getCached, setCache, updateCache } from '../../lib/services/cache';
 import { emitFinanceDataChanged } from '../../lib/services/dataEvents';
 import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../../lib/services/userScopedQueues';
+import { getAuthUserId, verifySessionUser } from '../../lib/auth/offlineAuth';
 
 const TYPE_OPTIONS = [
   { value: 'income', label: 'Income', icon: 'check-circle', color: '#10b981' },
@@ -117,46 +119,57 @@ export default function Add() {
   const [showTypeModal, setShowTypeModal] = useState(false);
   const [showAccountModal, setShowAccountModal] = useState(false);
 
-  useEffect(() => {
-    loadBanks();
+  const getTransactionAuthState = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      return verifySessionUser(() => supabase.auth.getUser(), session?.user?.id);
+    } catch {
+      return { status: 'unauthenticated' as const };
+    }
   }, []);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      const task = runWhenIdle(() => {
-        if (isInitialBankLoad) {
-          // First time: show loader
-          loadBanks();
-          setIsInitialBankLoad(false);
-        } else {
-          // Subsequent visits: load silently
-          loadBanksSilently();
-        }
-        loadSavedCategories();
-      });
-      return () => task.cancel();
-    }, [isInitialBankLoad])
-  );
+  const handleUnauthenticatedAccess = useCallback(async () => {
+    setBanks([]);
+    setSavedCategories([]);
+    await clearCache();
+    await AsyncStorage.removeItem('app_user_id').catch(() => undefined);
+    await supabase.auth.signOut().catch(() => undefined);
+    Toast.show({
+      type: 'error',
+      text1: 'Login required',
+      text2: 'Please sign in again before adding transactions',
+    });
+  }, []);
 
-  const loadSavedCategories = async () => {
+  const loadSavedCategories = useCallback(async () => {
     try {
+      const authState = await getTransactionAuthState();
+      const userId = getAuthUserId(authState);
+      if (!userId) {
+        setSavedCategories([]);
+        return;
+      }
+
       const cached = await getCached<string[]>(CACHE_KEYS.UNIQUE_CATEGORIES);
       if (cached) {
         setSavedCategories(cached.data);
         if (!cached.isStale) return;
       }
 
-      // Load from database instead of AsyncStorage for consistency
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const categories = await getUniqueCategories();
-        setSavedCategories(categories);
-        await setCache(CACHE_KEYS.UNIQUE_CATEGORIES, categories);
+      if (authState.status === 'authenticated_offline_unverified') {
+        return;
       }
+
+      // Load from database instead of AsyncStorage for consistency
+      const categories = await getUniqueCategories();
+      setSavedCategories(categories);
+      await setCache(CACHE_KEYS.UNIQUE_CATEGORIES, categories);
     } catch (error) {
-      console.error('Error loading saved categories:', error);
+      if (__DEV__) console.warn('[Add] saved categories unavailable', {
+        error: error instanceof Error ? error.name : 'unknown',
+      });
     }
-  };
+  }, [getTransactionAuthState]);
 
   // Amount formatting: converts raw number string to comma-separated (50000 → 50,000)
   const formatAmountInput = (raw: string): string => {
@@ -202,8 +215,16 @@ export default function Add() {
     return bank ? `${bank.bank_name} ••${bank.account_last4}` : 'Select account...';
   };
 
-  const loadBanks = async () => {
+  const loadBanks = useCallback(async () => {
     try {
+      const authState = await getTransactionAuthState();
+      const userId = getAuthUserId(authState);
+      if (!userId) {
+        setBanks([]);
+        setLoadingBanks(false);
+        return;
+      }
+
       const cached = await getCached<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
       if (cached) {
         setBanks(cached.data);
@@ -213,11 +234,17 @@ export default function Add() {
         setLoadingBanks(true);
       }
 
+      if (authState.status === 'authenticated_offline_unverified') {
+        return;
+      }
+
       const bankAccounts = await getBankAccounts();
       setBanks(bankAccounts);
       await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
     } catch (error) {
-      console.error('Error loading banks:', error);
+      if (__DEV__) console.warn('[Add] bank accounts unavailable', {
+        error: error instanceof Error ? error.name : 'unknown',
+      });
       Toast.show({
         type: 'error',
         text1: 'Error',
@@ -226,18 +253,52 @@ export default function Add() {
     } finally {
       setLoadingBanks(false);
     }
-  };
+  }, [getTransactionAuthState]);
 
-  const loadBanksSilently = async () => {
+  const loadBanksSilently = useCallback(async () => {
     // Load banks in background without showing loader
     try {
+      const authState = await getTransactionAuthState();
+      const userId = getAuthUserId(authState);
+      if (!userId) {
+        setBanks([]);
+        return;
+      }
+
+      if (authState.status === 'authenticated_offline_unverified') {
+        return;
+      }
+
       const bankAccounts = await getBankAccounts();
       setBanks(bankAccounts);
       await setCache(CACHE_KEYS.BANK_ACCOUNTS, bankAccounts);
     } catch (error) {
-      console.error('Error loading banks:', error);
+      if (__DEV__) console.warn('[Add] bank accounts background refresh unavailable', {
+        error: error instanceof Error ? error.name : 'unknown',
+      });
     }
-  };
+  }, [getTransactionAuthState]);
+
+  useEffect(() => {
+    loadBanks();
+  }, [loadBanks]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const task = runWhenIdle(() => {
+        if (isInitialBankLoad) {
+          // First time: show loader
+          loadBanks();
+          setIsInitialBankLoad(false);
+        } else {
+          // Subsequent visits: load silently
+          loadBanksSilently();
+        }
+        loadSavedCategories();
+      });
+      return () => task.cancel();
+    }, [isInitialBankLoad, loadBanks, loadBanksSilently, loadSavedCategories])
+  );
 
 
 
@@ -378,6 +439,13 @@ export default function Add() {
       return;
     }
 
+    const authState = await getTransactionAuthState();
+    const authenticatedUserId = getAuthUserId(authState);
+    if (!authenticatedUserId) {
+      await handleUnauthenticatedAccess();
+      return;
+    }
+
     setSaving(true);
     try {
       const transactionAmount = parseFloat(getRawAmount(amount));
@@ -391,16 +459,16 @@ export default function Add() {
           }
         : {};
 
-      // OFFLINE-FIRST: Check connectivity before attempting to save
       const netState = await NetInfo.fetch();
-      if (!netState.isConnected) {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          throw new Error('User not authenticated');
-        }
+      const shouldQueueOffline =
+        authState.status === 'authenticated_offline_unverified' ||
+        !netState.isConnected;
 
+      if (shouldQueueOffline) {
         // Queue transaction for later sync
-        await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, user.id, {
+        const tempId = Date.now().toString();
+        const createdAt = new Date().toISOString();
+        const queuePayload = {
           amount: transactionAmount,
           note,
           type: selectedType,
@@ -408,14 +476,40 @@ export default function Add() {
           reference_number: null,
           account_last4: null,
           ...accountTrace,
-          _localId: Date.now().toString(), // For consistency with processor-generated entries
-          _queued_at: new Date().toISOString(),
+          client_idempotency_key: tempId,
+          _localId: tempId, // For consistency with processor-generated entries
+          _queued_at: createdAt,
+        };
+        await appendUserScopedQueueItem(OFFLINE_TX_QUEUE_BASE_KEY, authenticatedUserId, queuePayload);
+        await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current => [
+          {
+            id: tempId,
+            user_id: authenticatedUserId,
+            amount: transactionAmount,
+            note,
+            type: selectedType,
+            category: queuePayload.category,
+            created_at: createdAt,
+            reference_number: null,
+            account_last4: queuePayload.account_last4,
+            account_id: queuePayload.account_id,
+            client_idempotency_key: tempId,
+          },
+          ...(current || []).filter(tx => tx.id !== tempId && tx.client_idempotency_key !== tempId),
+        ]);
+        await updateCache<string[]>(CACHE_KEYS.UNIQUE_CATEGORIES, current =>
+          Array.from(new Set([...(current || []), queuePayload.category].filter(Boolean))).sort()
+        );
+        emitFinanceDataChanged({
+          areas: ['transactions'],
+          source: 'manual:add:offlineQueue',
+          transactionId: tempId,
         });
         HapticFeedback.trigger('notificationWarning', { enableVibrateFallback: true, ignoreAndroidSystemSettings: false });
         Toast.show({
           type: 'info',
-          text1: 'Saved to Offline Queue',
-          text2: 'Will sync when internet is restored',
+          text1: 'Saved offline',
+          text2: 'This transaction will sync when you are online.',
         });
         navigation.navigate('Dashboard' as never);
         resetForm();
@@ -456,10 +550,6 @@ export default function Add() {
             newBalance += transactionAmount;
           }
           
-          await updateBankAccount(selectedBank.id, {
-            balance: newBalance,
-          });
-
           const updatedBank = { ...selectedBank, balance: newBalance };
           setBanks(prev => prev.map(bank => bank.id === selectedBank.id ? updatedBank : bank));
           await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
@@ -467,7 +557,7 @@ export default function Add() {
           );
           emitFinanceDataChanged({
             areas: ['accounts'],
-            source: 'manual:add:accountBalance',
+            source: 'manual:add:accountBalanceLocal',
             transactionId: savedTransaction.id,
           });
       }
@@ -485,7 +575,9 @@ export default function Add() {
         text1: 'Error',
         text2: 'Failed to save transaction',
       });
-      console.error(error);
+      if (__DEV__) console.warn('[Add] save failed', {
+        error: error instanceof Error ? error.name : 'unknown',
+      });
     } finally {
       setSaving(false);
     }

@@ -6,6 +6,7 @@ export type AutomaticTransactionReviewReason =
   | 'cash_withdrawal'
   | 'credit_card_bill_payment'
   | 'debt_repayment'
+  | 'foreign_currency_estimate'
   | 'personal_transfer'
   | 'refund_or_reimbursement'
   | 'self_transfer'
@@ -35,10 +36,6 @@ const PERSONAL_TRANSFER_PATTERN =
   /\b(?:from|to)\s+(?:brother|sister|friend|father|mother|dad|mom|wife|husband|relative|family)\b/i;
 const SALARY_INCOME_PATTERN =
   /\b(?:salary|payroll|stipend|freelance|freelancer|client\s+payment|business\s+income|gig\s+(?:work|payment)|payout)\b/i;
-const MERCHANT_EXPENSE_PATTERN =
-  /\b(?:paid\s+to|spent\s+at|purchase(?:d)?\s+(?:at|from)|payment\s+(?:to|at)|debited\s+at|upi\s+to)\b/i;
-const KNOWN_MERCHANT_PATTERN =
-  /\b(?:amazon|flipkart|swiggy|zomato|blinkit|zepto|uber|ola|rapido|irctc|myntra|bigbasket|dmart|netflix|spotify|jio|airtel)\b/i;
 
 export function getAutomaticTransactionPolicy(
   direction: AutomaticTransactionDirection,
@@ -94,41 +91,46 @@ export function getAutomaticTransactionPolicy(
     };
   }
 
-  if (direction === 'credit') {
-    if (SALARY_INCOME_PATTERN.test(text)) {
+  // Detect personal transfers (from/to brother, sister, friend etc.)
+  if (PERSONAL_TRANSFER_PATTERN.test(text)) {
+    if (direction === 'credit') {
       return {
         action: 'post',
         type: 'income',
-        accountMatchStatus: 'manual_confirmed',
-        accountMatchReason: 'auto_confirmed_income',
-        accountMatchConfidence: 'high',
+        accountMatchStatus: 'review_required',
+        accountMatchReason: 'personal_transfer',
+        accountMatchConfidence: 'medium',
       };
     }
+    return {
+      action: 'post',
+      type: 'transfer',
+      accountMatchStatus: 'review_required',
+      accountMatchReason: 'personal_transfer',
+      accountMatchConfidence: 'medium',
+    };
+  }
 
+  if (direction === 'credit') {
+    // Income is counted by default. Most incoming money is the user's earning, so we
+    // mark it confirmed straight away; the user can tap "This is not income" to drop it.
     return {
       action: 'post',
       type: 'income',
-      accountMatchStatus: 'review_required',
-      accountMatchReason: PERSONAL_TRANSFER_PATTERN.test(text) ? 'personal_transfer' : 'unverified_credit',
-      accountMatchConfidence: 'low',
-    };
-  }
-
-  if (MERCHANT_EXPENSE_PATTERN.test(text) || KNOWN_MERCHANT_PATTERN.test(text)) {
-    return {
-      action: 'post',
-      type: 'expense',
       accountMatchStatus: 'manual_confirmed',
-      accountMatchReason: 'auto_confirmed_expense',
-      accountMatchConfidence: 'high',
+      accountMatchReason: 'auto_confirmed_income',
+      accountMatchConfidence: SALARY_INCOME_PATTERN.test(text) ? 'high' : 'medium',
     };
   }
 
+  // DEBIT default — NOT counted as the user's expense until they confirm it. Many debits
+  // are money the user is only passing on (e.g. forwarding cash they received), so we
+  // hold the expense in review and surface an "Is this an expense?" action instead.
   return {
     action: 'post',
     type: 'expense',
-    accountMatchStatus: PERSONAL_TRANSFER_PATTERN.test(text) ? 'review_required' : 'review_required',
-    accountMatchReason: PERSONAL_TRANSFER_PATTERN.test(text) ? 'personal_transfer' : 'unverified_debit',
-    accountMatchConfidence: 'low',
+    accountMatchStatus: 'review_required',
+    accountMatchReason: 'unverified_debit',
+    accountMatchConfidence: 'medium',
   };
 }

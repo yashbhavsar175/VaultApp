@@ -349,7 +349,7 @@ describe('background transaction processors', () => {
     }));
   });
 
-  it('saves a generic credit immediately but leaves it uncounted for detail classification', async () => {
+  it('counts a generic credit as income by default', async () => {
     await processSms({
       sender: 'AD-HDFCBK',
       body: 'Rs.20.00 credited to A/C XX0719. Ref 987654321.',
@@ -360,8 +360,8 @@ describe('background transaction processors', () => {
     expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
       amount: 20,
       type: 'income',
-      account_match_status: 'review_required',
-      account_match_reason: 'unverified_credit',
+      account_match_status: 'manual_confirmed',
+      account_match_reason: 'auto_confirmed_income',
     }));
   });
 
@@ -414,7 +414,7 @@ describe('background transaction processors', () => {
     }));
   });
 
-  it('saves a clear merchant debit as a counted expense', async () => {
+  it('holds a merchant debit in review until the user confirms it as an expense', async () => {
     await processSms({
       sender: 'AD-HDFCBK',
       body: 'Rs.450.00 paid to Amazon via UPI from A/C XX0719. Ref 555555555.',
@@ -425,8 +425,35 @@ describe('background transaction processors', () => {
     expect(mockDb.transactions[0]).toEqual(expect.objectContaining({
       amount: 450,
       type: 'expense',
-      account_match_status: 'manual_confirmed',
-      account_match_reason: 'auto_confirmed_expense',
+      account_match_status: 'review_required',
+      account_match_reason: 'unverified_debit',
+    }));
+  });
+
+  it('never stores the credit-limit figure for a foreign-currency card spend', async () => {
+    // Regression: this SuperCard SMS used to store the remaining credit limit (4,514.76)
+    // as the spend. The real spend is USD 23.60 → approximate INR, flagged for review.
+    const result = await processSms({
+      sender: 'VM-UTKSPR-S',
+      body: 'USD 23.60 was spent on your SuperCard at ANTHROPIC* CLAUDE SUB. Available credit limit: INR 4,514.76',
+      timestamp: Date.now(),
+    });
+
+    expect(mockDb.transactions).toHaveLength(1);
+    const stored = mockDb.transactions[0];
+    expect(stored.amount).not.toBeCloseTo(4514.76);
+    expect(stored.amount).toBeCloseTo(23.6 * 88); // approx USD→INR
+    expect(stored).toEqual(expect.objectContaining({
+      type: 'expense',
+      account_match_status: 'review_required',
+      account_match_reason: 'foreign_currency_estimate',
+    }));
+    expect(stored.note).toContain('USD 23.60'); // original amount surfaced for editing
+    expect(result).toEqual(expect.objectContaining({
+      classificationOptions: expect.objectContaining({
+        classificationStatus: 'review_required',
+        classificationReason: 'foreign_currency_estimate',
+      }),
     }));
   });
 

@@ -4,7 +4,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import Toast from 'react-native-toast-message';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import EncryptedStorage from 'react-native-encrypted-storage';
-import { supabase } from '../../lib/core';
+import { supabase, syncOfflineTransactions } from '../../lib/core';
 import { useTheme } from '../../context/ThemeContext';
 import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } from '../../components';
 import { useNavigation } from '@react-navigation/native';
@@ -32,6 +32,11 @@ import {
   DeliveryIncidentSummary,
 } from '../../lib/services/deliveryDebugBlackBox';
 import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
+import {
+  OFFLINE_DELETE_QUEUE_BASE_KEY,
+  OFFLINE_TX_QUEUE_BASE_KEY,
+  loadUserScopedQueue,
+} from '../../lib/services/userScopedQueues';
 import { sanitizeDebugBugReportsForPrivacy } from '../../lib/privacy/rawText';
 import {
   ACCOUNT_DELETION_COPY,
@@ -486,23 +491,25 @@ export default function Settings() {
             if (__DEV__) console.warn('[Settings] Failed to clear geofences on signout', e);
           }
 
-          // Flush any unsync'd offline transactions before logout
+          // Flush any unsync'd offline financial changes before logout.
           const currentUserId = await AsyncStorage.getItem('app_user_id');
           if (currentUserId) {
-            try {
-              const { loadUserScopedQueue } = require('../../lib/services/userScopedQueues');
-              const pendingQueue = await loadUserScopedQueue('offline_tx_queue', currentUserId);
-              if (pendingQueue && pendingQueue.length > 0) {
-                try {
-                  const { syncOfflineQueue } = require('../../lib/core');
-                  await syncOfflineQueue();
-                  if (__DEV__) console.log('[Settings] Flushed offline queue before logout');
-                } catch {
-                  if (__DEV__) console.warn('[Settings] Offline queue sync failed, data preserved in local storage');
-                }
+            const pendingTransactions = await loadUserScopedQueue(OFFLINE_TX_QUEUE_BASE_KEY, currentUserId);
+            const pendingDeletes = await loadUserScopedQueue(OFFLINE_DELETE_QUEUE_BASE_KEY, currentUserId);
+
+            if (pendingTransactions.length > 0 || pendingDeletes.length > 0) {
+              await syncOfflineTransactions();
+
+              const remainingTransactions = await loadUserScopedQueue(OFFLINE_TX_QUEUE_BASE_KEY, currentUserId);
+              const remainingDeletes = await loadUserScopedQueue(OFFLINE_DELETE_QUEUE_BASE_KEY, currentUserId);
+              if (remainingTransactions.length > 0 || remainingDeletes.length > 0) {
+                Toast.show({
+                  type: 'error',
+                  text1: 'Sync pending',
+                  text2: 'Connect to the internet before signing out.',
+                });
+                return;
               }
-            } catch {
-              // Queue check failure should not block logout
             }
           }
 

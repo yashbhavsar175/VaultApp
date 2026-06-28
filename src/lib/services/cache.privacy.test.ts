@@ -39,7 +39,7 @@ describe('cache privacy sanitization', () => {
     jest.clearAllMocks();
   });
 
-  it('clears current user financial queues on sign-out cache cleanup without touching another user queue', async () => {
+  it('clears cache without deleting user-scoped financial queues', async () => {
     (supabase.auth.getUser as jest.Mock).mockResolvedValue({
       data: { user: { id: 'user_a' } },
     });
@@ -52,7 +52,7 @@ describe('cache privacy sanitization', () => {
 
     await clearCache();
 
-    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).toBeNull();
+    expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_a'))).not.toBeNull();
     expect(await AsyncStorage.getItem(getUserScopedQueueKey(OFFLINE_TX_QUEUE_BASE_KEY, 'user_b'))).not.toBeNull();
   });
 

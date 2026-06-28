@@ -7,20 +7,43 @@
  */
 
 import Aes from 'react-native-aes-crypto';
+import EncryptedStorage from 'react-native-encrypted-storage';
 import { supabase } from '../lib/core';
 
 const VAULT_TEXT_ENCRYPTION_PREFIX = 'vault:v1:';
+const VAULT_DATA_KEY_PREFIX = 'vault:data-key:v2:';
 
-// Generate a deterministic key from user ID
-// NOTE: In production, consider using a user-provided master password
-// or device-specific secure storage for better security
-async function getDerivedKey(): Promise<string> {
+async function getAuthenticatedUserId(): Promise<string> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
-  
-  // Use user ID as base for key derivation
-  // In production, combine with device-specific data or user password
-  const baseKey = user.id;
+  return user.id;
+}
+
+export function getVaultDataKeyStorageKey(userId: string): string {
+  return `${VAULT_DATA_KEY_PREFIX}${userId}`;
+}
+
+export async function removeVaultDataKeyForUser(userId: string): Promise<void> {
+  await EncryptedStorage.removeItem(getVaultDataKeyStorageKey(userId));
+}
+
+async function getOrCreateVaultDataKey(): Promise<string> {
+  const userId = await getAuthenticatedUserId();
+  const storageKey = getVaultDataKeyStorageKey(userId);
+  const existing = await EncryptedStorage.getItem(storageKey);
+  if (typeof existing === 'string' && existing.length >= 32) {
+    return existing;
+  }
+
+  const key = await Aes.randomKey(32);
+  await EncryptedStorage.setItem(storageKey, key);
+  return key;
+}
+
+// Legacy deterministic key retained only for decrypting rows encrypted before
+// per-user random vault data keys were introduced.
+async function getLegacyDerivedKey(): Promise<string> {
+  const baseKey = await getAuthenticatedUserId();
   
   // Generate a 256-bit key using PBKDF2
   const key = await Aes.pbkdf2(baseKey, 'vault-salt-v1', 5000, 256, 'sha256');
@@ -51,7 +74,7 @@ export async function encryptField(value: string): Promise<string> {
   if (!value) return value;
   
   try {
-    const key = await getDerivedKey();
+    const key = await getOrCreateVaultDataKey();
     const iv = await Aes.randomKey(16); // 128-bit IV for AES
     
     const encrypted = await Aes.encrypt(value, key, iv, 'aes-256-cbc');
@@ -78,21 +101,25 @@ export async function decryptField(encryptedValue: string): Promise<string> {
     }
     
     const [iv, encrypted] = encryptedValue.split(':');
-    const key = await getDerivedKey();
+    const key = await getOrCreateVaultDataKey();
     
     const decrypted = await Aes.decrypt(encrypted, key, iv, 'aes-256-cbc');
     return decrypted;
-  } catch (error) {
-    console.error('Decryption error:', summarizeCryptoError(error));
-    // Return masked value on error to prevent data loss
-    return '••••••••';
+  } catch {
+    try {
+      const [iv, encrypted] = encryptedValue.split(':');
+      const legacyKey = await getLegacyDerivedKey();
+      return await Aes.decrypt(encrypted, legacyKey, iv, 'aes-256-cbc');
+    } catch (legacyError) {
+      console.error('Decryption error:', summarizeCryptoError(legacyError));
+      // Return masked value on error to prevent data loss
+      return '••••••••';
+    }
   }
 }
 
 /**
  * Emergency Vault text encryption for fields like notes.
- * TODO(vault-encryption-migration): replace the current user-id-derived key
- * with a versioned keystore/user-secret key and migrate existing rows.
  */
 export async function encryptVaultText(value: string): Promise<string> {
   if (!value) return value;

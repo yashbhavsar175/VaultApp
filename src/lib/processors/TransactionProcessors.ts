@@ -13,13 +13,14 @@ import {
   showSmsFailedNotification
 } from '../services/notifications';
 import { extractUpiIdFromText } from '../../utils/upi';
+import { parseTransactionAmount, hasParsableAmount } from '../../utils/amountParsing';
 import {
   getTransactionDisplayName,
   inferTransactionCategory,
 } from '../../utils/transactionPresentation';
 import { CACHE_KEYS, updateCache } from '../services/cache';
 import { emitFinanceDataChanged } from '../services/dataEvents';
-import { BankAccount, Transaction } from '../../types';
+import { Transaction } from '../../types';
 import { createRedactedRawTextRecord } from '../privacy/rawText';
 import {
   recordBalanceSignalForUser,
@@ -59,6 +60,12 @@ export interface ParsedTransaction {
   accountLast4?: string;
   cardLast4?: string;
   upiId?: string;
+  /** Set when the spend was in a foreign currency and `amount` is an approximate INR conversion. */
+  foreignCurrency?: string;
+  /** Original amount in the foreign currency (e.g. 23.60 for "USD 23.60"). */
+  foreignOriginalAmount?: number;
+  /** True when `amount` is an estimated INR value the user should review/edit. */
+  isApproxConverted?: boolean;
 }
 
 export interface ProcessorResult {
@@ -289,8 +296,9 @@ function isNumericUpiId(str: string): boolean {
 }
 
 function hasAmount(body: string): boolean {
-  return /(?:INR|Rs\.?:|Rs\.?|₹)\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body) ||
-    /(?:amount|amt|paid|debited|credited|received|deducted|spent|withdrawn|sent|transferred)\s*(?:of|:)?\s*(?:INR|Rs\.?:|Rs\.?|₹)?\s*[0-9,]+(?:\.[0-9]{1,2})?/i.test(body);
+  // Delegates to the shared parser so balance/limit figures are excluded and
+  // foreign-currency spends (e.g. "USD 23.60") are recognised as amounts too.
+  return hasParsableAmount(body);
 }
 
 function isNonTransactionalAmountMention(body: string): boolean {
@@ -558,6 +566,31 @@ function transactionClassificationFields(
   };
 }
 
+/**
+ * Foreign-currency spends are stored as an APPROXIMATE INR conversion, so they must
+ * always go to review (never silently counted) — that's where the user can confirm or
+ * edit the exact amount. Mutates and returns the policy for convenience.
+ */
+function applyForeignCurrencyReview(
+  policy: ReturnType<typeof getAutomaticTransactionPolicy> & { sameUserNameMatch?: boolean },
+  parsed: ParsedTransaction
+) {
+  if (parsed.isApproxConverted && policy.type !== 'transfer') {
+    policy.accountMatchStatus = 'review_required';
+    policy.accountMatchReason = 'foreign_currency_estimate';
+    policy.accountMatchConfidence = 'low';
+  }
+  return policy;
+}
+
+/** Append the original foreign amount to the note so the estimate is transparent. */
+function withForeignAmountNote(note: string, parsed: ParsedTransaction): string {
+  if (parsed.isApproxConverted && parsed.foreignCurrency && typeof parsed.foreignOriginalAmount === 'number') {
+    return `${note} (~${parsed.foreignCurrency} ${parsed.foreignOriginalAmount.toFixed(2)})`;
+  }
+  return note;
+}
+
 function notificationClassificationOptions(input: {
   dbType: 'expense' | 'income' | 'transfer';
   policy: ReturnType<typeof getAutomaticTransactionPolicy> & { sameUserNameMatch?: boolean };
@@ -732,23 +765,12 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
       source = 'upi'; // Fallback to UPI format rules to attempt extraction
     }
 
-    // Extract amount
-    const amountPatterns = [
-      /^(?:INR|Rs\.?:|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:INR|Rs\.?:|Rs\.?|₹)\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:amount|amt)[\s:]*(?:INR|Rs\.?:|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-      /(?:debited|credited|paid|received|deducted|spent|withdrawn|sent|transferred)[\s:]*(?:INR|Rs\.?:|Rs\.?|₹)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
-    ];
-
-    let amount = 0;
-    for (const pattern of amountPatterns) {
-      const match = body.match(pattern);
-      if (match) {
-        amount = parseFloat(match[1].replace(/,/g, ''));
-        break;
-      }
-    }
-    if (amount === 0) return null;
+    // Extract amount via the shared parser. This strips balance / available-credit-limit
+    // figures (so they can never be mistaken for the spend) and recognises foreign-currency
+    // spends, converting them to an approximate INR value the user can later edit.
+    const amountInfo = parseTransactionAmount(body);
+    if (!amountInfo || !(amountInfo.amountInr > 0)) return null;
+    const amount = amountInfo.amountInr;
 
     // Special case: "transferred to your account" = credit (incoming)
     const isTransferredToAccount = /transferred\s+to\s+(?:your\s+)?(?:account|a\/c|bank)/i.test(body);
@@ -840,7 +862,21 @@ function parseTransaction(body: string, sender: string): ParsedTransaction | nul
     const cardLast4 = extractCreditCardLast4(body);
     const upiId = extractUpiIdFromText(body) || undefined;
 
-    return { amount, type, reference, merchant, balance, source, rawSender: sender, accountLast4, cardLast4, upiId };
+    return {
+      amount,
+      type,
+      reference,
+      merchant,
+      balance,
+      source,
+      rawSender: sender,
+      accountLast4,
+      cardLast4,
+      upiId,
+      foreignCurrency: amountInfo.isForeign ? amountInfo.currency : undefined,
+      foreignOriginalAmount: amountInfo.isForeign ? amountInfo.originalAmount : undefined,
+      isApproxConverted: amountInfo.isForeign || undefined,
+    };
   } catch (error) {
     if (__DEV__) console.error('Error parsing transaction:', error);
     return null;
@@ -870,7 +906,8 @@ async function checkForDuplicates(
   referenceNumber?: string,
   smsSource?: 'bank' | 'upi',
   rawText?: string,
-  merchant?: string
+  merchant?: string,
+  accountLast4?: string | null
 ): Promise<any | null> {
   try {
     const oneMinuteAgo = new Date(timestamp - 1 * 60 * 1000).toISOString();
@@ -926,13 +963,34 @@ async function checkForDuplicates(
     }
 
     const { data: recentData, error: recentError } = await recentQuery.limit(referenceNumber ? 1 : 5);
-    if (recentError) return null;
+    if (recentError) throw recentError;
 
     if (recentData && recentData.length > 0) {
-      // For transactions within 1 minute with EXACT same amount and type,
-      // we aggressively deduplicate them (whether referenced or unreferenced)
-      // because they are almost certainly the same event reported by different sources.
-      return recentData[0];
+      if (referenceNumber) {
+        return recentData[0];
+      }
+
+      const exactUnreferenced = recentData.find(tx => isSameUnreferencedTransaction(tx, rawText, merchant));
+      if (exactUnreferenced) {
+        return exactUnreferenced;
+      }
+
+      // accountLast4-based dedup: same amount + same type + same account within 1 min
+      // This catches bank SMS + bank app notification for the same transaction,
+      // where the raw text and merchant won't match (different source formats).
+      if (accountLast4) {
+        const accountMatch = recentData.find(tx =>
+          tx.type === type &&
+          tx.account_last4 === accountLast4
+        );
+        if (accountMatch) {
+          if (__DEV__) console.log('[DuplicateCheck] accountLast4 match within 1 min — deduping', {
+            existingId: accountMatch.id,
+            accountLast4,
+          });
+          return accountMatch;
+        }
+      }
     }
 
     const { data: mirrorData, error: mirrorError } = await supabase
@@ -945,13 +1003,16 @@ async function checkForDuplicates(
       .limit(5);
 
     if (!mirrorError && mirrorData && mirrorData.length > 0) {
-      // Cross-source same-type: bank SMS + UPI notification reporting same event
-      // Both sources flagged AND same transaction type = same event, not a transfer pair
+      // Cross-source same-type: bank SMS + bank/UPI notification reporting same event
+      // NOTE: We no longer require sms_source to differ, because bank SMS and bank
+      // app notification can both resolve to sms_source='bank' (e.g., VM-KOTAKD-S SMS
+      // and Kotak app notification). The accountLast4 match is a strong enough signal.
       const crossSourceDuplicate = mirrorData.find(existingTxn =>
         existingTxn.type === type &&
-        Boolean(existingTxn.sms_source) &&
-        Boolean(smsSource) &&
-        existingTxn.sms_source !== smsSource
+        (
+          isSameUnreferencedTransaction(existingTxn, rawText, merchant) ||
+          Boolean(accountLast4 && existingTxn.account_last4 && existingTxn.account_last4 === accountLast4)
+        )
       );
       if (crossSourceDuplicate) return crossSourceDuplicate;
 
@@ -962,7 +1023,24 @@ async function checkForDuplicates(
           (existingTxn.type === 'expense' && type === 'income') ||
           (existingTxn.type !== 'transfer' && type === 'transfer');
         const sourceDiffers = !smsSource || !existingTxn.sms_source || existingTxn.sms_source !== smsSource;
-        return isOpposingMovement && sourceDiffers;
+        const accountEvidenceDiffers = Boolean(
+          accountLast4 &&
+          existingTxn.account_last4 &&
+          existingTxn.account_last4 !== accountLast4
+        );
+        const accountEvidenceMatchesTransfer = Boolean(
+          accountLast4 &&
+          existingTxn.type === 'transfer' &&
+          existingTxn.account_last4 &&
+          existingTxn.account_last4 === accountLast4
+        );
+        return isOpposingMovement &&
+          sourceDiffers &&
+          (
+            isSameUnreferencedTransaction(existingTxn, rawText, merchant) ||
+            accountEvidenceDiffers ||
+            accountEvidenceMatchesTransfer
+          );
       });
       if (mirror) return mirror;
     }
@@ -987,7 +1065,7 @@ async function checkForDuplicates(
     }
 
     const { data, error } = await query.limit(referenceNumber ? 1 : 5);
-    if (error) return null;
+    if (error) throw error;
 
     if (data && data.length > 0) {
       const existingTxn = referenceNumber
@@ -996,7 +1074,12 @@ async function checkForDuplicates(
       if (existingTxn) {
         // smsSource differs = same transaction reported by two different sources
         // returning existingTxn signals to caller: "this is a duplicate, skip it"
-        if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+        if (
+          smsSource &&
+          existingTxn.sms_source &&
+          smsSource !== existingTxn.sms_source &&
+          isSameUnreferencedTransaction(existingTxn, rawText, merchant)
+        ) {
           return existingTxn;
         }
         return existingTxn;
@@ -1012,20 +1095,24 @@ async function checkForDuplicates(
         .eq('amount', amount)
         .gte('created_at', fiveMinutesAgo)
         .is('reference_number', null)
-        .order('created_at', { ascending: false })
-        .limit(1);
+        .order('created_at', { ascending: false });
 
       if (type !== 'transfer') {
         fallbackQuery = fallbackQuery.eq('type', type);
       }
 
-      const { data: fallbackData } = await fallbackQuery;
+      const { data: fallbackData } = await fallbackQuery.limit(1);
 
       if (fallbackData && fallbackData.length > 0) {
         const existingTxn = fallbackData[0];
         // smsSource differs = same transaction reported by two different sources
         // returning existingTxn signals to caller: "this is a duplicate, skip it"
-        if (smsSource && existingTxn.sms_source && smsSource !== existingTxn.sms_source) {
+        if (
+          smsSource &&
+          existingTxn.sms_source &&
+          smsSource !== existingTxn.sms_source &&
+          isSameUnreferencedTransaction(existingTxn, rawText, merchant)
+        ) {
           return existingTxn;
         }
         if (isSameUnreferencedTransaction(existingTxn, rawText, merchant)) {
@@ -1035,15 +1122,17 @@ async function checkForDuplicates(
     }
 
     return null;
-  } catch {
-    return null;
+  } catch (error) {
+    if (__DEV__) console.warn('[TransactionProcessors] Duplicate check failed; skipping automatic write', {
+      errorCode: safeErrorCode(error),
+    });
+    throw error;
   }
 }
 
 async function findAndSyncBankAccount(
   userId: string,
-  accountLast4?: string,
-  balance?: number
+  accountLast4?: string
 ): Promise<string | null> {
   if (!accountLast4) return null;
 
@@ -1064,40 +1153,6 @@ async function findAndSyncBankAccount(
     }
 
     const accountId = matches[0]?.id || null;
-    if (!accountId) return null;
-
-    if (balance !== undefined && balance !== null) {
-      const { data: prevData } = await supabase
-        .from('bank_accounts')
-        .select('balance, name, account_last4')
-        .eq('id', accountId)
-        .single();
-
-      const prevBalance = prevData?.balance !== undefined ? prevData.balance : 'Unknown';
-      const bankName = prevData?.name || accountLast4 || accountId;
-
-      if (__DEV__) console.log('================================================================');
-      if (__DEV__) console.log(`[BalanceSync] 💳 Bank Account: ${bankName}`);
-      if (__DEV__) console.log(`[BalanceSync] 📝 Exact Balance Found in SMS/Notification`);
-      if (__DEV__) console.log(`[BalanceSync] 💰 Previous Balance: ₹${prevBalance}`);
-      if (__DEV__) console.log(`[BalanceSync] 💵 New Updated Balance: ₹${balance}`);
-      if (__DEV__) console.log('================================================================');
-
-      const { error } = await supabase
-        .from('bank_accounts')
-        .update({ balance })
-        .eq('id', accountId)
-        .eq('user_id', userId);
-
-      if (error) {
-        if (__DEV__) console.warn('[TransactionProcessors] Failed to sync bank balance from SMS:', error.message);
-      }
-
-      await updateCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS, current =>
-        current ? current.map(account => account.id === accountId ? { ...account, balance } : account) : current
-      );
-    }
-
     return accountId;
   } catch (error) {
     if (__DEV__) console.warn('[TransactionProcessors] Failed to find matched bank account:', error);
@@ -1318,6 +1373,7 @@ export const processSms = async (
       text: taskData.body,
       sourceKind: 'sms',
     });
+    applyForeignCurrencyReview(automaticPolicy, parsed);
 
 
     // Check for duplicates
@@ -1336,16 +1392,7 @@ export const processSms = async (
       sender: parsed.rawSender,
       source: parsed.source,
     });
-    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance);
-    void recordEstimatedBalanceMovementSafely({
-      userId,
-      bankAccountId: matchedAccountId,
-      parsed,
-      text: taskData.body,
-      senderOrPackage: taskData.sender,
-      sourceType: 'sms',
-      timestamp: taskData.timestamp,
-    });
+    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4);
 
     const duplicate = await checkForDuplicates(
       userId,
@@ -1355,7 +1402,8 @@ export const processSms = async (
       parsed.reference,
       parsed.source,
       redactedRawSms,
-      parsed.merchant
+      parsed.merchant,
+      parsed.accountLast4
     );
 
     let transactionId: string | null = null;
@@ -1371,7 +1419,8 @@ export const processSms = async (
           incomingAccountId: matchedAccountId,
           existing: duplicate as Partial<Transaction>,
         });
-        await supabase
+        // Bug #1 fix: result capture karo — bina check ke aage jaana data inconsistency create karta hai
+        const { error: upgradeError } = await supabase
           .from('transactions')
           .update({
             ...transferPatch,
@@ -1383,6 +1432,26 @@ export const processSms = async (
           .eq('user_id', userId)
           .select()
           .single();
+
+        if (upgradeError) {
+          console.error('[TransactionProcessor] Failed to upgrade duplicate to transfer:', {
+            duplicateId: duplicate.id,
+            userId,
+            error: upgradeError.message,
+            code: safeErrorCode(upgradeError),
+          });
+          return {
+            transactionId: duplicate.id,
+            type: dbType,
+            note: duplicate.note || '',
+            amount: parsed.amount,
+            rawSms: redactedRawSms,
+            skipped: true,
+            classificationOptions: resultClassificationOptions(dbType),
+          };
+        }
+
+        // recordSmsEvidenceWithDebug internally errors handle karti hai — direct call safe hai
         recordSmsEvidenceWithDebug({
           text: taskData.body,
           sender: taskData.sender,
@@ -1456,6 +1525,7 @@ export const processSms = async (
         }
       } else {
         if (__DEV__) console.log('Duplicate transaction detected - skipping');
+        // recordSmsEvidenceWithDebug internally errors handle karti hai — direct call safe hai
         recordSmsEvidenceWithDebug({
           text: taskData.body,
           sender: taskData.sender,
@@ -1480,6 +1550,22 @@ export const processSms = async (
         };
       }
     }
+    if (!isUpgradedTransfer) {
+      // Bug #4 fix: `void` se balance estimate silently fail hoti thi — catch add kiya
+      recordEstimatedBalanceMovementSafely({
+        userId,
+        bankAccountId: matchedAccountId,
+        parsed,
+        text: taskData.body,
+        senderOrPackage: taskData.sender,
+        sourceType: 'sms',
+        timestamp: taskData.timestamp,
+      }).catch((balanceError: unknown) => {
+        console.warn('[TransactionProcessor] Balance movement recording failed (non-fatal):', {
+          error: balanceError instanceof Error ? balanceError.message : String(balanceError),
+        });
+      });
+    }
     if (dbType === 'transfer' && !currentTransferPatch) {
       currentTransferPatch = await buildPendingTransferPatch({
         userId,
@@ -1487,17 +1573,21 @@ export const processSms = async (
         incomingAccountId: matchedAccountId,
       });
     }
+    // Bug #5 fix: parsed.merchant undefined ho sakta hai — Supabase mein undefined serialize nahi hota
+    const safeMerchant = parsed.merchant ?? null;
+    const safeNote = currentTransferPatch?.note ?? safeMerchant ?? null;
+    const safeCategory = currentTransferPatch?.category ?? safeMerchant ?? null;
     const presentation = {
       type: dbType,
-      merchant: currentTransferPatch?.note || parsed.merchant,
-      note: currentTransferPatch?.note || parsed.merchant,
-      category: currentTransferPatch?.category || parsed.merchant,
+      merchant: safeNote,
+      note: safeNote,
+      category: safeCategory,
       upi_id: parsed.upiId,
       raw_sms: taskData.body,
       sms_source: parsed.source,
       sms_sender: parsed.rawSender,
     };
-    const transactionNote = getTransactionDisplayName(presentation);
+    const transactionNote = withForeignAmountNote(getTransactionDisplayName(presentation), parsed);
     const transactionCategory = inferTransactionCategory(presentation);
 
     // OFFLINE-FIRST: check connectivity before hitting Supabase
@@ -1526,6 +1616,7 @@ export const processSms = async (
           upi_id: parsed.upiId,
           raw_sms: redactedRawSms,
           ...transactionClassificationFields(automaticPolicy),
+          client_idempotency_key: tempId,
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -1627,6 +1718,7 @@ export const processSms = async (
         upi_id: parsed.upiId,
         raw_sms: redactedRawSms,
         ...transactionClassificationFields(automaticPolicy),
+        client_idempotency_key: tempId,
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };
@@ -1870,6 +1962,7 @@ export const processNotification = async (
       text: combinedText,
       sourceKind: 'notification',
     });
+    applyForeignCurrencyReview(automaticPolicy, parsed);
 
 
     // Check for duplicates
@@ -1893,22 +1986,9 @@ export const processNotification = async (
     const mappedBankAccountId = paymentAppAccountMatch?.mappingStatus === 'user_confirmed'
       ? paymentAppAccountMatch.mappedBankAccountId || null
       : null;
-    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4, parsed.balance)
+    const matchedAccountId = await findAndSyncBankAccount(userId, parsed.accountLast4)
       || mappedBankAccountId;
     const matchedAccountLast4 = parsed.accountLast4 || paymentAppAccountMatch?.mappedBankAccountLast4;
-    void recordEstimatedBalanceMovementSafely({
-      userId,
-      bankAccountId: matchedAccountId,
-      parsed,
-      text: combinedText,
-      senderOrPackage: notif.app,
-      sourceType: 'notification',
-      timestamp: notif.time || Date.now(),
-      reason: mappedBankAccountId && matchedAccountId === mappedBankAccountId
-        ? 'app_mapping'
-        : undefined,
-    });
-
     const duplicate = await checkForDuplicates(
       userId,
       parsed.amount,
@@ -1917,7 +1997,8 @@ export const processNotification = async (
       parsed.reference,
       parsed.source,
       redactedRawNotification,
-      parsed.merchant
+      parsed.merchant,
+      matchedAccountLast4
     );
 
     let transactionId: string | null = null;
@@ -2003,7 +2084,13 @@ export const processNotification = async (
           transactionId = duplicate.id;
           dbType = 'transfer';
         } else {
-          if (__DEV__) console.error('Failed to upgrade transaction to transfer:', upgradeError);
+          // Bug #2 fix: error sirf __DEV__ mein log hoti thi — production mein bhi log karo
+          console.error('[TransactionProcessor] Notification: Failed to upgrade duplicate to transfer:', {
+            duplicateId: duplicate.id,
+            userId,
+            error: upgradeError.message,
+            code: safeErrorCode(upgradeError),
+          });
           return {
             transactionId: duplicate.id,
             type: dbType,
@@ -2016,6 +2103,7 @@ export const processNotification = async (
         }
       } else {
         if (__DEV__) console.log('Duplicate transaction detected - skipping');
+        // recordNotificationEvidenceWithDebug internally errors handle karti hai — direct call safe hai
         recordNotificationEvidenceWithDebug({
           text: combinedText,
           sourcePackage: notif.app,
@@ -2041,6 +2129,25 @@ export const processNotification = async (
         };
       }
     }
+    if (!isUpgradedTransfer) {
+      // Bug #4 fix: void se balance estimate silently fail hoti thi — catch add kiya
+      recordEstimatedBalanceMovementSafely({
+        userId,
+        bankAccountId: matchedAccountId,
+        parsed,
+        text: combinedText,
+        senderOrPackage: notif.app,
+        sourceType: 'notification',
+        timestamp: notif.time || Date.now(),
+        reason: mappedBankAccountId && matchedAccountId === mappedBankAccountId
+          ? 'app_mapping'
+          : undefined,
+      }).catch((balanceError: unknown) => {
+        console.warn('[TransactionProcessor] Balance movement recording failed (non-fatal):', {
+          error: balanceError instanceof Error ? balanceError.message : String(balanceError),
+        });
+      });
+    }
     if (dbType === 'transfer' && !currentTransferPatch) {
       currentTransferPatch = await buildPendingTransferPatch({
         userId,
@@ -2048,17 +2155,21 @@ export const processNotification = async (
         incomingAccountId: matchedAccountId,
       });
     }
+    // Bug #5 fix: parsed.merchant undefined ho sakta hai — Supabase mein undefined serialize nahi hota
+    const safeMerchant = parsed.merchant ?? null;
+    const safeNote = currentTransferPatch?.note ?? safeMerchant ?? null;
+    const safeCategory = currentTransferPatch?.category ?? safeMerchant ?? null;
     const presentation = {
       type: dbType,
-      merchant: currentTransferPatch?.note || parsed.merchant,
-      note: currentTransferPatch?.note || parsed.merchant,
-      category: currentTransferPatch?.category || parsed.merchant,
+      merchant: safeNote,
+      note: safeNote,
+      category: safeCategory,
       upi_id: parsed.upiId,
       raw_sms: combinedText,
       sms_source: parsed.source,
       sms_sender: senderLabel,
     };
-    const transactionNote = getTransactionDisplayName(presentation);
+    const transactionNote = withForeignAmountNote(getTransactionDisplayName(presentation), parsed);
     const transactionCategory = inferTransactionCategory(presentation);
 
     // OFFLINE-FIRST: check connectivity before hitting Supabase
@@ -2087,6 +2198,7 @@ export const processNotification = async (
           upi_id: parsed.upiId,
           raw_sms: redactedRawNotification,
           ...transactionClassificationFields(automaticPolicy),
+          client_idempotency_key: tempId,
           _localId: tempId,
           _queued_at: new Date().toISOString(),
         };
@@ -2188,6 +2300,7 @@ export const processNotification = async (
         upi_id: parsed.upiId,
         raw_sms: redactedRawNotification,
         ...transactionClassificationFields(automaticPolicy),
+        client_idempotency_key: tempId,
         _localId: tempId,
         _queued_at: new Date().toISOString(),
       };

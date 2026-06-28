@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ActivityIndicator, AppState, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -17,14 +17,17 @@ import { initPorterDistanceCalculator } from './src/lib/services/porter';
 import { startLocationMonitoring, stopLocationMonitoring } from './src/lib/services/placeReminders';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
-import { CACHE_KEYS, getCached, prefetchAllData } from './src/lib/services/cache';
+import { CACHE_KEYS, clearCache, getCached, prefetchAllData } from './src/lib/services/cache';
 import { ThemeProvider } from './src/context/ThemeContext';
+import {
+  AuthBootstrapState,
+  verifySessionUser,
+} from './src/lib/auth/offlineAuth';
 
 const LEGACY_AUTH_TOKEN_KEY = 'supabase.auth.token';
 const AUTH_STARTUP_TIMEOUT_MS = 4500;
 const PROFILE_STARTUP_TIMEOUT_MS = 6000;
 const AUTH_BOOTSTRAP_WATCHDOG_MS = 8000;
-const STARTUP_CACHE_CLEAR_TIMEOUT_MS = 1500;
 const APP_BACKGROUND_COLOR = '#050509';
 
 const navigationTheme = {
@@ -72,25 +75,59 @@ export const withStartupTimeout = async <T,>(promise: Promise<T>, timeoutMs: num
 
 export const deferAuthStateChange = (callback: () => void) => setTimeout(callback, 0);
 
-export const summarizeStartupError = (error: unknown) => {
+export type StartupErrorSummary = {
+  code: string | null;
+  name: string;
+  status: number | string | null;
+};
+
+const readErrorField = (error: unknown, field: 'code' | 'name' | 'status'): unknown =>
+  error && typeof error === 'object' ? (error as Record<string, unknown>)[field] : undefined;
+
+export const summarizeStartupError = (error: unknown): StartupErrorSummary => {
   if (error && typeof error === 'object') {
-    const maybeError = error as { code?: unknown; name?: unknown; status?: unknown };
+    const code = readErrorField(error, 'code');
+    const name = readErrorField(error, 'name');
+    const status = readErrorField(error, 'status');
     return {
-      code: typeof maybeError.code === 'string' ? maybeError.code : null,
-      name: typeof maybeError.name === 'string' ? maybeError.name : null,
-      status: typeof maybeError.status === 'number' || typeof maybeError.status === 'string' ? maybeError.status : null,
+      code: typeof code === 'string' ? code : null,
+      name: typeof name === 'string' ? name : 'Error',
+      status: typeof status === 'number' || typeof status === 'string' ? status : null,
     };
   }
 
   return {
     code: null,
-    name: typeof error,
+    name: error instanceof Error ? error.name : typeof error,
     status: null,
   };
 };
 
 const isStartupTimeout = (error: unknown, label: string, timeoutMs: number) =>
   error instanceof Error && error.message === `${label} timed out after ${timeoutMs}ms`;
+
+function useAuthState(session: Session | null) {
+  const [state, setState] = useState<AuthBootstrapState>({ status: 'loading' });
+
+  const derived = useMemo(() => {
+    const isAuthenticated = (
+      state.status === 'authenticated_online' ||
+      state.status === 'authenticated_offline_unverified'
+    ) && Boolean(session?.user);
+
+    return {
+      isAuthenticated,
+      isAuthLoading: state.status === 'loading',
+      isOfflineUnverified: state.status === 'authenticated_offline_unverified',
+    };
+  }, [session?.user, state.status]);
+
+  return {
+    state,
+    setState,
+    ...derived,
+  };
+}
 
 const toastConfig = {
   success: (props: any) => (
@@ -124,15 +161,22 @@ const toastConfig = {
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
+  const {
+    state: authBootstrapState,
+    setState: setAuthBootstrapState,
+    isAuthenticated,
+    isAuthLoading,
+    isOfflineUnverified,
+  } = useAuthState(session);
   const [introDone, setIntroDone] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
   const [profileStatus, setProfileStatus] = useState<ProfileStatus>('unknown');
-  const [startupRepairRequired, setStartupRepairRequired] = useState(false);
   const [startupRetryRevision, setStartupRetryRevision] = useState(0);
   const authRouteRevisionRef = useRef(0);
   const inFlightProfileCheckRef = useRef<{ userId: string; promise: Promise<ProfileStatus> } | null>(null);
   const prefetchedUserIdRef = useRef<string | null>(null);
+  const verifyOfflineSessionRef = useRef<((nextSession: Session) => Promise<boolean>) | null>(null);
+  const networkReconnectInFlightRef = useRef(false);
 
   // Configure Google Sign-In once on app start
   useEffect(() => {
@@ -142,6 +186,13 @@ function App() {
   // Initialize native background helpers on app start
   useEffect(() => {
     initPorterDistanceCalculator();
+  }, []);
+
+  // Sync offline queue only after a validated authenticated session exists.
+  useEffect(() => {
+    if (authBootstrapState.status !== 'authenticated_online' || !session?.user) {
+      return;
+    }
 
     // Sync offline queue when app comes to foreground
     const subscription = AppState.addEventListener('change', (nextAppState) => {
@@ -161,23 +212,65 @@ function App() {
       // Note: Not stopping PorterDistanceCalculator here to allow it to continue
       // running in background scenarios where the app process remains active
     };
-  }, []);
+  }, [authBootstrapState.status, session]);
 
   // Offline sync: trigger whenever network reconnects
   useEffect(() => {
+    if (!session?.user) {
+      return;
+    }
+
     const unsubscribe = NetInfo.addEventListener(state => {
-      if (state.isConnected) {
+      if (!state.isConnected) {
+        networkReconnectInFlightRef.current = false;
+        return;
+      }
+
+      if (networkReconnectInFlightRef.current) return;
+      networkReconnectInFlightRef.current = true;
+
+      if (authBootstrapState.status === 'authenticated_offline_unverified') {
+        const verifyOfflineSession = verifyOfflineSessionRef.current;
+        if (!verifyOfflineSession) {
+          networkReconnectInFlightRef.current = false;
+          return;
+        }
+
+        verifyOfflineSession(session)
+          .then(async verified => {
+            if (!verified) {
+              networkReconnectInFlightRef.current = false;
+              return false;
+            }
+            await syncOfflineTransactions();
+            return true;
+          })
+          .then(synced => {
+            if (synced && __DEV__) console.log('✅ [OfflineSync] Network reconnect verified and synced');
+          })
+          .catch(e => {
+            if (__DEV__) console.error('❌ [OfflineSync] Network reconnect verification error:', e);
+            networkReconnectInFlightRef.current = false;
+          });
+        return;
+      }
+
+      if (authBootstrapState.status === 'authenticated_online') {
         syncOfflineTransactions()
           .then(() => {
             if (__DEV__) console.log('✅ [OfflineSync] Network reconnect sync complete');
           })
           .catch(e => {
             if (__DEV__) console.error('❌ [OfflineSync] Network reconnect sync error:', e);
+            networkReconnectInFlightRef.current = false;
           });
+        return;
       }
+
+      networkReconnectInFlightRef.current = false;
     });
     return () => unsubscribe();
-  }, []);
+  }, [authBootstrapState.status, session]);
 
   // Initialize foreground listener for notifee events
   useEffect(() => {
@@ -190,19 +283,18 @@ function App() {
 
   // Initialize place reminders location monitoring
   useEffect(() => {
-    if (session?.user) {
+    if (authBootstrapState.status === 'authenticated_online' && session?.user) {
       startLocationMonitoring();
     } else {
       stopLocationMonitoring();
     }
     return () => stopLocationMonitoring();
-  }, [session]);
+  }, [authBootstrapState.status, session]);
 
   const getCachedProfileStatus = useCallback(async (nextSession: Session): Promise<ProfileStatus | null> => {
     try {
       const cached = await getCached<CachedProfile>(CACHE_KEYS.USER_PROFILE);
-      const cachedProfile = cached?.data;
-      return getCachedProfileRouteHint(cachedProfile, nextSession.user.id);
+      return getCachedProfileRouteHint(cached?.data, nextSession.user.id);
     } catch {
       // Cache is only a route hint. Ignore corrupt or missing entries.
     }
@@ -267,19 +359,78 @@ function App() {
   useEffect(() => {
     // Supabase persists sessions through the AsyncStorage-backed auth client.
     let isMounted = true;
-    const startupWatchdog = setTimeout(() => {
+    const deferredAuthTimers = new Set<ReturnType<typeof setTimeout>>();
+    const isCurrentRoute = (routeRevision: number) =>
+      isMounted && routeRevision === authRouteRevisionRef.current;
+
+    const markUnauthenticated = async (
+      startupWatchdog?: ReturnType<typeof setTimeout>,
+      routeRevision?: number,
+    ) => {
+      if (startupWatchdog) clearTimeout(startupWatchdog);
+      if (routeRevision !== undefined && !isCurrentRoute(routeRevision)) {
+        return;
+      }
+      if (routeRevision === undefined) {
+        ++authRouteRevisionRef.current;
+      }
+      await clearCache();
+      await AsyncStorage.removeItem('app_user_id').catch(() => undefined);
+      prefetchedUserIdRef.current = null;
+      inFlightProfileCheckRef.current = null;
+      if (routeRevision !== undefined && !isCurrentRoute(routeRevision)) {
+        return;
+      }
       if (!isMounted) return;
-      ++authRouteRevisionRef.current;
-      console.info('[AuthStartup] Bootstrap watchdog opened repair route', {
-        timeoutMs: AUTH_BOOTSTRAP_WATCHDOG_MS,
-      });
-      setStartupRepairRequired(true);
-      setAuthReady(true);
-    }, AUTH_BOOTSTRAP_WATCHDOG_MS);
-    const markAuthReady = () => {
-      clearTimeout(startupWatchdog);
-      setStartupRepairRequired(false);
-      setAuthReady(true);
+      setProfileStatus('unknown');
+      setSession(null);
+      setAuthBootstrapState({ status: 'unauthenticated' });
+    };
+
+    const prepareLocalSessionUser = async (userId: string) => {
+      const previousUserId = await AsyncStorage.getItem('app_user_id');
+      if (previousUserId !== userId) {
+        await clearCache();
+      }
+      await AsyncStorage.setItem('app_user_id', userId);
+    };
+
+    const validateSession = async (
+      nextSession: Session | null,
+    ): Promise<
+      | { status: 'authenticated_online'; session: Session }
+      | { status: 'authenticated_offline_unverified'; session: Session }
+      | { status: 'unauthenticated' }
+    > => {
+      const sessionUserId = nextSession?.user?.id;
+      if (!sessionUserId) {
+        return { status: 'unauthenticated' };
+      }
+
+      const verification = await verifySessionUser(
+        () => withStartupTimeout(
+          supabase.auth.getUser(),
+          AUTH_STARTUP_TIMEOUT_MS,
+          'Supabase user validation',
+        ),
+        sessionUserId,
+      );
+
+      if (verification.status === 'authenticated_online') {
+        return { status: 'authenticated_online', session: nextSession };
+      }
+
+      if (verification.status === 'authenticated_offline_unverified') {
+        if (__DEV__) console.warn('[AuthStartup] User validation unavailable; using offline session');
+        return { status: 'authenticated_offline_unverified', session: nextSession };
+      }
+
+      {
+        if (__DEV__) console.warn('[AuthStartup] User validation failed; routing to login', {
+          error: summarizeStartupError({ name: 'AuthVerificationFailed' }),
+        });
+        return { status: 'unauthenticated' };
+      }
     };
 
     const resolveProfileRoute = async (nextSession: Session, routeRevision?: number) => {
@@ -342,122 +493,128 @@ function App() {
       }
     };
 
+    const verifyOfflineSession = async (nextSession: Session): Promise<boolean> => {
+      const routeRevision = ++authRouteRevisionRef.current;
+      const validatedSession = await validateSession(nextSession);
+      if (!isCurrentRoute(routeRevision)) return false;
+
+      if (validatedSession.status === 'authenticated_online') {
+        await prepareLocalSessionUser(validatedSession.session.user.id);
+        if (!isCurrentRoute(routeRevision)) return false;
+        setSession(validatedSession.session);
+        setAuthBootstrapState({
+          status: 'authenticated_online',
+          userId: validatedSession.session.user.id,
+        });
+        setProfileStatus('checking');
+
+        const nextProfileStatus = await resolveProfileRoute(validatedSession.session, routeRevision);
+        if (!isCurrentRoute(routeRevision)) return false;
+        setProfileStatus(nextProfileStatus);
+        if (nextProfileStatus === 'complete') {
+          prefetchForSession(validatedSession.session);
+        }
+        return true;
+      }
+
+      if (validatedSession.status === 'unauthenticated') {
+        await markUnauthenticated(undefined, routeRevision);
+      }
+
+      return false;
+    };
+    verifyOfflineSessionRef.current = verifyOfflineSession;
+
+    const markSessionState = async (nextSession: Session, routeRevision: number) => {
+      const validatedSession = await validateSession(nextSession);
+      if (!isCurrentRoute(routeRevision)) return;
+
+      if (validatedSession.status === 'unauthenticated') {
+        await markUnauthenticated(startupWatchdog, routeRevision);
+        return;
+      }
+
+      await prepareLocalSessionUser(validatedSession.session.user.id);
+      if (!isCurrentRoute(routeRevision)) return;
+      clearTimeout(startupWatchdog);
+      setSession(validatedSession.session);
+
+      if (validatedSession.status === 'authenticated_offline_unverified') {
+        setAuthBootstrapState({
+          status: 'authenticated_offline_unverified',
+          userId: validatedSession.session.user.id,
+        });
+        setProfileStatus('complete');
+        return;
+      }
+
+      setAuthBootstrapState({
+        status: 'authenticated_online',
+        userId: validatedSession.session.user.id,
+      });
+      setProfileStatus('checking');
+
+      const nextProfileStatus = await resolveProfileRoute(validatedSession.session, routeRevision);
+      if (!isCurrentRoute(routeRevision)) return;
+      setProfileStatus(nextProfileStatus);
+
+      if (nextProfileStatus === 'complete') {
+        prefetchForSession(validatedSession.session);
+      }
+    };
+
+    const startupWatchdog = setTimeout(() => {
+      if (!isMounted) return;
+      console.info('[AuthStartup] Bootstrap watchdog routed to logged-out state', {
+        timeoutMs: AUTH_BOOTSTRAP_WATCHDOG_MS,
+      });
+      void markUnauthenticated(startupWatchdog);
+    }, AUTH_BOOTSTRAP_WATCHDOG_MS);
+
+    const markAuthenticated = async (nextSession: Session, routeRevision: number) => {
+      await markSessionState(nextSession, routeRevision);
+    };
+
     const initAuth = async () => {
-      const startupRevision = authRouteRevisionRef.current;
-      let sessionLoadTimedOut = false;
+      const startupRevision = ++authRouteRevisionRef.current;
+      setAuthBootstrapState({ status: 'loading' });
 
       try {
         void AsyncStorage.removeItem(LEGACY_AUTH_TOKEN_KEY).catch(() => undefined);
 
-        const initialSessionPromise = supabase.auth.getSession();
         const initialSessionResult = await withStartupTimeout(
-          initialSessionPromise,
+          supabase.auth.getSession(),
           AUTH_STARTUP_TIMEOUT_MS,
           'Supabase session load',
-        ).catch(error => {
-          if (authRouteRevisionRef.current !== startupRevision) {
-            return null;
-          }
-
-          sessionLoadTimedOut = isStartupTimeout(error, 'Supabase session load', AUTH_STARTUP_TIMEOUT_MS);
-          if (__DEV__) console.warn(sessionLoadTimedOut
-            ? '[AuthStartup] Session load timed out; waiting for late recovery'
-            : '[AuthStartup] Session load fallback shows logged-out route', {
-            error: summarizeStartupError(error),
-          });
-
-          void initialSessionPromise
-            .then(async ({ data: { session: lateSession } }) => {
-              if (!isMounted) return;
-              if (!lateSession?.user) {
-                if (authRouteRevisionRef.current === startupRevision) {
-                  prefetchedUserIdRef.current = null;
-                  setProfileStatus('unknown');
-                  setSession(null);
-                  markAuthReady();
-                }
-                return;
-              }
-              const routeRevision = ++authRouteRevisionRef.current;
-              setSession(lateSession);
-              setProfileStatus('checking');
-              const nextProfileStatus = await resolveProfileRoute(lateSession, routeRevision);
-              if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
-              setProfileStatus(nextProfileStatus);
-              prefetchForSession(lateSession);
-              markAuthReady();
-            })
-            .catch(lateError => {
-              if (__DEV__) console.warn('[AuthStartup] Late session recovery failed', {
-                error: summarizeStartupError(lateError),
-              });
-            });
-
-          return null;
-        });
-        if (!isMounted) return;
-
-        if (authRouteRevisionRef.current !== startupRevision) {
-          markAuthReady();
-          return;
-        }
-
-        if (sessionLoadTimedOut) {
-          return;
-        }
+        );
+        if (!isMounted || authRouteRevisionRef.current !== startupRevision) return;
 
         const initialSession = initialSessionResult?.data.session ?? null;
         if (initialSession?.user) {
-          void AsyncStorage.setItem('app_user_id', initialSession.user.id);
-          const routeRevision = ++authRouteRevisionRef.current;
-          setSession(initialSession);
-          setProfileStatus('checking');
-          const nextProfileStatus = await resolveProfileRoute(initialSession, routeRevision);
-          if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
-          setProfileStatus(nextProfileStatus);
-          prefetchForSession(initialSession); // Prefetch all data for instant screen loads
+          await markAuthenticated(initialSession, startupRevision);
         } else {
-          prefetchedUserIdRef.current = null;
-          setProfileStatus('unknown');
-          setSession(null);
+          await markUnauthenticated(startupWatchdog, startupRevision);
         }
       } catch (error) {
-        if (__DEV__) console.warn('[AuthStartup] Falling back to logged-out route', {
+        if (__DEV__) console.warn('[AuthStartup] Session restore failed; routing to login', {
           error: summarizeStartupError(error),
         });
-        if (!isMounted) return;
-        prefetchedUserIdRef.current = null;
-        setProfileStatus('unknown');
-        setSession(null);
+        if (isCurrentRoute(startupRevision)) {
+          await markUnauthenticated(startupWatchdog, startupRevision);
+        }
       }
-      if (isMounted) {
-        markAuthReady();
+    };
+
+    const applyAuthStateChange = async (nextSession: Session | null) => {
+      const routeRevision = ++authRouteRevisionRef.current;
+      if (nextSession?.user) {
+        await markAuthenticated(nextSession, routeRevision);
+      } else {
+        await markUnauthenticated(startupWatchdog, routeRevision);
       }
     };
 
     initAuth();
-
-    const deferredAuthTimers = new Set<ReturnType<typeof setTimeout>>();
-    const applyAuthStateChange = async (nextSession: Session | null) => {
-      const routeRevision = ++authRouteRevisionRef.current;
-      if (nextSession?.user) {
-        void AsyncStorage.setItem('app_user_id', nextSession.user.id);
-        setSession(nextSession);
-        setProfileStatus('checking');
-        const nextProfileStatus = await resolveProfileRoute(nextSession, routeRevision);
-        if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
-        setProfileStatus(nextProfileStatus);
-        prefetchForSession(nextSession);
-      } else {
-        if (!isMounted || routeRevision !== authRouteRevisionRef.current) return;
-        prefetchedUserIdRef.current = null;
-        setProfileStatus('unknown');
-        setSession(null);
-      }
-      if (isMounted && routeRevision === authRouteRevisionRef.current) {
-        markAuthReady();
-      }
-    };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       const deferredTimer = deferAuthStateChange(() => {
@@ -467,15 +624,7 @@ function App() {
           if (__DEV__) console.warn('[AuthStartup] Auth change route unavailable', {
             error: summarizeStartupError(error),
           });
-          if (nextSession?.user) {
-            setSession(nextSession);
-            setProfileStatus('error');
-          } else {
-            prefetchedUserIdRef.current = null;
-            setProfileStatus('unknown');
-            setSession(null);
-          }
-          markAuthReady();
+          void markUnauthenticated(startupWatchdog);
         });
       });
       deferredAuthTimers.add(deferredTimer);
@@ -483,15 +632,16 @@ function App() {
 
     return () => {
       isMounted = false;
+      verifyOfflineSessionRef.current = null;
       clearTimeout(startupWatchdog);
       deferredAuthTimers.forEach(clearTimeout);
       subscription.unsubscribe();
     };
   }, [getCachedProfileStatus, prefetchForSession, resolveProfileStatus, startupRetryRevision]);
 
-  const handleProfileComplete = () => {
+  const handleProfileComplete = useCallback(() => {
     setProfileStatus('complete');
-  };
+  }, []);
 
   const retryProfileCheck = useCallback(async () => {
     if (!session?.user) return;
@@ -503,96 +653,100 @@ function App() {
       resolveProfileStatus(session),
       PROFILE_STARTUP_TIMEOUT_MS,
       'Profile check',
-    ).catch(async error => {
-      const cachedStatus = await getCachedProfileStatus(session);
+    ).catch(error => {
       if (routeRevision === authRouteRevisionRef.current) {
-        if (cachedStatus) {
-          if (__DEV__) console.warn('[AuthStartup] Profile retry unavailable; using cached profile route', {
-            error: summarizeStartupError(error),
-          });
-        } else {
-          if (__DEV__) console.warn('[AuthStartup] Profile retry unavailable', {
-            error: summarizeStartupError(error),
-          });
-        }
+        if (__DEV__) console.warn('[AuthStartup] Profile retry unavailable', {
+          error: summarizeStartupError(error),
+        });
       }
-      return cachedStatus ?? 'error';
+      return 'error' as ProfileStatus;
     });
 
     if (routeRevision === authRouteRevisionRef.current) {
       setProfileStatus(nextProfileStatus);
     }
-  }, [getCachedProfileStatus, resolveProfileStatus, session]);
+  }, [resolveProfileStatus, session]);
 
   const retryStartup = useCallback(() => {
     ++authRouteRevisionRef.current;
-    setStartupRepairRequired(false);
-    setAuthReady(false);
+    setAuthBootstrapState({ status: 'loading' });
     setStartupRetryRevision(revision => revision + 1);
   }, []);
-
-  const clearLocalStartupCache = useCallback(async () => {
-    await withStartupTimeout(
-      AsyncStorage.removeItem(CACHE_KEYS.USER_PROFILE),
-      STARTUP_CACHE_CLEAR_TIMEOUT_MS,
-      'Startup profile cache clear',
-    ).catch(error => {
-      if (__DEV__) console.warn('[AuthStartup] Local startup cache clear unavailable', {
-        error: summarizeStartupError(error),
-      });
-    });
-    retryStartup();
-  }, [retryStartup]);
 
   const handleIntroComplete = useCallback(() => {
     setIntroDone(true);
   }, []);
 
+  const handleNavigateToLogin = useCallback(() => {
+    setShowSignup(false);
+  }, []);
+
+  const handleNavigateToSignup = useCallback(() => {
+    setShowSignup(true);
+  }, []);
+
   return (
     <View style={styles.appContainer}>
-      {authReady && (
-        <ThemeProvider>
-          <SafeAreaProvider>
-            <ErrorBoundary>
-              <NavigationContainer theme={navigationTheme}>
-                {startupRepairRequired ? (
-                  <StartupRepairScreen onRetry={retryStartup} onClearLocalCache={clearLocalStartupCache} />
-                ) : session ? (
-                  profileStatus === 'complete' ? (
-                    <RootNavigator />
-                  ) : profileStatus === 'incomplete' ? (
-                    <ProfileScreen onProfileComplete={handleProfileComplete} />
-                  ) : (
-                    <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
-                  )
-                ) : showSignup ? (
-                  <SignupScreen onNavigateToLogin={() => setShowSignup(false)} />
+      <ThemeProvider>
+        <SafeAreaProvider>
+          <ErrorBoundary>
+            <NavigationContainer theme={navigationTheme}>
+              {isAuthLoading ? (
+                <AuthLoadingScreen />
+              ) : isAuthenticated ? (
+                profileStatus === 'complete' ? (
+                  <RootNavigator />
+                ) : profileStatus === 'incomplete' ? (
+                  <ProfileScreen onProfileComplete={handleProfileComplete} />
                 ) : (
-                  <LoginScreen
-                    onNavigateToSignup={() => setShowSignup(true)}
-                    onAuthenticated={retryStartup}
-                  />
-                )}
-              </NavigationContainer>
-            </ErrorBoundary>
-            <Toast
-              config={toastConfig}
-              autoHide
-              visibilityTime={3000}
-              swipeable={false}
-              onPress={() => Toast.hide()}
-            />
-            
-            {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
-            {introDone && session && profileStatus === 'complete' && <PermissionPrompt />}
-          </SafeAreaProvider>
-        </ThemeProvider>
-      )}
+                  <ProfileRouteStatusScreen status={profileStatus} onRetry={retryProfileCheck} />
+                )
+              ) : showSignup ? (
+                <SignupScreen onNavigateToLogin={handleNavigateToLogin} />
+              ) : (
+                <LoginScreen
+                  onNavigateToSignup={handleNavigateToSignup}
+                  onAuthenticated={retryStartup}
+                />
+              )}
+            </NavigationContainer>
+          </ErrorBoundary>
+          {isAuthenticated && isOfflineUnverified && profileStatus === 'complete' && (
+            <View style={styles.offlineBanner}>
+              <Text style={styles.offlineBannerText}>
+                Offline mode. New transactions will sync when you are online.
+              </Text>
+            </View>
+          )}
+          <Toast
+            config={toastConfig}
+            autoHide
+            visibilityTime={3000}
+            swipeable={false}
+            onPress={() => Toast.hide()}
+          />
+
+          {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
+          {introDone && authBootstrapState.status === 'authenticated_online' && profileStatus === 'complete' && <PermissionPrompt />}
+        </SafeAreaProvider>
+      </ThemeProvider>
       {!introDone && (
         <View style={styles.introOverlay}>
-          <AppIntroScreen readyToExit={authReady} onIntroComplete={handleIntroComplete} />
+          <AppIntroScreen readyToExit={!isAuthLoading} onIntroComplete={handleIntroComplete} />
         </View>
       )}
+    </View>
+  );
+}
+
+export function AuthLoadingScreen() {
+  return (
+    <View style={styles.routeStatusContainer}>
+      <ActivityIndicator size="large" color="#8b5cf6" />
+      <Text style={styles.routeStatusTitle}>Preparing your session</Text>
+      <Text style={styles.routeStatusText}>
+        SpendSense is checking whether your saved login is still valid.
+      </Text>
     </View>
   );
 }
@@ -700,6 +854,22 @@ const styles = StyleSheet.create({
     color: '#c4b5fd',
     fontSize: 14,
     fontWeight: '700',
+    textAlign: 'center',
+  },
+  offlineBanner: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    top: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#1f2937',
+  },
+  offlineBannerText: {
+    color: '#e5e7eb',
+    fontSize: 12,
+    fontWeight: '600',
     textAlign: 'center',
   },
 });

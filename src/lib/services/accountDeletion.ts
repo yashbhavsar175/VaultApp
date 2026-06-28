@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import EncryptedStorage from 'react-native-encrypted-storage';
 import { supabase } from '../core';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
@@ -63,6 +64,8 @@ export const ACCOUNT_DELETION_LOCAL_KEYS = [
 ] as const;
 
 const CACHE_PREFIX = 'cache_';
+const DATA_EXPORT_PREFIX = 'data_export_';
+const VAULT_DATA_KEY_PREFIX = 'vault:data-key:v2:';
 const STORAGE_PAGE_SIZE = 100;
 const STORAGE_REMOVE_BATCH_SIZE = 100;
 const LEGACY_QUEUE_BASE_KEYS = [
@@ -80,6 +83,7 @@ export class AccountDataDeletionError extends Error {
 
 function isDeletionLocalKey(key: string): boolean {
   if (key.startsWith(CACHE_PREFIX)) return true;
+  if (key.startsWith(DATA_EXPORT_PREFIX)) return true;
   if ((ACCOUNT_DELETION_LOCAL_KEYS as readonly string[]).includes(key)) return true;
 
   return LEGACY_QUEUE_BASE_KEYS.some(baseKey => (
@@ -89,6 +93,7 @@ function isDeletionLocalKey(key: string): boolean {
 
 export async function clearLocalAccountDataAfterDeletion(userId: string): Promise<void> {
   await clearFinancialQueuesForUser(userId);
+  await EncryptedStorage.removeItem(`${VAULT_DATA_KEY_PREFIX}${userId}`);
 
   const keys = await AsyncStorage.getAllKeys();
   const keysToRemove = keys.filter(isDeletionLocalKey);
@@ -125,59 +130,13 @@ export async function deletePlacePhotosForUser(userId: string): Promise<void> {
 }
 
 export async function exportUserDataBeforeDeletion(userId: string): Promise<string> {
-  const exportData: Record<string, unknown> = {
-    exportedAt: new Date().toISOString(),
-    userId,
-    tables: {},
-  };
-
-  // Export data from all critical tables before deletion
-  const CRITICAL_TABLES = [
-    'transactions',
-    'bank_accounts',
-    'credit_cards',
-    'loans',
-    'vault_items',
-    'people_ledger',
-    'places',
-    'debt_freedom_settings',
-    'balance_snapshots',
-  ];
-
-  for (const table of CRITICAL_TABLES) {
-    try {
-      const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .eq('user_id', userId);
-
-      if (!error && data) {
-        (exportData.tables as Record<string, unknown>)[table] = data;
-      }
-    } catch {
-      // Best effort — skip tables that fail
-    }
-  }
-
-  const exportJson = JSON.stringify(exportData);
-  const exportKey = `data_export_${userId}_${Date.now()}`;
-  await AsyncStorage.setItem(exportKey, exportJson);
-
-  return exportKey;
+  void userId;
+  throw new AccountDataDeletionError('plaintext-export-disabled');
 }
 
 export async function deleteCurrentUserAppData(): Promise<void> {
-  try {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new AccountDataDeletionError('session');
-
-  // Export all user data before deletion (safety net)
-  try {
-    await exportUserDataBeforeDeletion(user.id);
-  } catch {
-    // Export failure should not block deletion if user explicitly chose to delete
-    if (__DEV__) console.warn('[AccountDeletion] Data export failed, proceeding with deletion');
-  }
 
   await deletePlacePhotosForUser(user.id);
 
@@ -205,7 +164,4 @@ export async function deleteCurrentUserAppData(): Promise<void> {
   const signOutResult = await supabase.auth.signOut();
   if (localCleanupFailed) throw new AccountDataDeletionError('local-cleanup');
   if (signOutResult?.error) throw new AccountDataDeletionError('sign-out');
-
-  } catch (err) {
-    throw err;
-  }}
+}

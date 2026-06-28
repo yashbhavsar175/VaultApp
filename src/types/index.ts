@@ -38,6 +38,7 @@ export interface Transaction {
   account_match_owner_type?: AccountMatchOwnerType | null;
   account_match_owner_id?: string | null;
   primary_evidence_id?: string | null;
+  client_idempotency_key?: string | null;
 }
 
 export type EvidenceSourceType = 'sms' | 'notification' | 'accessibility' | 'manual' | 'imported';

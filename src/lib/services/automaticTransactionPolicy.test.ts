@@ -13,15 +13,16 @@ describe('automatic transaction policy', () => {
     }));
   });
 
-  it('posts clear merchant debits as expenses', () => {
+  it('does not count merchant debits as expense until the user confirms', () => {
+    // Expenses are held in review by default — most debits are not the user's own spend.
     expect(getAutomaticTransactionPolicy(
       'debit',
       'Rs.450 paid to Amazon for shopping via UPI'
     )).toEqual(expect.objectContaining({
       action: 'post',
       type: 'expense',
-      accountMatchStatus: 'manual_confirmed',
-      accountMatchReason: 'auto_confirmed_expense',
+      accountMatchStatus: 'review_required',
+      accountMatchReason: 'unverified_debit',
     }));
   });
 
@@ -61,15 +62,16 @@ describe('automatic transaction policy', () => {
     }));
   });
 
-  it('saves unverified credits without counting them as income by default', () => {
+  it('counts generic credits as income by default', () => {
+    // Income is counted by default — most incoming money is the user's earning.
     expect(getAutomaticTransactionPolicy(
       'credit',
       'Rs.2500 credited to your account via UPI'
     )).toEqual(expect.objectContaining({
       action: 'post',
       type: 'income',
-      accountMatchStatus: 'review_required',
-      accountMatchReason: 'unverified_credit',
+      accountMatchStatus: 'manual_confirmed',
+      accountMatchReason: 'auto_confirmed_income',
     }));
   });
 

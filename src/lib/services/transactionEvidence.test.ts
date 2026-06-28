@@ -35,7 +35,11 @@ type QueryCall = {
   limit?: number;
 };
 
-function setupSupabaseMock(options: { existingMapping?: any } = {}) {
+function setupSupabaseMock(options: {
+  existingMapping?: any;
+  insertSingleResult?: { data: any; error: any };
+  selectBySignalResult?: { data: any; error: any };
+} = {}) {
   const calls: QueryCall[] = [];
 
   mockedSupabase.auth.getUser.mockResolvedValue({
@@ -84,15 +88,30 @@ function setupSupabaseMock(options: { existingMapping?: any } = {}) {
           : null,
         error: null,
       })),
-      single: jest.fn(async () => ({
-        data: {
-          id: `${table}_1`,
-          created_at: '2026-05-29T10:00:00.000Z',
-          updated_at: '2026-05-29T10:00:00.000Z',
-          ...(call.payload || {}),
-        },
-        error: null,
-      })),
+      single: jest.fn(async () => {
+        if (table === 'transaction_evidence' && call.op === 'insert' && options.insertSingleResult) {
+          return options.insertSingleResult;
+        }
+
+        if (
+          table === 'transaction_evidence'
+          && call.op === 'select'
+          && call.filters.some(filter => filter.column === 'signal_id')
+          && options.selectBySignalResult
+        ) {
+          return options.selectBySignalResult;
+        }
+
+        return {
+          data: {
+            id: `${table}_1`,
+            created_at: '2026-05-29T10:00:00.000Z',
+            updated_at: '2026-05-29T10:00:00.000Z',
+            ...(call.payload || {}),
+          },
+          error: null,
+        };
+      }),
       then: (resolve: any, reject: any) => Promise.resolve({
         data: [],
         error: null,
@@ -206,6 +225,53 @@ describe('transaction evidence service foundation', () => {
     expect(JSON.stringify(calls[0].payload)).not.toContain('raw body should go');
     expect(JSON.stringify(calls[0].payload)).not.toContain('9876543210');
     expect(JSON.stringify(calls[0].payload)).not.toContain('yash@oksbi');
+  });
+
+  it('returns existing evidence when the same user signal is replayed', async () => {
+    const existingEvidence = {
+      id: 'evidence_existing',
+      user_id: 'user_1',
+      signal_id: 'signal_replay',
+      source_type: 'notification',
+      match_status: 'linked',
+      transaction_id: 'tx_existing',
+    };
+    const { calls } = setupSupabaseMock({
+      insertSingleResult: {
+        data: null,
+        error: {
+          code: '23505',
+          details: null,
+          hint: null,
+          message: 'duplicate key value violates unique constraint "idx_transaction_evidence_user_signal"',
+        },
+      },
+      selectBySignalResult: {
+        data: existingEvidence,
+        error: null,
+      },
+    });
+
+    const result = await createTransactionEvidence({
+      signal_id: 'signal_replay',
+      source_type: 'notification',
+      amount: 28,
+      direction: 'debit',
+    });
+
+    expect(result).toBe(existingEvidence);
+    expect(calls[0]).toEqual(expect.objectContaining({
+      table: 'transaction_evidence',
+      op: 'insert',
+    }));
+    expect(calls[1]).toEqual(expect.objectContaining({
+      table: 'transaction_evidence',
+      op: 'select',
+      filters: expect.arrayContaining([
+        { method: 'eq', column: 'user_id', value: 'user_1' },
+        { method: 'eq', column: 'signal_id', value: 'signal_replay' },
+      ]),
+    }));
   });
 
   it('does not persist caller-provided raw UPI IDs as masked evidence fields', async () => {

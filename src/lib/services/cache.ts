@@ -20,7 +20,6 @@ import { sanitizeTransactionRawSmsListForPrivacy } from '../privacy/rawText';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   OFFLINE_TX_QUEUE_BASE_KEY,
-  clearFinancialQueuesForUser,
   quarantineLegacyQueue,
 } from './userScopedQueues';
 
@@ -175,22 +174,9 @@ export async function removeCache(key: string): Promise<void> {
 
 export async function clearCache(): Promise<void> {
   try {
-    let currentUserId: string | null = null;
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      currentUserId = user?.id || null;
-    } catch {
-      currentUserId = null;
-    }
-
-    if (currentUserId) {
-      // Do NOT clear financial queues here! They are user-scoped and should survive
-      // logouts if there are unsync'd offline transactions.
-    }
     await Promise.all([
       quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
       quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),
-
     ]);
 
     const keys = await AsyncStorage.getAllKeys();
