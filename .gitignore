@@ -86,3 +86,6 @@ src/config/env.ts
 # Keep example files
 !src/config/env.example.ts
 !.env.example
+
+.codex-tmp/
+docs/URGENT-SECURITY-FIX.md
