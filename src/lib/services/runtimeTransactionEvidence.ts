@@ -11,6 +11,7 @@ import {
   maskUpiId,
 } from './transactionEvidence';
 import { extractPaymentAppBankHint } from './paymentAppAccountMappings';
+import { captureTransactionSignal, type BlackBoxConfidence } from './transactionBlackBox';
 
 type RuntimeParsedTransaction = {
   amount?: number | null;
@@ -399,14 +400,66 @@ async function createEvidenceSafely(
   }
 }
 
+function metadataHash(payload: CreateTransactionEvidenceInput): string | null {
+  const meta = payload.raw_source_metadata as { hash?: unknown } | undefined;
+  return typeof meta?.hash === 'string' ? meta.hash : null;
+}
+
+function blackBoxConfidence(payload: CreateTransactionEvidenceInput): BlackBoxConfidence {
+  const level = payload.confidence_level;
+  return level === 'exact' || level === 'high' || level === 'medium' || level === 'low'
+    ? level
+    : 'unknown';
+}
+
+/**
+ * Feed the on-device Transaction Decision Blackbox with the full raw text + the
+ * confidence we computed. Fire-and-forget — capture must never break or delay an
+ * evidence write. Grouped later by transaction_id to show which source built a
+ * transaction and which was most confident.
+ */
+function captureSignalForBlackBox(
+  rawText: string,
+  payload: CreateTransactionEvidenceInput,
+  source: { label?: string | null; identity?: string | null },
+  timestamp?: number
+): void {
+  void captureTransactionSignal({
+    sourceKind: payload.source_type === 'notification' ? 'notification' : 'sms',
+    sourceLabel: source.label,
+    sourceIdentity: source.identity,
+    rawText,
+    hash: metadataHash(payload),
+    amount: payload.amount ?? null,
+    direction: payload.direction === 'debit' || payload.direction === 'credit' ? payload.direction : 'unknown',
+    referenceNumber: payload.reference_number ?? null,
+    confidence: blackBoxConfidence(payload),
+    transactionId: payload.transaction_id ?? null,
+    signalId: payload.signal_id,
+    time: timestamp,
+  });
+}
+
 export async function recordSmsTransactionEvidence(
   input: RuntimeSmsEvidenceInput
 ): Promise<'created' | 'duplicate' | 'failed'> {
-  return createEvidenceSafely('sms', mapParsedTransactionToEvidence(input));
+  const payload = mapParsedTransactionToEvidence(input);
+  captureSignalForBlackBox(input.text, payload, { label: payload.sender, identity: payload.sender }, input.timestamp);
+  return createEvidenceSafely('sms', payload);
 }
 
 export async function recordNotificationTransactionEvidence(
   input: RuntimeNotificationEvidenceInput
 ): Promise<'created' | 'duplicate' | 'failed'> {
-  return createEvidenceSafely('notification', mapNotificationToEvidence(input));
+  const payload = mapNotificationToEvidence(input);
+  captureSignalForBlackBox(
+    input.text,
+    payload,
+    {
+      label: payload.source_app || payload.sender || payload.source_package,
+      identity: payload.source_package || payload.sender,
+    },
+    input.timestamp
+  );
+  return createEvidenceSafely('notification', payload);
 }

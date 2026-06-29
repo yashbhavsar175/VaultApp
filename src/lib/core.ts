@@ -4,17 +4,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import 'react-native-url-polyfill/auto';
-// ═══════════════════════════════════════════════════════════════════════════════
-// CORE UTILITIES MODULE
-// Consolidated: supabase + aiParser + googleAuth + db
-// ═══════════════════════════════════════════════════════════════════════════════
-
-import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import EncryptedStorage from 'react-native-encrypted-storage';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
-import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, GOOGLE_WEB_CLIENT_ID } from '../config';
 import { Transaction, TransactionType } from '../types';
 import { emitFinanceDataChanged } from './services/dataEvents';
 import { GeofencingNative } from './services/geofencingNative';
@@ -56,7 +50,7 @@ const secureStorageAdapter = {
   },
 };
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     storage: secureStorageAdapter,
     autoRefreshToken: true,
@@ -104,7 +98,7 @@ export async function parseTransactionWithAI(text: string): Promise<ParsedTransa
     const { data, error } = result as any;
 
     if (error || !data) {
-      console.log('[AIParser] Edge failed, using local parser');
+      if (__DEV__) console.log('[AIParser] Edge failed, using local parser');
       return parseTransaction(text);
     }
 
@@ -254,13 +248,61 @@ export const signInWithGoogle = async () => {
   }
 };
 
-export const signOutFromGoogle = async () => {
-  try {
+// Bug #9 fix: pehle single attempt thi aur fail pe geofences silently remain karte the
+// Retry once — agar dono fail hote hain toh flag set karo, next launch pe clear hoga
+const PENDING_GEOFENCE_CLEAR_KEY = 'cache_pending_geofence_clear';
+const GEOFENCE_CLEAR_MAX_ATTEMPTS = 2;
+
+async function clearGeofencesOnSignOut(): Promise<boolean> {
+  for (let attempt = 1; attempt <= GEOFENCE_CLEAR_MAX_ATTEMPTS; attempt++) {
     try {
       await GeofencingNative.clearGeofences();
+      console.log('[Core] Geofences cleared on sign out', { attempt });
+      return true;
     } catch (e) {
-      console.warn('[Core] Failed to clear geofences on sign out', e);
+      console.warn('[Core] Geofence clear attempt failed', {
+        attempt,
+        maxAttempts: GEOFENCE_CLEAR_MAX_ATTEMPTS,
+        error: e instanceof Error ? e.message : String(e),
+      });
+
+      if (attempt === GEOFENCE_CLEAR_MAX_ATTEMPTS) {
+        // Dono attempts fail — flag set karo taaki next launch pe retry ho
+        try {
+          await AsyncStorage.setItem(PENDING_GEOFENCE_CLEAR_KEY, 'true');
+          console.warn('[Core] Geofence clear flagged for next launch — privacy fallback active');
+        } catch (storageError) {
+          console.error('[Core] Could not flag pending geofence clear:', {
+            error: storageError instanceof Error ? storageError.message : String(storageError),
+          });
+        }
+      }
     }
+  }
+  return false;
+}
+
+// App startup pe call karo — agar pichle session mein clear fail hua tha toh retry karo
+export async function handlePendingGeofenceClear(): Promise<void> {
+  try {
+    const pending = await AsyncStorage.getItem(PENDING_GEOFENCE_CLEAR_KEY);
+    if (pending !== 'true') return;
+
+    console.log('[Core] Found pending geofence clear from previous session — retrying');
+    await GeofencingNative.clearGeofences();
+    await AsyncStorage.removeItem(PENDING_GEOFENCE_CLEAR_KEY);
+    console.log('[Core] Pending geofence clear completed');
+  } catch (e) {
+    // Flag remains — will retry on next launch
+    console.warn('[Core] Pending geofence clear failed — will retry next launch:', {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+export const signOutFromGoogle = async () => {
+  try {
+    await clearGeofencesOnSignOut();
     await GoogleSignin.signOut();
     await supabase.auth.signOut();
   } catch (error) {
@@ -279,6 +321,9 @@ const REVIEWED_INCOME_CATEGORY = 'Reviewed Income';
 const INCOME_REVIEW_REASON = 'income_review_confirmed';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 let activeOfflineSyncPromise: Promise<void> | null = null;
+// Bug #H1 fix: promise-chain lock — prevents concurrent read-modify-write races.
+// Pattern mirrors withUserScopedQueueLock in userScopedQueues.ts.
+let _transactionCacheWriteLock: Promise<void> = Promise.resolve();
 
 async function invalidateDashboardSummaryCache(): Promise<void> {
   try {
@@ -296,23 +341,32 @@ async function invalidateDashboardSummaryCache(): Promise<void> {
 async function updateTransactionsCache(
   updater: (current: Transaction[]) => Transaction[]
 ): Promise<void> {
-  try {
-    const raw = await AsyncStorage.getItem(TRANSACTIONS_CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    const current = Array.isArray(parsed?.data)
-      ? parsed.data
-      : Array.isArray(parsed)
-        ? parsed
-        : [];
-    const next = updater(current).map(tx => sanitizeTransactionRawSmsForPrivacy(tx));
-    await AsyncStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify({
-      data: next,
-      timestamp: Date.now(),
-    }));
-    await invalidateDashboardSummaryCache();
-  } catch {
-    // Cache is a best-effort performance layer.
-  }
+  // Bug #H1 fix: serialise all reads+writes through a promise chain so concurrent callers
+  // (addTransaction, syncOfflineTransactions, AppState change, network reconnect) cannot
+  // interleave and overwrite each other's work with a stale read.
+  _transactionCacheWriteLock = _transactionCacheWriteLock
+    .catch(() => undefined) // a previous failure must not block the next write
+    .then(async () => {
+      try {
+        const raw = await AsyncStorage.getItem(TRANSACTIONS_CACHE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const current = Array.isArray(parsed?.data)
+          ? parsed.data
+          : Array.isArray(parsed)
+            ? parsed
+            : [];
+        const next = updater(current).map(tx => sanitizeTransactionRawSmsForPrivacy(tx));
+        await AsyncStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify({
+          data: next,
+          timestamp: Date.now(),
+        }));
+        await invalidateDashboardSummaryCache();
+      } catch {
+        // Cache is a best-effort performance layer.
+      }
+    });
+
+  await _transactionCacheWriteLock;
 }
 
 type DeletedReviewSource = Pick<Transaction,
@@ -748,6 +802,9 @@ export async function getTransactions(
 export async function findDuplicateLinkedRefundTransaction(
   input: FindDuplicateLinkedRefundTransactionInput
 ): Promise<Transaction | null> {
+  // Bug #C4 fix: replaced getTransactions() full-scan with a targeted DB query.
+  // Before: fetched up to 1 000 rows into memory + linear JS scan (O(n), wrong for >1 000 tx).
+  // After: DB filters to 0–1 rows, never fetches unrelated transactions.
   if (!input.amount || input.amount <= 0) {
     throw new Error('Valid refund amount required');
   }
@@ -757,17 +814,36 @@ export async function findDuplicateLinkedRefundTransaction(
     throw new Error('Original expense transaction required');
   }
 
-  const reference = cleanTransactionText(input.reference_number)?.toLowerCase();
-  const transactions = await getTransactions();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('User not authenticated');
 
-  return transactions.find(tx => {
-    if (tx.type !== 'refund') return false;
-    if (tx.refund_of_transaction_id !== refundOfTransactionId) return false;
-    if (tx.amount !== input.amount) return false;
-    if (!reference) return true;
+  const reference = cleanTransactionText(input.reference_number)?.toLowerCase() ?? null;
 
-    return tx.reference_number?.trim().toLowerCase() === reference;
-  }) || null;
+  // Narrow query: ownership + type + parent + amount — DB handles all heavy lifting.
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('id, user_id, amount, type, note, category, created_at, refund_of_transaction_id, reference_number, client_idempotency_key')
+    .eq('user_id', user.id)
+    .eq('type', 'refund')
+    .eq('refund_of_transaction_id', refundOfTransactionId)
+    .eq('amount', input.amount)
+    .limit(10); // at most a handful of refunds for the same amount — JS filter below is O(1)
+
+  if (error) {
+    console.error('[Core] Duplicate refund check failed:', {
+      error: error.message,
+      code: safeErrorCode(error),
+    });
+    return null; // non-fatal — allow refund to proceed rather than blocking on query failure
+  }
+
+  if (!data || data.length === 0) return null;
+
+  // If no reference provided, any matching row is a duplicate.
+  if (!reference) return data[0] as Transaction;
+
+  // Reference provided — match case-insensitively within the tiny result set.
+  return (data.find(tx => tx.reference_number?.trim().toLowerCase() === reference) ?? null) as Transaction | null;
 }
 
 export async function deleteTransaction(id: string): Promise<void> {
@@ -919,8 +995,38 @@ export async function getUniqueCategories(): Promise<string[]> {
 // Triggered on network reconnection or AppState change from background
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type OfflineQueueEntry = Record<string, any>;
-type OfflineDeleteQueueEntry = OfflineQueueEntry | string;
+// Bug #M6 fix: typed offline queue entries — no more Record<string, any>.
+// [key: string]: unknown allows extension without breaking existing spread/destructure usage.
+interface OfflineTransactionQueueEntry {
+  _localId?: string;
+  _queued_at?: string;
+  queued_at?: string;
+  queueOwnerId?: string;
+  user_id?: string;
+  client_idempotency_key?: string;
+  id?: string;
+  created_at?: string;
+  amount?: number;
+  type?: TransactionType;
+  note?: string;
+  category?: string;
+  account_id?: string | null;
+  sms_source?: string | null;
+  [key: string]: unknown;
+}
+
+// Delete queue entries can be either a plain transaction ID string (legacy) or a structured object.
+interface OfflineDeleteQueueEntryObject {
+  transactionId?: string;
+  id?: string;
+  _queued_at?: string;
+  queueOwnerId?: string;
+  user_id?: string;
+  [key: string]: unknown;
+}
+
+type OfflineQueueEntry = OfflineTransactionQueueEntry;
+type OfflineDeleteQueueEntry = OfflineDeleteQueueEntryObject | string;
 
 function isDuplicateTransactionError(error: any): boolean {
   const message = String(error?.message || '');
@@ -929,6 +1035,12 @@ function isDuplicateTransactionError(error: any): boolean {
     message.includes('duplicate key value') ||
     message.includes('unique_transaction_identifier')
   );
+}
+
+function safeErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
 }
 
 function getQueuedDeleteTransactionId(item: OfflineDeleteQueueEntry): string | null {

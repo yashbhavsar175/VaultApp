@@ -76,9 +76,10 @@ export async function createOrUpdateDebitCard(
   const payload = buildDebitCardPayload(userId, input);
   await assertBankAccountBelongsToUser(payload.bank_account_id, userId);
 
+  // Only existing?.id is accessed — narrow to the single field actually needed.
   let existingQuery = supabase
     .from('debit_cards')
-    .select('*')
+    .select('id')
     .eq('user_id', userId)
     .eq('card_last4', payload.card_last4);
 
@@ -121,7 +122,7 @@ export async function getDebitCardsForBankAccount(bankAccountId: string): Promis
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('debit_cards')
-    .select('*')
+    .select('id, user_id, bank_account_id, bank_name, card_last4, card_network, card_label, status, detected_confidence, source_sender_or_package, last_seen_at, created_at, updated_at')
     .eq('user_id', userId)
     .eq('bank_account_id', bankAccountId)
     .order('created_at', { ascending: true });
@@ -139,7 +140,7 @@ export async function getDebitCards(): Promise<DebitCard[]> {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('debit_cards')
-    .select('*')
+    .select('id, user_id, bank_account_id, bank_name, card_last4, card_network, card_label, status, detected_confidence, source_sender_or_package, last_seen_at, created_at, updated_at')
     .eq('user_id', userId)
     .order('created_at', { ascending: true });
 

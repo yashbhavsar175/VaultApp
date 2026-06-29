@@ -130,7 +130,7 @@ async function getBankAccountForUser(userId: string, accountId: string): Promise
   try {
   const { data, error } = await supabase
     .from('bank_accounts')
-    .select('*')
+    .select('id, user_id, bank_name, account_last4, account_type, starting_balance, balance, credit_limit, loan_total, monthly_emi_amount, upi_ids, is_archived, archived_at, created_at')
     .eq('user_id', userId)
     .eq('id', accountId)
     .limit(1)
@@ -151,7 +151,7 @@ async function getUniqueBankAccountForHint(userId: string, bankHint: string): Pr
   try {
   const { data, error } = await supabase
     .from('bank_accounts')
-    .select('*')
+    .select('id, user_id, bank_name, account_last4, account_type, starting_balance, balance, credit_limit, loan_total, monthly_emi_amount, upi_ids, is_archived, archived_at, created_at')
     .eq('user_id', userId)
     .limit(50);
 
@@ -178,9 +178,10 @@ export async function resolvePaymentAppBankAccountForUser(input: {
   const hint = extractPaymentAppBankHint(input.text, input.sourcePackage);
   if (!hint) return null;
 
+  // Only mappings[0].owner_id is accessed — no AccountAppMapping interface cast on this result.
   const { data, error } = await supabase
     .from('account_app_mappings')
-    .select('*')
+    .select('id, user_id, app_package, owner_type, owner_id, payment_method_hash, status, use_count')
     .eq('user_id', input.userId)
     .eq('app_package', hint.sourcePackage)
     .eq('payment_method_hash', hint.bankHintHash)

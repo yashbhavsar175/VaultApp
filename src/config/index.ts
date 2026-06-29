@@ -24,21 +24,36 @@ import Config from 'react-native-config';
  * 3. Never commit .env to git (it's in .gitignore)
  */
 
+// Bug #L1 fix: requireEnv throws a clear, actionable error instead of crashing with
+// a cryptic TypeError when a .env key is missing in CI or a fresh dev setup.
+function requireEnv(key: string, value: string | undefined): string {
+  if (!value || value.trim() === '') {
+    throw new Error(
+      `[Config] Missing required environment variable: ${key}. ` +
+      `Check your .env file and ensure it has a non-empty value for ${key}.`
+    );
+  }
+  return value;
+}
+
 // Supabase Configuration
-export const SUPABASE_URL = Config.SUPABASE_URL!;
-export const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY!;
+export const SUPABASE_URL = requireEnv('SUPABASE_URL', Config.SUPABASE_URL);
+export const SUPABASE_PUBLISHABLE_KEY = requireEnv('SUPABASE_PUBLISHABLE_KEY', Config.SUPABASE_PUBLISHABLE_KEY);
 
 // Google Sign-In Configuration
-export const GOOGLE_WEB_CLIENT_ID = Config.GOOGLE_WEB_CLIENT_ID!;
+export const GOOGLE_WEB_CLIENT_ID = requireEnv('GOOGLE_WEB_CLIENT_ID', Config.GOOGLE_WEB_CLIENT_ID);
 
 // App Configuration
 export const APP_NAME = Config.APP_NAME || 'SpendSense';
 export const APP_VERSION = Config.APP_VERSION || '1.0.0';
 
 // Feature Flags
+// Bug #L2 fix: SMS_AUTO_CAPTURE removed — SMS capture is fully operational via
+// background listeners (enqueueSms, initializeBackgroundListeners). The flag was
+// documented as "not yet implemented" but was never read anywhere, making it
+// misleading about the app's actual behavior.
 export const FEATURES = {
   AI_PARSING: true,
-  SMS_AUTO_CAPTURE: false, // Not yet implemented
   GOOGLE_SIGNIN: true,
 };
 

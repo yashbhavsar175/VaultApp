@@ -33,14 +33,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-async function verifyAuthenticatedRequest(req: Request): Promise<boolean> {
+// Bug #H4 fix: verifyAuthenticatedRequest now returns the userId so the handler
+// can use it for rate limiting without a second auth round-trip.
+async function verifyAuthenticatedRequest(req: Request): Promise<{ authorized: false } | { authorized: true; userId: string }> {
   const authorization = req.headers.get('Authorization');
   if (!authorization || !authorization.startsWith('Bearer ')) {
-    return false;
+    return { authorized: false };
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
-  const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
+  const anonKey = Deno.env.get('SUPABASE_PUBLISHABLE_KEY');
   if (!supabaseUrl || !anonKey) {
     throw new Error('Supabase auth environment is not configured');
   }
@@ -52,7 +54,58 @@ async function verifyAuthenticatedRequest(req: Request): Promise<boolean> {
     },
   });
 
-  return response.ok;
+  if (!response.ok) return { authorized: false };
+
+  const body = await response.json().catch(() => null);
+  const userId = typeof body?.id === 'string' ? body.id : null;
+  if (!userId) return { authorized: false };
+
+  return { authorized: true, userId };
+}
+
+const RATE_LIMIT_MAX_CALLS = 50;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+async function checkAndIncrementRateLimit(userId: string): Promise<boolean> {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!supabaseUrl || !serviceRoleKey) {
+    // If rate-limit infra is not configured, fail open — don't block users.
+    return true;
+  }
+
+  const tableUrl = `${supabaseUrl}/rest/v1/parse_transaction_rate_limits`;
+  const headers = {
+    'Content-Type': 'application/json',
+    'apikey': serviceRoleKey,
+    'Authorization': `Bearer ${serviceRoleKey}`,
+    'Prefer': 'return=representation',
+  };
+
+  const getRes = await fetch(`${tableUrl}?user_id=eq.${encodeURIComponent(userId)}&select=call_count,window_start`, { headers });
+  if (!getRes.ok) return true; // fail open on DB error
+
+  const rows = await getRes.json().catch(() => []);
+  const row = Array.isArray(rows) ? rows[0] : null;
+
+  const windowStart = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
+  const isInCurrentWindow = row && new Date(row.window_start) >= new Date(windowStart);
+
+  if (isInCurrentWindow && row.call_count >= RATE_LIMIT_MAX_CALLS) {
+    return false; // rate limited
+  }
+
+  const upsertPayload = isInCurrentWindow
+    ? { user_id: userId, call_count: row.call_count + 1, window_start: row.window_start }
+    : { user_id: userId, call_count: 1, window_start: new Date().toISOString() };
+
+  await fetch(tableUrl, {
+    method: 'POST',
+    headers: { ...headers, 'Prefer': 'resolution=merge-duplicates' },
+    body: JSON.stringify(upsertPayload),
+  }).catch(() => undefined); // non-blocking — counter failure should not block the request
+
+  return true;
 }
 
 function isTransactionType(value: unknown): value is TransactionType {
@@ -152,9 +205,14 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const isAuthenticated = await verifyAuthenticatedRequest(req);
-    if (!isAuthenticated) {
+    const auth = await verifyAuthenticatedRequest(req);
+    if (!auth.authorized) {
       return jsonResponse({ error: 'Unauthorized' }, 401);
+    }
+
+    const allowed = await checkAndIncrementRateLimit(auth.userId);
+    if (!allowed) {
+      return jsonResponse({ error: 'Rate limit exceeded. Try again in an hour.' }, 429);
     }
 
     const body = await req.json().catch(() => null);

@@ -11,14 +11,19 @@ import RootNavigator from './src/navigation/RootNavigator';
 import { LoginScreen, SignupScreen } from './src/screens/auth/AuthScreens';
 import ProfileScreen from './src/screens/user/ProfileScreen';
 import AppIntroScreen from './src/screens/intro/AppIntroScreen';
-import { supabase, configureGoogleSignIn, syncOfflineTransactions } from './src/lib/core';
-import { initializeForegroundListener } from './src/lib/services/notifications';
+import { supabase, configureGoogleSignIn, syncOfflineTransactions, handlePendingGeofenceClear } from './src/lib/core';
+import {
+  initializeForegroundListener,
+  injectReminderDependencies,
+} from './src/lib/services/notifications';
+import { scheduleTransactionReminder } from './src/lib/services/scheduledNotifications';
+import { storeTransactionReminder } from './src/components/modals/TransactionReminderModal';
 import { initPorterDistanceCalculator } from './src/lib/services/porter';
 import { startLocationMonitoring, stopLocationMonitoring } from './src/lib/services/placeReminders';
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
-import { CACHE_KEYS, clearCache, getCached, prefetchAllData } from './src/lib/services/cache';
-import { ThemeProvider } from './src/context/ThemeContext';
+import { CACHE_KEYS, clearCache, clearUserCache, getCached, prefetchAllData } from './src/lib/services/cache';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import {
   AuthBootstrapState,
   verifySessionUser,
@@ -129,35 +134,52 @@ function useAuthState(session: Session | null) {
   };
 }
 
-const toastConfig = {
-  success: (props: any) => (
-    <BaseToast
-      {...props}
-      style={{ borderLeftColor: '#10b981', backgroundColor: '#1e1e2e', borderRadius: 12, marginTop: 8 }}
-      contentContainerStyle={{ paddingHorizontal: 15 }}
-      text1Style={{ color: '#ffffff', fontSize: 14, fontWeight: '600' }}
-      text2Style={{ color: '#a0a0b0', fontSize: 12 }}
+// Bug #M3 fix: ThemedToast renders inside ThemeProvider so it can call useTheme().
+// Previously toastConfig was a static module-level object with hardcoded dark-mode colors
+// that never adapted to the user's light/dark preference.
+function ThemedToast() {
+  const { colors } = useTheme();
+
+  const toastConfig = useMemo(() => ({
+    success: (props: any) => (
+      <BaseToast
+        {...props}
+        style={{ borderLeftColor: colors.success, backgroundColor: colors.card, borderRadius: 12, marginTop: 8 }}
+        contentContainerStyle={{ paddingHorizontal: 15 }}
+        text1Style={{ color: colors.text, fontSize: 14, fontWeight: '600' }}
+        text2Style={{ color: colors.subtext, fontSize: 12 }}
+      />
+    ),
+    error: (props: any) => (
+      <ErrorToast
+        {...props}
+        style={{ borderLeftColor: colors.error, backgroundColor: colors.card, borderRadius: 12, marginTop: 8 }}
+        contentContainerStyle={{ paddingHorizontal: 15 }}
+        text1Style={{ color: colors.text, fontSize: 14, fontWeight: '600' }}
+        text2Style={{ color: colors.subtext, fontSize: 12 }}
+      />
+    ),
+    info: (props: any) => (
+      <InfoToast
+        {...props}
+        style={{ borderLeftColor: colors.info, backgroundColor: colors.card, borderRadius: 12, marginTop: 8 }}
+        contentContainerStyle={{ paddingHorizontal: 15 }}
+        text1Style={{ color: colors.text, fontSize: 14, fontWeight: '600' }}
+        text2Style={{ color: colors.subtext, fontSize: 12 }}
+      />
+    ),
+  }), [colors]);
+
+  return (
+    <Toast
+      config={toastConfig}
+      autoHide
+      visibilityTime={3000}
+      swipeable={false}
+      onPress={() => Toast.hide()}
     />
-  ),
-  error: (props: any) => (
-    <ErrorToast
-      {...props}
-      style={{ borderLeftColor: '#ef4444', backgroundColor: '#1e1e2e', borderRadius: 12, marginTop: 8 }}
-      contentContainerStyle={{ paddingHorizontal: 15 }}
-      text1Style={{ color: '#ffffff', fontSize: 14, fontWeight: '600' }}
-      text2Style={{ color: '#a0a0b0', fontSize: 12 }}
-    />
-  ),
-  info: (props: any) => (
-    <InfoToast
-      {...props}
-      style={{ borderLeftColor: '#6366f1', backgroundColor: '#1e1e2e', borderRadius: 12, marginTop: 8 }}
-      contentContainerStyle={{ paddingHorizontal: 15 }}
-      text1Style={{ color: '#ffffff', fontSize: 14, fontWeight: '600' }}
-      text2Style={{ color: '#a0a0b0', fontSize: 12 }}
-    />
-  ),
-};
+  );
+}
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -177,10 +199,14 @@ function App() {
   const prefetchedUserIdRef = useRef<string | null>(null);
   const verifyOfflineSessionRef = useRef<((nextSession: Session) => Promise<boolean>) | null>(null);
   const networkReconnectInFlightRef = useRef(false);
+  // Bug #6 fix: rapid network bounce pe multiple syncs rokne ke liye debounce ref
+  const reconnectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Configure Google Sign-In once on app start
   useEffect(() => {
     configureGoogleSignIn();
+    // Bug #9 fix: pichle session mein geofence clear fail hua tha toh retry karo
+    handlePendingGeofenceClear();
   }, []);
 
   // Initialize native background helpers on app start
@@ -222,58 +248,70 @@ function App() {
 
     const unsubscribe = NetInfo.addEventListener(state => {
       if (!state.isConnected) {
+        // Disconnect pe pending debounce cancel karo aur flag reset karo
+        if (reconnectDebounceRef.current) {
+          clearTimeout(reconnectDebounceRef.current);
+          reconnectDebounceRef.current = null;
+        }
         networkReconnectInFlightRef.current = false;
         return;
       }
 
-      if (networkReconnectInFlightRef.current) return;
-      networkReconnectInFlightRef.current = true;
+      // Bug #6 fix: debounce add kiya — Android pe network events rapidly fire karte hain
+      // jo multiple simultaneous syncs cause karte the; 1.5s wait se bounce filter hota hai
+      if (reconnectDebounceRef.current) {
+        clearTimeout(reconnectDebounceRef.current);
+      }
 
-      if (authBootstrapState.status === 'authenticated_offline_unverified') {
-        const verifyOfflineSession = verifyOfflineSessionRef.current;
-        if (!verifyOfflineSession) {
-          networkReconnectInFlightRef.current = false;
-          return;
-        }
+      reconnectDebounceRef.current = setTimeout(async () => {
+        reconnectDebounceRef.current = null;
 
-        verifyOfflineSession(session)
-          .then(async verified => {
-            if (!verified) {
-              networkReconnectInFlightRef.current = false;
-              return false;
-            }
+        if (networkReconnectInFlightRef.current) return;
+        networkReconnectInFlightRef.current = true;
+
+        try {
+          if (authBootstrapState.status === 'authenticated_offline_unverified') {
+            const verifyOfflineSession = verifyOfflineSessionRef.current;
+            if (!verifyOfflineSession) return;
+
+            const verified = await verifyOfflineSession(session);
+            if (!verified) return;
+
             await syncOfflineTransactions();
-            return true;
-          })
-          .then(synced => {
-            if (synced && __DEV__) console.log('✅ [OfflineSync] Network reconnect verified and synced');
-          })
-          .catch(e => {
-            if (__DEV__) console.error('❌ [OfflineSync] Network reconnect verification error:', e);
-            networkReconnectInFlightRef.current = false;
-          });
-        return;
-      }
+            if (__DEV__) console.log('✅ [OfflineSync] Network reconnect verified and synced');
 
-      if (authBootstrapState.status === 'authenticated_online') {
-        syncOfflineTransactions()
-          .then(() => {
+          } else if (authBootstrapState.status === 'authenticated_online') {
+            await syncOfflineTransactions();
             if (__DEV__) console.log('✅ [OfflineSync] Network reconnect sync complete');
-          })
-          .catch(e => {
-            if (__DEV__) console.error('❌ [OfflineSync] Network reconnect sync error:', e);
-            networkReconnectInFlightRef.current = false;
-          });
-        return;
-      }
-
-      networkReconnectInFlightRef.current = false;
+          }
+        } catch (e) {
+          if (__DEV__) console.error('❌ [OfflineSync] Network reconnect error:', e);
+        } finally {
+          // Bug #6 fix: pehle flag multiple scattered paths mein reset hota tha — race condition
+          // finally guarantee karta hai ki flag hamesha reset hoga (success/error/early return sabme)
+          networkReconnectInFlightRef.current = false;
+        }
+      }, 1500);
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribe();
+      // Cleanup: component unmount ya dependency change pe pending debounce cancel karo
+      if (reconnectDebounceRef.current) {
+        clearTimeout(reconnectDebounceRef.current);
+        reconnectDebounceRef.current = null;
+      }
+    };
   }, [authBootstrapState.status, session]);
 
-  // Initialize foreground listener for notifee events
+  // Initialize foreground listener for notifee events.
+  // injectReminderDependencies must run before initializeForegroundListener so that
+  // snooze actions dispatched while the app is in the foreground have the deps available.
   useEffect(() => {
+    injectReminderDependencies({
+      scheduleTransactionReminder,
+      storeTransactionReminder,
+    });
     if (__DEV__) console.log('🚀 [App] Initializing foreground listener for notifications...');
     const unsubscribe = initializeForegroundListener();
     return () => {
@@ -374,7 +412,15 @@ function App() {
       if (routeRevision === undefined) {
         ++authRouteRevisionRef.current;
       }
-      await clearCache();
+      // Bug #H2 fix: clear only the departing user's cache (user-scoped clear).
+      // clearCache() clears ALL users' cache on a shared device; clearUserCache targets only
+      // the signed-out user. Falls back to clearCache() when no userId is known.
+      const departingUserId = await AsyncStorage.getItem('app_user_id').catch(() => null);
+      if (departingUserId) {
+        await clearUserCache(departingUserId);
+      } else {
+        await clearCache();
+      }
       await AsyncStorage.removeItem('app_user_id').catch(() => undefined);
       prefetchedUserIdRef.current = null;
       inFlightProfileCheckRef.current = null;
@@ -718,13 +764,7 @@ function App() {
               </Text>
             </View>
           )}
-          <Toast
-            config={toastConfig}
-            autoHide
-            visibilityTime={3000}
-            swipeable={false}
-            onPress={() => Toast.hide()}
-          />
+          <ThemedToast />
 
           {/* Render the global permission prompt only if user is fully authenticated and profile setup is done */}
           {introDone && authBootstrapState.status === 'authenticated_online' && profileStatus === 'complete' && <PermissionPrompt />}

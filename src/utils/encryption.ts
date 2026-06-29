@@ -13,6 +13,11 @@ import { supabase } from '../lib/core';
 const VAULT_TEXT_ENCRYPTION_PREFIX = 'vault:v1:';
 const VAULT_DATA_KEY_PREFIX = 'vault:data-key:v2:';
 
+// Version prefix written to every field value encrypted with the current random per-user key.
+// Legacy (PBKDF2) values have no prefix — they are plain 'iv:ciphertext'.
+// This distinction makes needsReEncryption() reliable and prevents infinite re-encryption loops.
+const VAULT_FIELD_CURRENT_PREFIX = 'vault:v2:';
+
 async function getAuthenticatedUserId(): Promise<string> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
@@ -40,14 +45,43 @@ async function getOrCreateVaultDataKey(): Promise<string> {
   return key;
 }
 
+// Bug #C3 fix: named constants for PBKDF2 iteration counts.
+// PBKDF2_ITERATIONS_LEGACY is FROZEN at 5 000 — DO NOT change it.
+// Existing vault rows were encrypted with exactly this count; bumping it makes them unreadable.
+// New data always uses the random per-user key from getOrCreateVaultDataKey() (no PBKDF2 needed).
+const PBKDF2_ITERATIONS_LEGACY = 5_000;
+
 // Legacy deterministic key retained only for decrypting rows encrypted before
 // per-user random vault data keys were introduced.
 async function getLegacyDerivedKey(): Promise<string> {
   const baseKey = await getAuthenticatedUserId();
-  
-  // Generate a 256-bit key using PBKDF2
-  const key = await Aes.pbkdf2(baseKey, 'vault-salt-v1', 5000, 256, 'sha256');
+  const key = await Aes.pbkdf2(baseKey, 'vault-salt-v1', PBKDF2_ITERATIONS_LEGACY, 256, 'sha256');
   return key;
+}
+
+/**
+ * Re-encrypt a plaintext value with the current random per-user key.
+ * Call this after a successful legacy-key decryption, then save the result
+ * back to Supabase so the field is no longer protected by the weak legacy key.
+ */
+export async function reEncryptFieldWithCurrentKey(plaintext: string): Promise<string> {
+  return encryptField(plaintext);
+}
+
+// Bug #7 fix: shared helper — split validate karo taaki undefined values AES mein na jaayen
+// Export nahi — sirf is file ke andar use hoti hai
+function parseEncryptedValue(encryptedValue: string): { iv: string; encrypted: string } {
+  const parts = encryptedValue.split(':');
+  if (parts.length !== 2) {
+    throw new Error(
+      `[Encryption] Invalid format: expected 'iv:ciphertext', got ${parts.length} parts`
+    );
+  }
+  const [iv, encrypted] = parts;
+  if (!iv || !encrypted) {
+    throw new Error('[Encryption] Invalid format: IV or ciphertext is empty');
+  }
+  return { iv, encrypted };
 }
 
 function summarizeCryptoError(error: unknown) {
@@ -68,19 +102,35 @@ function summarizeCryptoError(error: unknown) {
 }
 
 /**
- * Encrypt sensitive field value
+ * Check whether a field value needs re-encryption to the current key.
+ * Returns true for legacy 'iv:ciphertext' values (no version prefix).
+ * Returns false for already-migrated 'vault:v2:iv:ciphertext' values.
+ */
+export function needsReEncryption(value: string | null | undefined): boolean {
+  if (!value || !value.includes(':')) return false;
+  // vault:v1: is the notes/text prefix — handled separately by encryptVaultText
+  if (value.startsWith(VAULT_TEXT_ENCRYPTION_PREFIX)) return false;
+  // vault:v2: is the current field prefix — already on the strong key
+  if (value.startsWith(VAULT_FIELD_CURRENT_PREFIX)) return false;
+  // Anything else with ':' is legacy 'iv:ciphertext' — needs migration
+  return true;
+}
+
+/**
+ * Encrypt sensitive field value.
+ * Output format: 'vault:v2:iv:ciphertext' — the prefix distinguishes these values
+ * from legacy 'iv:ciphertext' (PBKDF2 5k-iter key) so needsReEncryption() is reliable.
  */
 export async function encryptField(value: string): Promise<string> {
   if (!value) return value;
-  
+
   try {
     const key = await getOrCreateVaultDataKey();
     const iv = await Aes.randomKey(16); // 128-bit IV for AES
-    
+
     const encrypted = await Aes.encrypt(value, key, iv, 'aes-256-cbc');
-    
-    // Store IV with encrypted data (IV:encrypted)
-    return `${iv}:${encrypted}`;
+
+    return `${VAULT_FIELD_CURRENT_PREFIX}${iv}:${encrypted}`;
   } catch (error) {
     console.error('Encryption error:', summarizeCryptoError(error));
     throw new Error('Failed to encrypt field');
@@ -88,32 +138,63 @@ export async function encryptField(value: string): Promise<string> {
 }
 
 /**
- * Decrypt sensitive field value
+ * Decrypt sensitive field value.
+ * Handles three formats:
+ *   'vault:v2:iv:ciphertext' — current random per-user key, no legacy fallback
+ *   'iv:ciphertext'          — legacy format (tries random key first, then PBKDF2 fallback)
+ *   'plaintext'              — unencrypted (backward compat)
  */
 export async function decryptField(encryptedValue: string): Promise<string> {
   if (!encryptedValue) return encryptedValue;
-  
+
+  // Current-key fast path: 'vault:v2:iv:ciphertext'
+  // No legacy fallback — this was definitely encrypted with the random per-user key.
+  if (encryptedValue.startsWith(VAULT_FIELD_CURRENT_PREFIX)) {
+    const raw = encryptedValue.slice(VAULT_FIELD_CURRENT_PREFIX.length);
+    const { iv, encrypted } = parseEncryptedValue(raw);
+    const key = await getOrCreateVaultDataKey();
+    return await Aes.decrypt(encrypted, key, iv, 'aes-256-cbc');
+  }
+
   try {
-    // Check if value is encrypted (contains IV separator)
+    // Not encrypted — backward compatibility ke liye as-is return karo
     if (!encryptedValue.includes(':')) {
-      // Not encrypted, return as-is (backward compatibility)
       return encryptedValue;
     }
-    
-    const [iv, encrypted] = encryptedValue.split(':');
+
+    // Bug #7 fix: pehle raw split hota tha bina validation — encrypted undefined hota agar format galat tha
+    const { iv, encrypted } = parseEncryptedValue(encryptedValue);
     const key = await getOrCreateVaultDataKey();
-    
-    const decrypted = await Aes.decrypt(encrypted, key, iv, 'aes-256-cbc');
-    return decrypted;
-  } catch {
+    return await Aes.decrypt(encrypted, key, iv, 'aes-256-cbc');
+
+  } catch (primaryError) {
+    console.warn('[Encryption] Primary key decryption failed, trying legacy key:', {
+      error: primaryError instanceof Error ? primaryError.message : String(primaryError),
+    });
+
     try {
-      const [iv, encrypted] = encryptedValue.split(':');
+      // Bug #7 fix (legacy path): same validated helper — duplicate raw split hata diya
+      const { iv, encrypted } = parseEncryptedValue(encryptedValue);
       const legacyKey = await getLegacyDerivedKey();
-      return await Aes.decrypt(encrypted, legacyKey, iv, 'aes-256-cbc');
+      const legacyDecrypted = await Aes.decrypt(encrypted, legacyKey, iv, 'aes-256-cbc');
+
+      // Bug #C3 fix: console.log → console.warn (visible in production monitoring)
+      // Fire-and-forget: caller should call reEncryptFieldWithCurrentKey(result) and save
+      // the new encrypted value so this field is no longer protected by the weak legacy key.
+      console.warn('[Encryption] Legacy key decryption succeeded — field should be re-encrypted', {
+        hint: 'Call reEncryptFieldWithCurrentKey(plaintext) and persist the result to Supabase.',
+      });
+      return legacyDecrypted;
+
     } catch (legacyError) {
-      console.error('Decryption error:', summarizeCryptoError(legacyError));
-      // Return masked value on error to prevent data loss
-      return '••••••••';
+      // Bug #8 fix: pehle '••••••••' silently return hota tha — user ko pata nahi chalta data corrupt tha
+      // Financial app mein masked value = silent data corruption = serious trust issue
+      console.error('[Encryption] Both primary and legacy decryption failed:', {
+        primaryError: primaryError instanceof Error ? primaryError.message : String(primaryError),
+        legacyError: legacyError instanceof Error ? legacyError.message : String(legacyError),
+        hint: summarizeCryptoError(legacyError),
+      });
+      throw new Error('[Encryption] Decryption failed: data may be corrupted or key mismatch');
     }
   }
 }

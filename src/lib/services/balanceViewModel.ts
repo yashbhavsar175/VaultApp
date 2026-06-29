@@ -815,7 +815,7 @@ export async function getBankAccountDetailView(accountId: string): Promise<BankA
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('bank_accounts')
-    .select('*')
+    .select('id, user_id, bank_name, account_last4, balance, starting_balance, account_type, credit_limit, loan_total, monthly_emi_amount, upi_ids, is_archived, archived_at, created_at')
     .eq('user_id', userId)
     .eq('id', accountId)
     .single();
@@ -844,7 +844,7 @@ export async function getCreditCardDetailView(creditCardId: string): Promise<Cre
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('credit_cards')
-    .select('*')
+    .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, is_archived, archived_at, created_at, updated_at')
     .eq('user_id', userId)
     .eq('id', creditCardId)
     .single();
@@ -869,7 +869,7 @@ export async function getAccountBalanceViewModels(): Promise<BankAccountBalanceV
   const userId = await getCurrentUserId();
   const { data: accounts, error } = await supabase
     .from('bank_accounts')
-    .select('*')
+    .select('id, user_id, bank_name, account_last4, account_type, starting_balance, balance, credit_limit, loan_total, monthly_emi_amount, upi_ids, is_archived, archived_at, created_at')
     .eq('user_id', userId)
     .eq('is_archived', false)
     .order('created_at', { ascending: true });
@@ -878,7 +878,8 @@ export async function getAccountBalanceViewModels(): Promise<BankAccountBalanceV
     warnArchiveFallbackOnce('bank_accounts', error);
     const { data: fallbackAccounts, error: fallbackError } = await supabase
       .from('bank_accounts')
-      .select('*')
+      // is_archived and archived_at excluded — this fallback fires when those columns don't exist yet
+      .select('id, user_id, bank_name, account_last4, account_type, starting_balance, balance, credit_limit, loan_total, monthly_emi_amount, upi_ids, created_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: true });
     if (fallbackError) throw fallbackError;
@@ -916,7 +917,7 @@ export async function getCreditCardBalanceViewModels(): Promise<CreditCardBalanc
   const userId = await getCurrentUserId();
   const { data: cards, error } = await supabase
     .from('credit_cards')
-    .select('*')
+    .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, is_archived, archived_at, created_at, updated_at')
     .eq('user_id', userId)
     .eq('is_archived', false)
     .order('created_at', { ascending: false });
@@ -925,7 +926,8 @@ export async function getCreditCardBalanceViewModels(): Promise<CreditCardBalanc
     warnArchiveFallbackOnce('credit_cards', error);
     const { data: fallbackCards, error: fallbackError } = await supabase
       .from('credit_cards')
-      .select('*')
+      // is_archived and archived_at excluded — this fallback fires when those columns don't exist yet
+      .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, created_at, updated_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     if (fallbackError) throw fallbackError;

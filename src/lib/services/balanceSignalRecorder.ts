@@ -255,7 +255,7 @@ async function findExistingDetectedCandidate(
 
   let query = supabase
     .from('detected_accounts')
-    .select('*')
+    .select('id, user_id, detection_type, detected_bank_name, account_last4, card_last4, account_type_hint, balance_amount, balance_kind, source, confidence, status, matched_owner_type, matched_owner_id, source_sender_or_package, raw_source_metadata, first_seen_at, last_seen_at, created_at, updated_at')
     .eq('user_id', userId)
     .eq('status', 'pending')
     .eq('detection_type', detectionType);
@@ -352,7 +352,7 @@ async function findRecentSimilarSnapshot(
 ): Promise<BalanceSnapshot | null> {
   let query = supabase
     .from('balance_snapshots')
-    .select('*')
+    .select('id, user_id, owner_type, owner_id, detected_bank_name, account_last4, card_last4, balance_kind, amount, currency, source, confidence, detected_at, source_sender_or_package, raw_source_metadata, note, created_at')
     .eq('user_id', userId)
     .eq('owner_type', ownerType)
     .eq('balance_kind', balance.balanceKind)
@@ -428,9 +428,10 @@ async function createOrUpdateDetectedDebitCard(
   const cardLast4 = normalizeLast4(parsed.debitCardLast4);
   if (!cardLast4) return null;
 
+  // Only existing?.id is accessed — narrow to the single field actually needed.
   const { data: existing, error: selectError } = await supabase
     .from('debit_cards')
-    .select('*')
+    .select('id')
     .eq('user_id', userId)
     .eq('bank_account_id', bankAccountId)
     .eq('card_last4', cardLast4)
@@ -485,7 +486,7 @@ async function findExistingCreditCardStatement(
 ): Promise<CreditCardStatement | null> {
   let query = supabase
     .from('credit_card_statements')
-    .select('*')
+    .select('id, user_id, credit_card_id, statement_date, period_start, period_end, total_due, minimum_due, payment_due_date, statement_balance, source_snapshot_id, status, source, confidence, raw_source_metadata, created_at, updated_at')
     .eq('user_id', userId)
     .eq('credit_card_id', creditCardId)
     .eq('raw_source_metadata->>hash', parsed.redactedSource.hash);
@@ -757,7 +758,7 @@ async function findExistingEstimatedMovementSnapshot(
 
   const { data, error } = await supabase
     .from('balance_snapshots')
-    .select('*')
+    .select('id, user_id, owner_type, owner_id, detected_bank_name, account_last4, card_last4, balance_kind, amount, currency, source, confidence, detected_at, source_sender_or_package, raw_source_metadata, note, created_at')
     .eq('user_id', userId)
     .eq('owner_type', 'bank_account')
     .eq('owner_id', bankAccountId)

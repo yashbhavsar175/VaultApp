@@ -18,6 +18,7 @@ import notifee, {
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
 import NetInfo from '@react-native-community/netinfo';
 import { deleteTransaction, supabase } from '../core';
+import { safeErrorCode } from '../../utils/errorUtils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { enqueueSms } from '../processors/TransactionQueue';
 import { parseSMS, ParsedTransaction } from './smsParser';
@@ -37,6 +38,26 @@ import {
   logUserQueueAction,
 } from './userScopedQueues';
 import { getAndroidNotificationBase } from './androidNotificationConfig';
+import type {
+  ScheduleTransactionReminderFn,
+  StoreTransactionReminderFn,
+} from '../../types/reminders';
+
+// ─── Reminder dependency injection ────────────────────────────────────────────
+// Replaces the circular require() calls in handleMeetupReminderEvent.
+// Foreground path: call injectReminderDependencies() in App.tsx before
+// initializeForegroundListener().
+// Background path: deps are passed explicitly via dynamic import in onBackgroundEvent.
+let _scheduleTransactionReminder: ScheduleTransactionReminderFn | null = null;
+let _storeTransactionReminder: StoreTransactionReminderFn | null = null;
+
+export function injectReminderDependencies(deps: {
+  scheduleTransactionReminder: ScheduleTransactionReminderFn;
+  storeTransactionReminder: StoreTransactionReminderFn;
+}): void {
+  _scheduleTransactionReminder = deps.scheduleTransactionReminder;
+  _storeTransactionReminder = deps.storeTransactionReminder;
+}
 
 export function summarizeParsedSmsForLog(parsed: ParsedTransaction) {
   return {
@@ -90,16 +111,10 @@ const MAX_DEBUG_BUG_REPORTS = 50;
 const DEBUG_BUG_REPORT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const CONFIRMATION_DEBOUNCE_TTL_MS = 5 * 60 * 1000;
 const CONFIRMATION_DEBOUNCE_CLEANUP_MS = 60 * 1000;
+// Bug #10 fix: hard cap — volume spike pe bhi map 500 se zyada entries nahi rakhega
+const CONFIRMATION_DEBOUNCE_MAX_SIZE = 500;
 
-function safeErrorCode(error: unknown): string {
-  if (!error || typeof error !== 'object') return 'unknown_error';
-  const code = (error as { code?: unknown; name?: unknown; status?: unknown }).code
-    || (error as { name?: unknown }).name
-    || (error as { status?: unknown }).status;
-  return typeof code === 'string' || typeof code === 'number'
-    ? String(code).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || 'unknown_error'
-    : 'unknown_error';
-}
+// Bug #12 fix: local safeErrorCode hata di — ab errorUtils.ts se import hoti hai
 
 function suffixId(value?: string | null): string | undefined {
   const safe = value?.replace(/[^A-Za-z0-9_-]/g, '');
@@ -334,11 +349,28 @@ const confirmationDebounceMap = new Map<string, {
 }>();
 
 function clearStaleConfirmationDebounces(now = Date.now()): void {
+  // Age-based cleanup — TTL se purane entries hatao
   confirmationDebounceMap.forEach((entry, transactionId) => {
     if (now - entry.createdAt <= CONFIRMATION_DEBOUNCE_TTL_MS) return;
     clearTimeout(entry.timeoutId);
     confirmationDebounceMap.delete(transactionId);
   });
+
+  // Bug #10 fix: hard size cap — age cleanup ke baad bhi map bada ho toh oldest entries hatao
+  if (confirmationDebounceMap.size > CONFIRMATION_DEBOUNCE_MAX_SIZE) {
+    const excess = confirmationDebounceMap.size - CONFIRMATION_DEBOUNCE_MAX_SIZE;
+    const sortedByAge = Array.from(confirmationDebounceMap.entries())
+      .sort((a, b) => a[1].createdAt - b[1].createdAt);
+    for (let i = 0; i < excess; i++) {
+      const [key, entry] = sortedByAge[i];
+      clearTimeout(entry.timeoutId);
+      confirmationDebounceMap.delete(key);
+    }
+    console.log('[Notifications] Confirmation debounce map size cap applied', {
+      removed: excess,
+      remaining: confirmationDebounceMap.size,
+    });
+  }
 }
 
 export async function showTransactionConfirmation(
@@ -770,9 +802,30 @@ export async function handleTransactionNotificationEvent(
       try {
         const updates = classificationUpdatesForAction(pressAction!.id);
         if (typeof transactionId === 'string' && updates) {
-          // Canonical "counted" mechanism — account_match_status drives dashboard totals
-          // (the old is_ignored field was never read, so overrides had no effect).
-          await supabase.from('transactions').update(updates).eq('id', transactionId);
+          // Bug #C2 fix: user_id filter added — defense-in-depth ownership check at app layer.
+          // supabase.auth.getUser() performs a server-side token validation (not just local cache).
+          const { data: { user }, error: authError } = await supabase.auth.getUser();
+          if (authError || !user) {
+            console.error('[Notifications] Cannot update transaction — auth check failed:', {
+              hasAuthError: Boolean(authError),
+              errorCode: safeErrorCode(authError),
+            });
+            return;
+          }
+
+          const { error: updateError } = await supabase
+            .from('transactions')
+            .update(updates)
+            .eq('id', transactionId)
+            .eq('user_id', user.id); // ✅ Ownership enforced at app layer + RLS
+
+          if (updateError) {
+            console.error('[Notifications] Transaction classification update failed:', {
+              errorCode: safeErrorCode(updateError),
+            });
+            return;
+          }
+
           await updateCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS, current =>
             current
               ? current.map(tx => (tx.id === transactionId ? { ...tx, ...updates } as Transaction : tx))
@@ -787,7 +840,9 @@ export async function handleTransactionNotificationEvent(
         if (notification?.id) await notifee.cancelNotification(notification.id);
         logInfo('Transaction classification overridden via notification');
       } catch (error) {
-        if (__DEV__) console.error('Error overriding transaction:', error);
+        if (__DEV__) console.error('Error overriding transaction:', {
+          errorCode: safeErrorCode(error),
+        });
       }
     }
   }
@@ -817,7 +872,16 @@ export async function onBackgroundEvent(event: SafeNotifeeEvent | NotifeeEvent) 
       await handleTransactionNotificationEvent(event);
       return;
     } else if (action === 'transaction_reminder_meetup') {
-      await handleMeetupReminderEvent(event);
+      // Background context: App.tsx is not mounted so injectReminderDependencies was never
+      // called. Dynamic imports resolve at call-time, breaking the circular dep at runtime.
+      const [{ scheduleTransactionReminder }, { storeTransactionReminder }] = await Promise.all([
+        import('./scheduledNotifications'),
+        import('../../components/modals/TransactionReminderModal'),
+      ]);
+      await handleMeetupReminderEvent(event, {
+        scheduleTransactionReminder,
+        storeTransactionReminder,
+      });
       return;
     }
   }
@@ -827,15 +891,34 @@ export async function onBackgroundEvent(event: SafeNotifeeEvent | NotifeeEvent) 
   }
 }
 
+// Bug #10 fix: module-level — double-start guard ke liye; local const se har call pe naya interval banta tha
+let _confirmationCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+function startConfirmationDebounceCleanup(): void {
+  if (_confirmationCleanupInterval) return;
+  _confirmationCleanupInterval = setInterval(
+    clearStaleConfirmationDebounces,
+    CONFIRMATION_DEBOUNCE_CLEANUP_MS
+  );
+}
+
+function stopConfirmationDebounceCleanup(): void {
+  if (_confirmationCleanupInterval) {
+    clearInterval(_confirmationCleanupInterval);
+    _confirmationCleanupInterval = null;
+  }
+  // Saare pending timeouts cancel karo aur map clear karo — no leak on unmount
+  confirmationDebounceMap.forEach(entry => clearTimeout(entry.timeoutId));
+  confirmationDebounceMap.clear();
+}
+
 /**
  * Initialize foreground listeners for notifee
  * Call this inside a useEffect in the main App component
  */
 export function initializeForegroundListener() {
-  const cleanupInterval = setInterval(
-    clearStaleConfirmationDebounces,
-    CONFIRMATION_DEBOUNCE_CLEANUP_MS
-  );
+  startConfirmationDebounceCleanup();
+
   const unsubscribe = notifee.onForegroundEvent(async (event) => {
     const { type, detail } = event;
     logInfo('[Foreground] Notifee event received:', type);
@@ -851,15 +934,25 @@ export function initializeForegroundListener() {
   });
 
   return () => {
-    clearInterval(cleanupInterval);
+    stopConfirmationDebounceCleanup();
     unsubscribe();
   };
 }
 
-async function handleMeetupReminderEvent(event: SafeNotifeeEvent | NotifeeEvent) {
+async function handleMeetupReminderEvent(
+  event: SafeNotifeeEvent | NotifeeEvent,
+  deps?: {
+    scheduleTransactionReminder?: ScheduleTransactionReminderFn;
+    storeTransactionReminder?: StoreTransactionReminderFn;
+  }
+): Promise<void> {
+  // Foreground path uses module-level injected deps; background path passes them explicitly.
+  const schedule = deps?.scheduleTransactionReminder ?? _scheduleTransactionReminder;
+  const store = deps?.storeTransactionReminder ?? _storeTransactionReminder;
+
   const { type, detail } = event;
   const actionId = detail?.pressAction?.id;
-  
+
   if (type === EventType.ACTION_PRESS && actionId?.startsWith('snooze_')) {
     if (!detail) return;
 
@@ -867,35 +960,31 @@ async function handleMeetupReminderEvent(event: SafeNotifeeEvent | NotifeeEvent)
     const txId = data?.transactionId as string;
     const amount = Number(data?.amount);
     const note = data?.note as string;
-    
+
     if (txId && !isNaN(amount) && note) {
+      if (!schedule || !store) {
+        console.warn('[Notifications] Reminder deps unavailable — snooze skipped');
+        return;
+      }
+
       if (__DEV__) console.log('[Meetup Reminder] Snoozing action triggered:', actionId);
-      
-      // Cancel the original notification
+
       if (detail.notification?.id) {
         await notifee.cancelNotification(detail.notification.id);
       }
-      
-      // Calculate new time
+
       const newTime = new Date();
       if (actionId === 'snooze_10m') {
         newTime.setMinutes(newTime.getMinutes() + 10);
       } else if (actionId === 'snooze_30m') {
         newTime.setMinutes(newTime.getMinutes() + 30);
-      } else if (actionId === 'snooze_1h') {
-        newTime.setHours(newTime.getHours() + 1);
       } else {
-        // Fallback to 1 hour
+        // snooze_1h or any unknown value → 1 hour fallback
         newTime.setHours(newTime.getHours() + 1);
       }
-      
-      // Schedule new reminder
-      const { scheduleTransactionReminder } = require('./scheduledNotifications');
-      await scheduleTransactionReminder(txId, amount, note, newTime);
-      
-      // Update local storage so the modal shows the correct time if opened
-      const { storeTransactionReminder } = require('../../components/modals/TransactionReminderModal');
-      await storeTransactionReminder({
+
+      await schedule(txId, amount, note, newTime);
+      await store({
         transactionId: txId,
         scheduledAt: newTime.toISOString(),
         note,

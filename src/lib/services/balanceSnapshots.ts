@@ -338,7 +338,7 @@ export async function getLatestBalanceSnapshot(
   const userId = await getCurrentUserId();
   let query = supabase
     .from('balance_snapshots')
-    .select('*')
+    .select('id, user_id, owner_type, owner_id, detected_bank_name, account_last4, card_last4, balance_kind, amount, currency, source, confidence, detected_at, source_sender_or_package, raw_source_metadata, note, created_at')
     .eq('user_id', userId)
     .eq('owner_type', ownerType)
     .eq('balance_kind', balanceKind);
@@ -363,7 +363,7 @@ export async function getBalanceHistory(
   const userId = await getCurrentUserId();
   let query = supabase
     .from('balance_snapshots')
-    .select('*')
+    .select('id, user_id, owner_type, owner_id, detected_bank_name, account_last4, card_last4, balance_kind, amount, currency, source, confidence, detected_at, source_sender_or_package, raw_source_metadata, note, created_at')
     .eq('user_id', userId)
     .eq('owner_type', ownerType)
     .eq('balance_kind', balanceKind);

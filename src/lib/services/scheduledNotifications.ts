@@ -17,6 +17,7 @@ import { PeopleLedger } from '../../types';
 import { isOverdue, isDueToday, getDaysUntilDue } from '../database/userdata';
 import { CreditCard, getCCDaysUntilDue } from '../database/financial';
 import { getAndroidNotificationBase } from './androidNotificationConfig';
+import { safeErrorCode } from '../../utils/errorUtils';
 
 const CHANNELS = {
   PEOPLE_LEDGER: 'people-ledger',
@@ -75,15 +76,7 @@ async function ensureAllChannels(): Promise<void> {
 
 // ─── Shared Helpers ─────────────────────────────────────────────────────────────
 
-function safeErrorCode(error: unknown): string {
-  if (!error || typeof error !== 'object') return 'unknown_error';
-  const code = (error as { code?: unknown; name?: unknown; status?: unknown }).code
-    || (error as { name?: unknown }).name
-    || (error as { status?: unknown }).status;
-  return typeof code === 'string' || typeof code === 'number'
-    ? String(code).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || 'unknown_error'
-    : 'unknown_error';
-}
+// Bug #12 fix: local safeErrorCode hata di — ab errorUtils.ts se import hoti hai
 
 function suffixId(value?: string | null): string {
   const safe = value?.replace(/[^A-Za-z0-9_-]/g, '');

@@ -76,8 +76,7 @@ export async function getBankAccounts(options: ArchiveListOptions = {}): Promise
 
     let query = supabase
       .from('bank_accounts')
-      // TODO: narrow columns.
-      .select('*')
+      .select('id, user_id, bank_name, account_last4, account_type, starting_balance, balance, credit_limit, loan_total, monthly_emi_amount, upi_ids, is_archived, archived_at, created_at')
       .eq('user_id', user.id);
 
     if (options.archivedOnly) {
@@ -93,8 +92,8 @@ export async function getBankAccounts(options: ArchiveListOptions = {}): Promise
       warnArchiveFallbackOnce('bank_accounts', error);
       const { data: fallbackData, error: fallbackError } = await supabase
         .from('bank_accounts')
-        // TODO: narrow columns.
-        .select('*')
+        // is_archived and archived_at excluded — this fallback fires when those columns don't exist yet
+        .select('id, user_id, bank_name, account_last4, account_type, starting_balance, balance, credit_limit, loan_total, monthly_emi_amount, upi_ids, created_at')
         .eq('user_id', user.id)
         .order('created_at', { ascending: true });
       if (fallbackError) throw fallbackError;
@@ -298,8 +297,7 @@ export async function getCreditCards(options: ArchiveListOptions = {}): Promise<
 
   let query = supabase
     .from('credit_cards')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, is_archived, archived_at, created_at, updated_at')
     .eq('user_id', userData.user.id);
 
   if (options.archivedOnly) {
@@ -315,8 +313,8 @@ export async function getCreditCards(options: ArchiveListOptions = {}): Promise<
     warnArchiveFallbackOnce('credit_cards', error);
     const { data: fallbackData, error: fallbackError } = await supabase
       .from('credit_cards')
-      // TODO: narrow columns.
-      .select('*')
+      // is_archived and archived_at excluded — this fallback fires when those columns don't exist yet
+      .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, created_at, updated_at')
       .eq('user_id', userData.user.id)
       .order('created_at', { ascending: false });
     if (fallbackError) throw fallbackError;
@@ -339,8 +337,7 @@ export async function getCreditCard(cardId: string): Promise<CreditCard | null> 
 
   const { data, error } = await supabase
     .from('credit_cards')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, is_archived, archived_at, created_at, updated_at')
     .eq('id', cardId)
     .eq('user_id', userData.user.id)
     .single();
@@ -438,8 +435,7 @@ export async function getCardTransactions(cardId: string): Promise<CCTransaction
 
   const { data, error } = await supabase
     .from('cc_transactions')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, card_id, amount, description, category, transaction_date, type, created_at')
     .eq('card_id', cardId)
     .eq('user_id', userData.user.id)
     .order('transaction_date', { ascending: false });
@@ -529,8 +525,7 @@ export async function findCardByLast4Digits(last4: string): Promise<CreditCard |
 
   const { data, error } = await supabase
     .from('credit_cards')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, bank_name, card_name, last_4_digits, credit_limit, current_outstanding, due_date, billing_cycle_date, is_archived, archived_at, created_at, updated_at')
     .eq('user_id', userData.user.id)
     .eq('last_4_digits', last4)
     .single();
@@ -634,8 +629,7 @@ export async function getLoans(): Promise<Loan[]> {
 
   const { data, error } = await supabase
     .from('loans')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, loan_name, lender_name, principal_amount, current_outstanding, emi_amount, emi_due_date, interest_rate, tenure_months, start_date, loan_type, created_at, updated_at')
     .eq('user_id', userData.user.id)
     .order('created_at', { ascending: false });
 
@@ -655,8 +649,7 @@ export async function getLoan(loanId: string): Promise<Loan | null> {
 
   const { data, error } = await supabase
     .from('loans')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, loan_name, lender_name, principal_amount, current_outstanding, emi_amount, emi_due_date, interest_rate, tenure_months, start_date, loan_type, created_at, updated_at')
     .eq('id', loanId)
     .eq('user_id', userData.user.id)
     .single();
@@ -752,8 +745,7 @@ export async function getEMIPayments(loanId: string): Promise<EMIPayment[]> {
 
   const { data, error } = await supabase
     .from('emi_payments')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, loan_id, user_id, amount_paid, payment_date, principal_component, interest_component, reference_number, created_at')
     .eq('loan_id', loanId)
     .eq('user_id', userData.user.id)
     .order('payment_date', { ascending: false });
@@ -906,8 +898,7 @@ export async function findLoanByLender(lenderName: string): Promise<Loan | null>
 
   const { data, error } = await supabase
     .from('loans')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, loan_name, lender_name, principal_amount, current_outstanding, emi_amount, emi_due_date, interest_rate, tenure_months, start_date, loan_type, created_at, updated_at')
     .eq('user_id', userData.user.id)
     .ilike('lender_name', `%${lenderName}%`)
     .single();

@@ -41,18 +41,18 @@ export async function withUserScopedQueueLock<T>(
   }
 }
 
+// Bug #14 fix: check trimmed value karta tha but raw return karta tha — whitespace ID mismatch cause karta tha
+function normalizeId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function getQueueOwnerId(entry: unknown): string | null {
   if (!entry || typeof entry !== 'object') return null;
 
   const record = entry as { queueOwnerId?: unknown; user_id?: unknown };
-  if (typeof record.queueOwnerId === 'string' && record.queueOwnerId.trim()) {
-    return record.queueOwnerId;
-  }
-  if (typeof record.user_id === 'string' && record.user_id.trim()) {
-    return record.user_id;
-  }
-
-  return null;
+  return normalizeId(record.queueOwnerId) ?? normalizeId(record.user_id) ?? null;
 }
 
 export function withQueueOwner<T extends object>(
@@ -85,12 +85,36 @@ function getArrayCount(raw: string | null): number {
   }
 }
 
+const MAX_QUARANTINE_KEYS = 3;
+
 export async function quarantineLegacyQueue(baseKey: string): Promise<void> {
   const raw = await AsyncStorage.getItem(baseKey);
   if (!raw) return;
 
+  const quarantinePrefix = `${baseKey}:legacy_quarantine:`;
+
+  // Bug #H3 fix: purge old quarantine entries before adding a new one.
+  // Previously these accumulated forever; AsyncStorage size limits could cause silent write failures.
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const existingKeys = allKeys
+      .filter(k => k.startsWith(quarantinePrefix))
+      .sort(); // timestamp-suffixed keys sort chronologically
+
+    // Keep at most MAX_QUARANTINE_KEYS - 1 so the new entry fits within the cap.
+    const keysToRemove = existingKeys.slice(
+      0,
+      Math.max(0, existingKeys.length - (MAX_QUARANTINE_KEYS - 1))
+    );
+    if (keysToRemove.length > 0) {
+      await AsyncStorage.multiRemove(keysToRemove);
+    }
+  } catch {
+    // GC is best-effort — proceed with the quarantine write regardless.
+  }
+
   const count = getArrayCount(raw);
-  await AsyncStorage.setItem(`${baseKey}:legacy_quarantine:${Date.now()}`, raw);
+  await AsyncStorage.setItem(`${quarantinePrefix}${Date.now()}`, raw);
   await AsyncStorage.removeItem(baseKey);
   logUserQueueAction(baseKey, USER_QUEUE_ACTIONS.quarantined, count);
 }

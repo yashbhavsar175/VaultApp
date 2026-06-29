@@ -288,6 +288,39 @@ function dashboardStatus(transaction: Transaction): string {
   return `Counted as ${getTransactionTypeLabel(transaction.type).toLowerCase()}`;
 }
 
+const EVIDENCE_CONFIDENCE_RANK: Record<string, number> = {
+  exact: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+/**
+ * True when an evidence row was captured from the same source that actually
+ * created this transaction (tracked on the transaction via sms_sender/sms_source).
+ * The same payment is often reported by several apps, so we anchor the primary
+ * evidence to the creating source to keep the Source Trace stable.
+ */
+function evidenceMatchesTransactionSource(
+  transaction: Transaction,
+  evidence: TransactionEvidence
+): boolean {
+  const txSender = transaction.sms_sender?.trim().toLowerCase();
+  if (txSender) {
+    if (evidence.source_package?.trim().toLowerCase() === txSender) return true;
+    if (evidence.sender?.trim().toLowerCase() === txSender) return true;
+  }
+
+  const txSource = transaction.sms_source?.toLowerCase();
+  const evidenceSource = evidence.source_type;
+  if (txSource && evidenceSource) {
+    if (evidenceSource === 'sms' && (txSource === 'sms' || txSource === 'bank')) return true;
+    if (evidenceSource === 'notification' && (txSource === 'notification' || txSource === 'upi')) return true;
+  }
+
+  return false;
+}
+
 function selectPrimaryEvidence(
   transaction: Transaction,
   evidenceRows: TransactionEvidence[]
@@ -296,7 +329,23 @@ function selectPrimaryEvidence(
     const primary = evidenceRows.find(row => row.id === transaction.primary_evidence_id);
     if (primary) return primary;
   }
-  return evidenceRows[0] || null;
+  if (evidenceRows.length === 0) return null;
+
+  // Deterministic pick so the Source Trace doesn't flicker between competing
+  // capture sources (Truecaller vs Super.money vs bank SMS, etc.). We prefer the
+  // source that created the transaction — which is what the cached first paint
+  // shows — then confidence, then the earliest capture as a stable tie-break.
+  return [...evidenceRows].sort((a, b) => {
+    const aMatch = evidenceMatchesTransactionSource(transaction, a) ? 1 : 0;
+    const bMatch = evidenceMatchesTransactionSource(transaction, b) ? 1 : 0;
+    if (aMatch !== bMatch) return bMatch - aMatch;
+
+    const aConfidence = EVIDENCE_CONFIDENCE_RANK[a.confidence_level || 'low'] ?? 0;
+    const bConfidence = EVIDENCE_CONFIDENCE_RANK[b.confidence_level || 'low'] ?? 0;
+    if (aConfidence !== bConfidence) return bConfidence - aConfidence;
+
+    return new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime();
+  })[0];
 }
 
 function getKnownSenderName(sender?: string | null): string | null {
@@ -339,14 +388,33 @@ function accountLabelForId(
   return formatOwnerLabel(account?.bank_name, account?.account_last4 || fallbackLast4);
 }
 
+/** Turn an Android package name (e.g. "com.truecaller") into a readable label ("Truecaller"). */
+function packageDisplayLabel(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !trimmed.includes('.')) return null; // only treat dotted package names
+  const IGNORE = new Set(['com', 'in', 'net', 'org', 'co', 'app', 'android', 'apps', 'user', 'mobile', 'banking']);
+  const parts = trimmed.split(/[._-]/).filter(part => part && !IGNORE.has(part.toLowerCase()));
+  if (parts.length === 0) return null;
+  return parts.map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ').slice(0, 64) || null;
+}
+
 function getSourceAppLabel(evidence?: TransactionEvidence | null, transaction?: Transaction | null): string | null {
   const explicit = safeDisplayText(evidence?.source_app, 64);
   if (explicit) return explicit;
 
   const packageName = safePackageName(evidence?.source_package);
-  if (packageName) return getKnownSenderName(packageName) || packageName;
+  if (packageName) return getKnownSenderName(packageName) || packageDisplayLabel(packageName) || packageName;
 
-  return getKnownSenderName(transaction?.sms_sender) || null;
+  // Phase-A fallback (before evidence loads): derive a stable label from the
+  // transaction's own creating source so the trace doesn't flip provider once
+  // evidence arrives. Only treat sms_sender as a package when it looks like one
+  // (dotted) — bank SMS senders like "VM-KOTAKD-S" must not become app labels.
+  const txSender = transaction?.sms_sender;
+  if (txSender) {
+    return getKnownSenderName(txSender) || packageDisplayLabel(txSender);
+  }
+
+  return null;
 }
 
 function getEntrySourceTrace(
@@ -477,7 +545,7 @@ export default function TransactionDetail({ route, navigation }: Props) {
 
       const { data, error } = await supabase
         .from('transactions')
-        .select('*')
+        .select('id, user_id, amount, type, note, category, created_at, account_id, account_last4, from_account_id, to_account_id, account_match_status, account_match_confidence, account_match_reason, primary_evidence_id, client_idempotency_key, reference_number, upi_id, sms_sender, sms_source, raw_sms, balance, is_transfer_pending, refund_of_transaction_id, account_match_owner_type, account_match_owner_id')
         .eq('id', transactionId)
         .eq('user_id', user.id)  // Must verify ownership
         .single();
@@ -1086,18 +1154,18 @@ export default function TransactionDetail({ route, navigation }: Props) {
             onPress={async () => {
               try {
                 const ids = await notifee.getTriggerNotificationIds();
-                console.log('📱 Pending alarms:', ids);
-                
+                if (__DEV__) console.log('📱 Pending alarms:', ids);
+
                 await notifee.displayNotification({
                   title: '🧪 TEST ALARM WORKS!',
                   body: `Found ${ids.length} pending. Your ID: tx-meetup-${transaction.id.slice(-8)}`,
-                  android: { 
+                  android: {
                     ...getAndroidNotificationBase('transaction-reminders'),
                     importance: AndroidImportance.HIGH,
                   }
                 });
                 Toast.show({type: 'success', text1: 'Test sent! Check sound'});
-              } catch(e) { console.log('Test failed:', e); }
+              } catch(e) { if (__DEV__) console.warn('Test alarm failed:', e); }
             }}
             variant="secondary"
             style={{ marginTop: spacing.md }}

@@ -151,7 +151,7 @@ export async function getCreditCardStatements(creditCardId: string): Promise<Cre
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('credit_card_statements')
-    .select('*')
+    .select('id, user_id, credit_card_id, statement_date, period_start, period_end, total_due, minimum_due, payment_due_date, statement_balance, source_snapshot_id, status, source, confidence, raw_source_metadata, created_at, updated_at')
     .eq('user_id', userId)
     .eq('credit_card_id', creditCardId)
     .order('payment_due_date', { ascending: false });

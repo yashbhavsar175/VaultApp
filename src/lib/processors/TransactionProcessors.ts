@@ -13,6 +13,7 @@ import {
   showSmsFailedNotification
 } from '../services/notifications';
 import { extractUpiIdFromText } from '../../utils/upi';
+import { safeErrorCode } from '../../utils/errorUtils';
 import { parseTransactionAmount, hasParsableAmount } from '../../utils/amountParsing';
 import {
   getTransactionDisplayName,
@@ -360,15 +361,29 @@ function normalizeNotificationPayload(taskData: any): {
   time?: number;
 } {
   if (typeof taskData?.notification === 'string') {
-    const parsed = JSON.parse(taskData.notification);
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(taskData.notification);
+    } catch {
+      // Bug #C1 fix: malformed payload (truncated system event, third-party bank app) —
+      // log and fall through to field-level extraction so the processor stays alive.
+      if (__DEV__) {
+        console.warn('[TransactionProcessor] Malformed notification JSON, falling through to field extraction:', {
+          rawLength: taskData.notification.length,
+          rawPreview: taskData.notification.slice(0, 100),
+        });
+      }
+    }
     return {
-      app: parsed.app || parsed.packageName || '',
-      title: parsed.title || '',
-      text: parsed.text || parsed.body || '',
-      bigText: parsed.bigText || parsed.titleBig || '',
-      summaryText: parsed.summaryText || '',
-      subText: parsed.subText || parsed.extraInfoText || '',
-      time: parsed.time || parsed.timestamp,
+      app: String(parsed.app || parsed.packageName || ''),
+      title: String(parsed.title || ''),
+      text: String(parsed.text || parsed.body || ''),
+      bigText: String(parsed.bigText || parsed.titleBig || ''),
+      summaryText: String(parsed.summaryText || ''),
+      subText: String(parsed.subText || parsed.extraInfoText || ''),
+      time: typeof parsed.time === 'number' ? parsed.time
+        : typeof parsed.timestamp === 'number' ? parsed.timestamp
+        : undefined,
     };
   }
 
@@ -429,15 +444,7 @@ function summarizeParsedTransactionForLog(parsed: ParsedTransaction) {
   };
 }
 
-function safeErrorCode(error: unknown): string {
-  if (!error || typeof error !== 'object') return 'unknown_error';
-  const value = (error as { code?: unknown; name?: unknown; status?: unknown }).code
-    || (error as { name?: unknown }).name
-    || (error as { status?: unknown }).status;
-  return typeof value === 'string' || typeof value === 'number'
-    ? String(value).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || 'unknown_error'
-    : 'unknown_error';
-}
+// Bug #12 fix: local safeErrorCode hata di — ab errorUtils.ts se import hoti hai (3 files mein duplicate tha)
 
 function suffixId(value?: string | null): string | undefined {
   const safe = value?.replace(/[^A-Za-z0-9_:-]/g, '');
@@ -963,7 +970,16 @@ async function checkForDuplicates(
     }
 
     const { data: recentData, error: recentError } = await recentQuery.limit(referenceNumber ? 1 : 5);
-    if (recentError) throw recentError;
+
+    // Bug #11 fix: recent check critical hai — duplicate miss = double-counting money; log + throw
+    if (recentError) {
+      console.error('[TransactionProcessor] Recent duplicate check failed:', {
+        userId,
+        error: recentError.message,
+        code: safeErrorCode(recentError),
+      });
+      throw recentError;
+    }
 
     if (recentData && recentData.length > 0) {
       if (referenceNumber) {
@@ -991,6 +1007,23 @@ async function checkForDuplicates(
           return accountMatch;
         }
       }
+
+      // Name-token dedup: same amount + same type within 1 min where the
+      // counterparty name matches even if each source spelled it differently
+      // (e.g. "Darshanthakor" vs "Darshan Narsinhji Thakor"). This catches the
+      // same UPI credit reported by several apps with no shared reference.
+      if (merchant) {
+        const nameMatch = recentData.find(tx =>
+          tx.type === type &&
+          sameNameTokenSet(merchant, tx.note)
+        );
+        if (nameMatch) {
+          if (__DEV__) console.log('[DuplicateCheck] name-token match within 1 min — deduping', {
+            existingId: nameMatch.id,
+          });
+          return nameMatch;
+        }
+      }
     }
 
     const { data: mirrorData, error: mirrorError } = await supabase
@@ -1002,12 +1035,24 @@ async function checkForDuplicates(
       .order('created_at', { ascending: false })
       .limit(5);
 
-    if (!mirrorError && mirrorData && mirrorData.length > 0) {
+    // Bug #11 fix: mirrorError pehle silently ignore hota tha — log karo, continue with empty
+    // Mirror check supplementary hai (cross-source dedup); failure pe transaction block nahi karna
+    if (mirrorError) {
+      console.warn('[TransactionProcessor] Mirror duplicate check failed, continuing without mirror data:', {
+        userId,
+        error: mirrorError.message,
+        code: safeErrorCode(mirrorError),
+      });
+    }
+
+    const safeMirrorData = !mirrorError && mirrorData ? mirrorData : [];
+
+    if (safeMirrorData.length > 0) {
       // Cross-source same-type: bank SMS + bank/UPI notification reporting same event
       // NOTE: We no longer require sms_source to differ, because bank SMS and bank
       // app notification can both resolve to sms_source='bank' (e.g., VM-KOTAKD-S SMS
       // and Kotak app notification). The accountLast4 match is a strong enough signal.
-      const crossSourceDuplicate = mirrorData.find(existingTxn =>
+      const crossSourceDuplicate = safeMirrorData.find(existingTxn =>
         existingTxn.type === type &&
         (
           isSameUnreferencedTransaction(existingTxn, rawText, merchant) ||
@@ -1016,7 +1061,7 @@ async function checkForDuplicates(
       );
       if (crossSourceDuplicate) return crossSourceDuplicate;
 
-      const mirror = mirrorData.find(existingTxn => {
+      const mirror = safeMirrorData.find(existingTxn => {
         const isOpposingMovement =
           existingTxn.type === 'transfer' ||
           (existingTxn.type === 'income' && type === 'expense') ||
@@ -1070,7 +1115,12 @@ async function checkForDuplicates(
     if (data && data.length > 0) {
       const existingTxn = referenceNumber
         ? data[0]
-        : data.find(tx => isSameUnreferencedTransaction(tx, rawText, merchant));
+        : data.find(tx =>
+            isSameUnreferencedTransaction(tx, rawText, merchant) ||
+            // Same amount + same type within 5 min, matched on the counterparty
+            // name even with different spellings across capture sources.
+            (tx.type === type && Boolean(merchant) && sameNameTokenSet(merchant, tx.note))
+          );
       if (existingTxn) {
         // smsSource differs = same transaction reported by two different sources
         // returning existingTxn signals to caller: "this is a duplicate, skip it"
@@ -1360,6 +1410,25 @@ export const processSms = async (
           route: 'balance_only',
           sourceKind: 'sms',
           eventId: `${taskData.timestamp}`,
+        });
+      }
+      // Capture transaction-like SMS we failed to parse, so the weekly blackbox
+      // export surfaces parser gaps (mirrors the notification parse-failed path).
+      // Recorded as unlinked evidence → flows into the blackbox as an orphan signal.
+      if (
+        hasAmount(taskData.body) &&
+        hasCompletedTransactionEvidence(taskData.body) &&
+        !isNonTransactionalAmountMention(taskData.body)
+      ) {
+        recordSmsEvidenceWithDebug({
+          text: taskData.body,
+          sender: taskData.sender,
+          transactionId: null,
+          timestamp: taskData.timestamp,
+        }, {
+          sourceKind: 'sms',
+          routeDecision: 'ignored',
+          reasonCode: balanceChanged ? 'balance_signal_recorded' : 'parse_failed',
         });
       }
       return;

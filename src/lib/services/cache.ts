@@ -11,7 +11,6 @@
 
 import { Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Toast from 'react-native-toast-message';
 import { getBankAccounts } from '../database/financial';
 import { getPlaces, getPeopleLedger } from '../database/userdata';
 import { getTransactions } from '../core';
@@ -145,6 +144,34 @@ export function scopedCacheKey(baseKey: string, scope: string | number): string 
   return `${baseKey}:${scope}`;
 }
 
+// Bug #H2 fix: user-scoped clear — ensures sign-out only removes the departing user's
+// cache rather than relying on a global prefix sweep that could race with the next login.
+// Full per-user key namespacing (getScopedUserCacheKey everywhere) is the follow-up step;
+// this establishes the correct sign-out boundary today.
+export async function clearUserCache(userId: string): Promise<void> {
+  try {
+    await Promise.all([
+      quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
+      quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),
+    ]);
+
+    const keys = await AsyncStorage.getAllKeys();
+    const cacheKeys = keys.filter(key => key.startsWith(CACHE_PREFIX));
+    // Per-user scoped keys (future namespace — clear them too when they exist)
+    const userScopedKeys = keys.filter(key =>
+      Object.values(CACHE_KEYS).some(base =>
+        key === `${base}:user:${userId}` || key.startsWith(`${base}:user:${userId}:`)
+      )
+    );
+    const allUserKeys = [...new Set([...cacheKeys, ...userScopedKeys])];
+    if (allUserKeys.length > 0) {
+      await Promise.all(allUserKeys.map(key => AsyncStorage.removeItem(key)));
+    }
+  } catch {
+    // Silently fail — sign-out must complete regardless of cache errors.
+  }
+}
+
 export async function updateCache<T>(
   key: string,
   updater: (current: T | null) => T | null
@@ -236,12 +263,16 @@ async function prefetchBalanceViews() {
     await setCache(CACHE_KEYS.BALANCE_VIEWS, { accountViews, cardViews, pendingSummary });
     console.log('🚀 [Prefetch] ✅ Balance Views cached');
   } catch (e) {
-    Toast.show({
-      type: 'error',
-      text1: 'Balance refresh failed',
-      text2: 'Showing cached balances until the next refresh.',
-    });
-    throw e;
+    // Bug #M1 fix: Toast removed from background prefetch. This fired immediately on app
+    // open — before users could even see the balance screen — causing new users with no
+    // accounts to see an alarming error on first login. Contextual error handling now
+    // belongs to the screen that actually needs the balance data.
+    if (__DEV__) {
+      console.warn('[Cache] Balance prefetch failed (silent in prod):', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+    // Don't re-throw: prefetchAllData uses Promise.allSettled, so other fetches still run.
   }
 }
 

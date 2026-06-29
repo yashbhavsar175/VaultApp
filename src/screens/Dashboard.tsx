@@ -16,6 +16,13 @@ import {
 } from '../utils/financeSummary';
 import { getISTDate } from '../utils/dateHelpers';
 import { runWhenIdle } from '../utils/runWhenIdle';
+import FeatureDiscoveryModal from '../components/modals/FeatureDiscoveryModal';
+import {
+  getNextFeatureTip,
+  markTipShown,
+  dismissTipForever,
+  type FeatureTip,
+} from '../lib/services/featureDiscovery';
 
 
 
@@ -50,6 +57,8 @@ export default function Dashboard() {
   const [hasResolvedDashboardData, setHasResolvedDashboardData] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [discoveryTip, setDiscoveryTip] = useState<FeatureTip | null>(null);
+  const [showDiscovery, setShowDiscovery] = useState(false);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -65,6 +74,38 @@ export default function Dashboard() {
       setIsPrivacyMode(next !== 'active');
     });
     return () => sub.remove();
+  }, []);
+
+  // Feature discovery: after a short delay, gently surface one unused feature.
+  // Eligibility (grace period, cooldowns, dismissals) is decided in the service.
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const tip = await getNextFeatureTip();
+      if (tip && isMountedRef.current) {
+        setDiscoveryTip(tip);
+        setShowDiscovery(true);
+        void markTipShown(tip.key);
+      }
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const handleDiscoveryTry = useCallback(() => {
+    setShowDiscovery(false);
+    setDiscoveryTip(current => {
+      if (current) (navigation as any).navigate(current.route);
+      return current;
+    });
+  }, [navigation]);
+
+  const handleDiscoveryLater = useCallback(() => setShowDiscovery(false), []);
+
+  const handleDiscoveryDismiss = useCallback(() => {
+    setShowDiscovery(false);
+    setDiscoveryTip(current => {
+      if (current) void dismissTipForever(current.key);
+      return current;
+    });
   }, []);
 
   // UX: Shimmer animation for skeleton loader
@@ -790,6 +831,14 @@ export default function Dashboard() {
         onSuccess={() => {
           loadDataSilently();
         }}
+      />
+
+      <FeatureDiscoveryModal
+        visible={showDiscovery}
+        tip={discoveryTip}
+        onTry={handleDiscoveryTry}
+        onLater={handleDiscoveryLater}
+        onDismissForever={handleDiscoveryDismiss}
       />
     </ScreenWrapper>
   );

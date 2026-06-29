@@ -86,7 +86,7 @@ export default function ProfileScreen({ onProfileComplete, isEditing = false }: 
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('*')
+        .select('full_name, phone, monthly_budget, currency')
         .eq('id', user.id)
         .single();
 

@@ -89,7 +89,7 @@ export async function getPendingDetectedAccounts(): Promise<DetectedAccount[]> {
   const userId = await getCurrentUserId();
   const { data, error } = await supabase
     .from('detected_accounts')
-    .select('*')
+    .select('id, user_id, detection_type, detected_bank_name, account_last4, card_last4, account_type_hint, balance_amount, balance_kind, source, confidence, status, matched_owner_type, matched_owner_id, source_sender_or_package, raw_source_metadata, first_seen_at, last_seen_at, created_at, updated_at')
     .eq('user_id', userId)
     .eq('status', 'pending')
     .order('last_seen_at', { ascending: false });

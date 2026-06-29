@@ -1,9 +1,12 @@
 import { supabase } from '../core';
 import {
+  decryptField,
   decryptVaultFields,
   decryptVaultText,
   encryptVaultFields,
   encryptVaultText,
+  needsReEncryption,
+  reEncryptFieldWithCurrentKey,
 } from '../../utils/encryption';
 
 /**
@@ -62,6 +65,46 @@ async function mapRow(row: any): Promise<VaultItemDB> {
   };
 }
 
+// C3 migration: re-encrypt vault fields that are still protected by the weak legacy
+// PBKDF2 key (5 000 iterations). Runs on raw DB rows so the new format is persisted
+// to Supabase — subsequent loads skip the legacy decrypt path entirely.
+async function migrateVaultItemsToCurrentKey(rawRows: any[], userId: string): Promise<void> {
+  for (const row of rawRows) {
+    const fields: { label: string; value: string; isSecret: boolean }[] =
+      typeof row.fields === 'string' ? JSON.parse(row.fields) : (row.fields ?? []);
+
+    const hasLegacyFields = fields.some(f => f.isSecret && needsReEncryption(f.value));
+    if (!hasLegacyFields) continue;
+
+    const migratedFields = await Promise.all(
+      fields.map(async (field) => {
+        if (!field.isSecret || !needsReEncryption(field.value)) return field;
+        try {
+          // decryptField handles legacy PBKDF2 key internally via its fallback path
+          const plaintext = await decryptField(field.value);
+          const reEncrypted = await reEncryptFieldWithCurrentKey(plaintext);
+          return { ...field, value: reEncrypted };
+        } catch {
+          return field; // don't block migration of other fields on a single failure
+        }
+      })
+    );
+
+    const { error } = await supabase
+      .from('vault_items')
+      .update({ fields: migratedFields, updated_at: new Date().toISOString() })
+      .eq('id', row.id)
+      .eq('user_id', userId); // ✅ ownership filter on every write
+
+    if (error && __DEV__) {
+      console.warn('[VaultDb] Migration persist failed for item:', {
+        itemId: row.id,
+        error: error.message,
+      });
+    }
+  }
+}
+
 export async function getVaultItems(): Promise<VaultItemDB[]> {
   try {
   const { data: { user } } = await supabase.auth.getUser();
@@ -69,15 +112,26 @@ export async function getVaultItems(): Promise<VaultItemDB[]> {
 
   const { data, error } = await supabase
     .from('vault_items')
-    // TODO: narrow columns.
-    .select('*')
+    .select('id, user_id, title, category, fields, notes, created_at, updated_at')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
-  
-  // Decrypt all items
-  const decryptedItems = await Promise.all((data || []).map(mapRow));
+
+  const rows = data || [];
+
+  // Fire-and-forget: re-encrypt any legacy-key fields in the background.
+  // Never blocks the UI — the first load still shows decrypted values via mapRow's
+  // existing legacy fallback. On the next load, all fields will be vault:v2: format.
+  migrateVaultItemsToCurrentKey(rows, user.id).catch(e => {
+    if (__DEV__) {
+      console.warn('[VaultDb] Background key migration failed (non-fatal):', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  const decryptedItems = await Promise.all(rows.map(mapRow));
   return decryptedItems;
 
   } catch (err) {

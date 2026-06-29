@@ -10,7 +10,7 @@ declare module 'react-native-config' {
   interface NativeConfig {
     // Supabase
     SUPABASE_URL?: string;
-    SUPABASE_ANON_KEY?: string;
+    SUPABASE_PUBLISHABLE_KEY?: string;
 
     // Google
     GOOGLE_WEB_CLIENT_ID?: string;

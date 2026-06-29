@@ -7,6 +7,7 @@
 export { default as ScreenWrapper } from './common/ScreenWrapper';
 export { default as Card } from './common/Card';
 export { default as AppHeader } from './common/AppHeader';
+export { ScreenErrorBoundary } from './ScreenErrorBoundary';
 
 // Form components
 export { default as AppButton } from './forms/AppButton';

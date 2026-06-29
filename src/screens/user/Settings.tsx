@@ -43,6 +43,16 @@ import {
   deleteCurrentUserAppData,
 } from '../../lib/services/accountDeletion';
 import { GeofencingNative } from '../../lib/services/geofencingNative';
+import {
+  buildTransactionBlackBoxExport,
+  recordUserNote,
+  listUserNotes,
+  setUserNoteStatus,
+  deleteUserNote,
+  recordFeatureUsage,
+  type UserNote,
+  type UserNoteKind,
+} from '../../lib/services/transactionBlackBox';
 
 interface CachedProfile {
   email?: string;
@@ -90,8 +100,29 @@ export default function Settings() {
   } | null>(null);
 
   // Bug Reports State
+  // Bug #L3 fix: typed interface prevents malformed AsyncStorage entries from crashing the modal render.
+  interface BugReportEntry {
+    id: string;
+    timestamp: string;
+    transactionId?: string;
+    type?: string;
+    sender?: string;
+    rawSms?: string;
+    rawSmsKind?: string;
+    source?: string;
+    app?: string;
+    logicLog?: string;
+  }
   const [showBugReportsModal, setShowBugReportsModal] = useState(false);
-  const [bugReports, setBugReports] = useState<any[]>([]);
+  const [bugReports, setBugReports] = useState<BugReportEntry[]>([]);
+
+  // Notes & Issues (on-device, fed into the weekly diagnostic export)
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [notes, setNotes] = useState<UserNote[]>([]);
+  const [noteText, setNoteText] = useState('');
+  const [noteKind, setNoteKind] = useState<UserNoteKind>('problem');
+  const [savingNote, setSavingNote] = useState(false);
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
 
   const appStateRef = useRef(AppState.currentState);
 
@@ -879,6 +910,78 @@ export default function Settings() {
     });
   };
 
+  // ─── Notes & Issues ──────────────────────────────────────────────────────────
+  const openNotesModal = async () => {
+    void recordFeatureUsage('notes');
+    setNotes(await listUserNotes());
+    setShowNotesModal(true);
+  };
+
+  const handleAddNote = async () => {
+    const text = noteText.trim();
+    if (!text) {
+      Toast.show({ type: 'info', text1: 'Empty note', text2: 'Write your problem or idea first' });
+      return;
+    }
+    setSavingNote(true);
+    try {
+      await recordUserNote({ kind: noteKind, text, context: 'Settings' });
+      setNoteText('');
+      setNoteKind('problem');
+      setNotes(await listUserNotes());
+      Toast.show({ type: 'success', text1: 'Saved', text2: 'Added to your notes' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Could not save', text2: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const toggleNoteStatus = async (note: UserNote) => {
+    await setUserNoteStatus(note.id, note.status === 'open' ? 'resolved' : 'open');
+    setNotes(await listUserNotes());
+  };
+
+  const handleDeleteNote = (id: string) => {
+    setConfirmDialog({
+      visible: true,
+      title: 'Delete Note',
+      message: 'Delete this note? This cannot be undone.',
+      confirmText: 'Delete',
+      isDestructive: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await deleteUserNote(id);
+        setNotes(await listUserNotes());
+        Toast.show({ type: 'success', text1: 'Deleted', text2: 'Note removed' });
+      },
+    });
+  };
+
+  // ─── Diagnostics export (on-device blackbox) ──────────────────────────────────
+  const handleExportDiagnostics = async () => {
+    setExportingDiagnostics(true);
+    try {
+      const payload = await buildTransactionBlackBoxExport();
+      const fileName = `vaultapp_diagnostics_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+
+      if (Platform.OS === 'android' && typeof NativeModules.PorterModule?.shareTextFile === 'function') {
+        await NativeModules.PorterModule.shareTextFile(payload, fileName, 'VaultApp Diagnostics');
+        return;
+      }
+
+      let sharePayload = payload;
+      if (Platform.OS === 'android' && payload.length > 100000) {
+        sharePayload = payload.substring(0, 100000) + '\n\n...[TRUNCATED due to Android share limits. Rebuild the native app to enable full file exports.]';
+      }
+      await Share.share({ title: 'VaultApp Diagnostics', message: sharePayload });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Export failed', text2: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setExportingDiagnostics(false);
+    }
+  };
+
   const formatStatusTime = (time?: number) => {
     if (!time) return 'None';
     return new Date(time).toLocaleString([], {
@@ -1088,7 +1191,7 @@ export default function Settings() {
           <Card>
             <TouchableOpacity
               style={[styles.accountRow, { paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]}
-              onPress={() => (navigation as any).navigate('Banks')}
+              onPress={() => { void recordFeatureUsage('accounts_cards'); (navigation as any).navigate('Banks'); }}
             >
               <MaterialCommunityIcons name="credit-card-multiple-outline" size={22} color="#f59e0b" />
               <View style={{ flex: 1, marginLeft: spacing.md }}>
@@ -1121,7 +1224,7 @@ export default function Settings() {
 
             <TouchableOpacity
               style={[styles.accountRow, { paddingVertical: spacing.sm }]}
-              onPress={() => (navigation as any).navigate('DebtFreedomCoach')}
+              onPress={() => { void recordFeatureUsage('debt_freedom_coach'); (navigation as any).navigate('DebtFreedomCoach'); }}
             >
               <MaterialCommunityIcons name="target-account" size={22} color="#10b981" />
               <View style={{ flex: 1, marginLeft: spacing.md }}>
@@ -1158,7 +1261,7 @@ export default function Settings() {
 
             <TouchableOpacity 
               style={[styles.accountRow, { paddingBottom: spacing.sm, paddingTop: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]} 
-              onPress={() => (navigation as any).navigate('PlaceReminders')}
+              onPress={() => { void recordFeatureUsage('place_reminders'); (navigation as any).navigate('PlaceReminders'); }}
             >
               <MaterialCommunityIcons name="map-marker-radius" size={22} color={colors.accent} />
               <View style={{ flex: 1, marginLeft: spacing.md }}>
@@ -1430,6 +1533,48 @@ export default function Settings() {
           </Card>
         </View>
 
+        {/* Help & Improve Section */}
+        <View style={{ marginTop: spacing.xl }}>
+          <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+            Help & Improve
+          </Text>
+
+          <Card>
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]}
+              onPress={openNotesModal}
+            >
+              <MaterialCommunityIcons name="note-edit-outline" size={22} color="#8b5cf6" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Notes & Issues
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Jot down a problem, error, or idea so it can be fixed
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.accountRow, { paddingTop: spacing.sm }]}
+              onPress={handleExportDiagnostics}
+              disabled={exportingDiagnostics}
+            >
+              <MaterialCommunityIcons name="export-variant" size={22} color="#06b6d4" />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.bodyBold, { color: colors.text }]}>
+                  Export Diagnostics
+                </Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  {exportingDiagnostics ? 'Preparing…' : 'Share the on-device detection log to improve accuracy'}
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+          </Card>
+        </View>
+
         {/* Danger Zone */}
         <View style={{ marginTop: spacing.xl }}>
           <Text style={[typography.caption, { color: '#ef4444', marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
@@ -1636,6 +1781,108 @@ export default function Settings() {
               />
             </View>
           )}
+
+          {/* Render a localized Toast so it appears above this Modal */}
+          <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
+        </View>
+      </Modal>
+
+      {/* Notes & Issues Modal */}
+      <Modal
+        visible={showNotesModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowNotesModal(false)}>
+        <View style={{ flex: 1, backgroundColor: colors.background }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.card }}>
+            <Text style={[typography.h2, { color: colors.text }]}>Notes & Issues</Text>
+            <TouchableOpacity onPress={() => setShowNotesModal(false)} style={{ padding: 8 }}>
+              <MaterialCommunityIcons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+            {/* Composer */}
+            <Card style={{ padding: spacing.md, marginBottom: spacing.lg }}>
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+                {(['problem', 'error', 'idea'] as UserNoteKind[]).map(kind => {
+                  const active = noteKind === kind;
+                  return (
+                    <TouchableOpacity
+                      key={kind}
+                      onPress={() => setNoteKind(kind)}
+                      style={{
+                        paddingHorizontal: spacing.md,
+                        paddingVertical: 6,
+                        borderRadius: borderRadius.md,
+                        borderWidth: 1,
+                        borderColor: active ? colors.accent : colors.border,
+                        backgroundColor: active ? `${colors.accent}18` : colors.card,
+                      }}>
+                      <Text style={[typography.caption, { color: active ? colors.accent : colors.subtext, fontWeight: '700', textTransform: 'capitalize' }]}>
+                        {kind}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <AppInput
+                placeholder="Describe the problem, error, or idea…"
+                value={noteText}
+                onChangeText={setNoteText}
+                multiline
+                numberOfLines={4}
+                maxLength={4000}
+                style={{ minHeight: 90, textAlignVertical: 'top' }}
+                containerStyle={{ marginBottom: spacing.md }}
+              />
+
+              <AppButton
+                title="Add Note"
+                onPress={handleAddNote}
+                loading={savingNote}
+                variant="primary"
+              />
+            </Card>
+
+            {notes.length === 0 ? (
+              <View style={{ alignItems: 'center', justifyContent: 'center', paddingVertical: 32 }}>
+                <MaterialCommunityIcons name="notebook-outline" size={56} color={colors.subtext} />
+                <Text style={[typography.body, { color: colors.subtext, marginTop: spacing.md }]}>No notes yet</Text>
+              </View>
+            ) : (
+              notes.map(note => (
+                <Card key={note.id} style={{ marginBottom: spacing.md, padding: spacing.md, opacity: note.status === 'resolved' ? 0.6 : 1 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <View style={{ flex: 1, marginRight: spacing.sm }}>
+                      <Text style={[typography.caption, { color: colors.subtext, textTransform: 'uppercase', fontWeight: '700', letterSpacing: 0.5 }]}>
+                        {note.kind}{note.status === 'resolved' ? ' · Resolved' : ''}
+                      </Text>
+                      <Text style={[typography.body, { color: colors.text, marginTop: 4 }]}>
+                        {note.text}
+                      </Text>
+                      <Text style={[typography.caption, { color: colors.subtext, marginTop: 6 }]}>
+                        {new Date(note.time).toLocaleString()}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'center', gap: 8 }}>
+                      <TouchableOpacity onPress={() => toggleNoteStatus(note)} style={{ padding: 8, backgroundColor: `${colors.accent}14`, borderRadius: 20 }}>
+                        <MaterialCommunityIcons
+                          name={note.status === 'open' ? 'check-circle-outline' : 'restore'}
+                          size={20}
+                          color={colors.accent}
+                        />
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => handleDeleteNote(note.id)} style={{ padding: 8, backgroundColor: 'rgba(239, 68, 68, 0.1)', borderRadius: 20 }}>
+                        <MaterialCommunityIcons name="trash-can-outline" size={20} color="#ef4444" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </Card>
+              ))
+            )}
+          </ScrollView>
 
           {/* Render a localized Toast so it appears above this Modal */}
           <Toast autoHide visibilityTime={3000} swipeable={false} onPress={() => Toast.hide()} />
