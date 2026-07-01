@@ -12,6 +12,20 @@ export interface MonthlyTransactionTotals {
   monthlyBalance: number;
 }
 
+/**
+ * A transaction is "counted" only once it is neither awaiting review nor
+ * explicitly ignored. Self-transfers and credit-card bill payments are stored as
+ * `ignored` (they move money between the user's own accounts/cards and are not
+ * real income or spend), so this single predicate keeps every summary — Dashboard
+ * and Analytics alike — from double-counting them.
+ */
+export function isCountedTransaction(transaction: Transaction): boolean {
+  return (
+    transaction.account_match_status !== 'ignored' &&
+    transaction.account_match_status !== 'review_required'
+  );
+}
+
 export function isDashboardIncome(
   transaction: Transaction
 ): boolean {

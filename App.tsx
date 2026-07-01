@@ -23,17 +23,22 @@ import { startLocationMonitoring, stopLocationMonitoring } from './src/lib/servi
 import PermissionPrompt from './src/components/modals/PermissionPrompt';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { CACHE_KEYS, clearCache, clearUserCache, getCached, prefetchAllData } from './src/lib/services/cache';
+import { isAppLockEnabled, promptBiometricUnlock } from './src/lib/services/appLock';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import {
   AuthBootstrapState,
   verifySessionUser,
 } from './src/lib/auth/offlineAuth';
+import { startupMs } from './src/lib/utils/startupTimer';
 
 const LEGACY_AUTH_TOKEN_KEY = 'supabase.auth.token';
 const AUTH_STARTUP_TIMEOUT_MS = 4500;
 const PROFILE_STARTUP_TIMEOUT_MS = 6000;
 const AUTH_BOOTSTRAP_WATCHDOG_MS = 8000;
 const APP_BACKGROUND_COLOR = '#050509';
+
+if (__DEV__) console.log('[Startup] 🟢 JS bundle executed', startupMs());
 
 const navigationTheme = {
   ...DefaultTheme,
@@ -199,8 +204,23 @@ function App() {
   const prefetchedUserIdRef = useRef<string | null>(null);
   const verifyOfflineSessionRef = useRef<((nextSession: Session) => Promise<boolean>) | null>(null);
   const networkReconnectInFlightRef = useRef(false);
+  const [isAppLocked, setIsAppLocked] = useState(false);
   // Bug #6 fix: rapid network bounce pe multiple syncs rokne ke liye debounce ref
   const reconnectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Startup timing logs
+  useEffect(() => {
+    if (__DEV__) console.log('[Startup] 🏁 App component mounted', startupMs());
+  }, []);
+  useEffect(() => {
+    if (__DEV__) console.log(`[Startup] 🔐 Auth state → isAuthLoading=${isAuthLoading} isAuthenticated=${isAuthenticated}`, startupMs());
+  }, [isAuthLoading, isAuthenticated]);
+  useEffect(() => {
+    if (__DEV__) console.log(`[Startup] 🔒 isAppLocked=${isAppLocked}`, startupMs());
+  }, [isAppLocked]);
+  useEffect(() => {
+    if (__DEV__) console.log(`[Startup] 🎬 introDone=${introDone}`, startupMs());
+  }, [introDone]);
 
   // Configure Google Sign-In once on app start
   useEffect(() => {
@@ -719,6 +739,35 @@ function App() {
     setStartupRetryRevision(revision => revision + 1);
   }, []);
 
+  // Lock on every fresh authentication (cold start / session restore)
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setIsAppLocked(false);
+      return;
+    }
+    isAppLockEnabled().then(enabled => {
+      if (enabled) setIsAppLocked(true);
+    });
+  }, [isAuthenticated]);
+
+  // Mark pending lock when going to background; apply it only when the app
+  // returns to foreground so the biometric prompt isn't fired while backgrounded
+  // (which causes the dialog to hang and the overlay to get stuck on "Verifying…")
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const pendingLock = { flag: false };
+    const sub = AppState.addEventListener('change', async nextState => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        const enabled = await isAppLockEnabled();
+        if (enabled) pendingLock.flag = true;
+      } else if (nextState === 'active' && pendingLock.flag) {
+        pendingLock.flag = false;
+        setIsAppLocked(true);
+      }
+    });
+    return () => sub.remove();
+  }, [isAuthenticated]);
+
   const handleIntroComplete = useCallback(() => {
     setIntroDone(true);
   }, []);
@@ -775,9 +824,114 @@ function App() {
           <AppIntroScreen readyToExit={!isAuthLoading} onIntroComplete={handleIntroComplete} />
         </View>
       )}
+      {/* App lock overlay — only shown after the intro finishes, so the
+          animation plays without interruption, then fingerprint appears. */}
+      {isAuthenticated && isAppLocked && introDone && (
+        <View style={StyleSheet.absoluteFill}>
+          <AppLockOverlay onUnlocked={() => setIsAppLocked(false)} />
+        </View>
+      )}
     </View>
   );
 }
+
+function AppLockOverlay({ onUnlocked }: { onUnlocked: () => void }) {
+  const [unlocking, setUnlocking] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const mountedRef = useRef(true);
+  const onUnlockedRef = useRef(onUnlocked);
+  useEffect(() => { onUnlockedRef.current = onUnlocked; }, [onUnlocked]);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    if (__DEV__) console.log('[AppLock] 🔒 AppLockOverlay mounted — fingerprint prompt appearing', startupMs());
+  }, []);
+
+  const tryUnlock = useCallback(async () => {
+    if (unlocking) return;
+    setUnlocking(true);
+    setFailed(false);
+    const result = await promptBiometricUnlock('Unlock SpendSense');
+    if (!mountedRef.current) return;
+    setUnlocking(false);
+    if (result === 'success') {
+      onUnlockedRef.current();
+    } else {
+      setFailed(result === 'error');
+    }
+  }, [unlocking]);
+
+  // Auto-prompt on mount
+  useEffect(() => { void tryUnlock(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <View style={appLockStyles.overlay}>
+      <MaterialCommunityIcons name="shield-lock" size={72} color="#8b5cf6" />
+      <Text style={appLockStyles.title}>SpendSense is locked</Text>
+      <Text style={appLockStyles.subtitle}>Your financial data is protected</Text>
+
+      <TouchableOpacity
+        style={[appLockStyles.fingerprintBtn, unlocking && appLockStyles.fingerprintBtnActive]}
+        onPress={tryUnlock}
+        disabled={unlocking}
+        accessibilityRole="button"
+        accessibilityLabel="Unlock with fingerprint"
+      >
+        <MaterialCommunityIcons
+          name="fingerprint"
+          size={52}
+          color={unlocking ? '#6b7280' : '#8b5cf6'}
+        />
+      </TouchableOpacity>
+
+      <Text style={appLockStyles.hint}>
+        {unlocking
+          ? 'Verifying…'
+          : failed
+          ? 'Authentication failed — tap to try again'
+          : 'Touch fingerprint to unlock'}
+      </Text>
+    </View>
+  );
+}
+
+const appLockStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: '#050509',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  title: {
+    color: '#f8fafc',
+    fontSize: 22,
+    fontWeight: '700',
+    marginTop: 24,
+  },
+  subtitle: {
+    color: '#64748b',
+    fontSize: 14,
+    marginTop: 6,
+  },
+  fingerprintBtn: {
+    marginTop: 52,
+    padding: 22,
+    borderRadius: 60,
+    backgroundColor: 'rgba(139, 92, 246, 0.12)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(139, 92, 246, 0.35)',
+  },
+  fingerprintBtnActive: {
+    backgroundColor: 'rgba(139, 92, 246, 0.06)',
+    borderColor: 'rgba(139, 92, 246, 0.15)',
+  },
+  hint: {
+    color: '#64748b',
+    fontSize: 13,
+    marginTop: 20,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+});
 
 export function AuthLoadingScreen() {
   return (
@@ -849,7 +1003,8 @@ const styles = StyleSheet.create({
     backgroundColor: APP_BACKGROUND_COLOR,
   },
   introOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0, right: 0, bottom: 0, left: 0,
     backgroundColor: APP_BACKGROUND_COLOR,
   },
   routeStatusContainer: {

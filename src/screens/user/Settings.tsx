@@ -31,7 +31,8 @@ import {
   DeliveryDistanceSummary,
   DeliveryIncidentSummary,
 } from '../../lib/services/deliveryDebugBlackBox';
-import { CACHE_KEYS, clearCache, getCached, setCache } from '../../lib/services/cache';
+import { CACHE_KEYS, clearCache, getCached, getMemoryCache, setCache } from '../../lib/services/cache';
+import { isAppLockEnabled, setAppLockEnabled, isBiometricsAvailable, promptBiometricUnlock } from '../../lib/services/appLock';
 import {
   OFFLINE_DELETE_QUEUE_BASE_KEY,
   OFFLINE_TX_QUEUE_BASE_KEY,
@@ -68,11 +69,16 @@ export default function Settings() {
   const navigation = useNavigation();
   const { colors, typography, spacing, borderRadius, themeMode, setThemeMode } = useTheme();
   const [userEmail, setUserEmail] = useState('');
-  const [userName, setUserName] = useState('');
+  // Seed name from in-memory mirror so revisiting Settings shows the
+  // user's name instantly instead of flashing blank text.
+  const memProfile = getMemoryCache<CachedProfile>(CACHE_KEYS.USER_PROFILE);
+  const [userName, setUserName] = useState(memProfile?.full_name || memProfile?.name || '');
   const [showEditModal, setShowEditModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [editedName, setEditedName] = useState('');
   const [saving, setSaving] = useState(false);
+  const [appLockEnabled, setAppLockEnabledState] = useState(false);
+  const [appLockLoading, setAppLockLoading] = useState(false);
   const [porterServiceEnabled, setPorterServiceEnabled] = useState(false);
   const [overlayPermissionGranted, setOverlayPermissionGranted] = useState(false);
   const [volumeGuardEnabled, setVolumeGuardState] = useState(false);
@@ -125,6 +131,40 @@ export default function Settings() {
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
 
   const appStateRef = useRef(AppState.currentState);
+
+  // Load app lock preference on mount
+  useEffect(() => {
+    isAppLockEnabled().then(enabled => setAppLockEnabledState(enabled));
+  }, []);
+
+  const handleToggleAppLock = useCallback(async (enable: boolean) => {
+    if (appLockLoading) return;
+
+    if (enable) {
+      const available = await isBiometricsAvailable();
+      if (!available) {
+        Toast.show({ type: 'error', text1: 'Not available', text2: 'No fingerprint sensor found on this device' });
+        return;
+      }
+      // Confirm fingerprint works before enabling
+      const result = await promptBiometricUnlock('Confirm fingerprint to enable app lock');
+      if (result !== 'success') return;
+      setAppLockLoading(true);
+      await setAppLockEnabled(true);
+      setAppLockEnabledState(true);
+      Toast.show({ type: 'success', text1: 'App Lock enabled', text2: 'App will lock when sent to background' });
+    } else {
+      // Require biometric to disable (so someone can\'t just turn it off)
+      const result = await promptBiometricUnlock('Confirm fingerprint to disable app lock');
+      if (result !== 'success') return;
+      setAppLockLoading(true);
+      await setAppLockEnabled(false);
+      setAppLockEnabledState(false);
+      Toast.show({ type: 'info', text1: 'App Lock disabled' });
+    }
+
+    setAppLockLoading(false);
+  }, [appLockLoading]);
 
   const checkPorterService = useCallback(async () => {
     setDeliveryStatusLoading(true);
@@ -1241,6 +1281,31 @@ export default function Settings() {
           </Card>
         </View>
 
+        {/* Security Section */}
+        <View style={{ marginTop: spacing.xl }}>
+          <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
+            Security
+          </Text>
+          <Card>
+            <View style={[styles.accountRow, { paddingVertical: spacing.sm }]}>
+              <MaterialCommunityIcons name="fingerprint" size={22} color={colors.accent} />
+              <View style={{ flex: 1, marginLeft: spacing.md }}>
+                <Text style={[typography.body, { color: colors.text }]}>Biometric App Lock</Text>
+                <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
+                  Lock app when it goes to background
+                </Text>
+              </View>
+              <Switch
+                value={appLockEnabled}
+                onValueChange={handleToggleAppLock}
+                disabled={appLockLoading}
+                trackColor={{ false: colors.border, true: colors.accent }}
+                thumbColor="#fff"
+              />
+            </View>
+          </Card>
+        </View>
+
         {/* Account Section */}
         <View style={{ marginTop: spacing.xl }}>
           <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
@@ -1550,7 +1615,7 @@ export default function Settings() {
                   Notes & Issues
                 </Text>
                 <Text style={[typography.caption, { color: colors.subtext, marginTop: 2 }]}>
-                  Jot down a problem, error, or idea so it can be fixed
+                  Jot down a problem, error, or idea for improvement
                 </Text>
               </View>
               <MaterialCommunityIcons name="chevron-right" size={22} color={colors.subtext} />

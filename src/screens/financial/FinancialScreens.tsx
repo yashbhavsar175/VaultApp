@@ -36,7 +36,7 @@ import { ScreenWrapper, Card, AppButton, AppInput, AppHeader, AppConfirmModal } 
 import BalanceCorrectionModal, { BalanceCorrectionKindOption } from '../../components/BalanceCorrectionModal';
 import BalanceHistoryModal from '../../components/BalanceHistoryModal';
 import { getBankColor, getBankSuggestions } from '../../config';
-import { getCached, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { getCached, setCache, getMemoryCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { runWhenIdle } from '../../utils/runWhenIdle';
 import { formatCurrencyDisplay as formatAmount } from '../../utils/format';
@@ -45,7 +45,6 @@ import {
   BankAccountDetailView,
   CreditCardBalanceView,
   CreditCardDetailView,
-  PendingDetectedBalanceSummary,
   getAccountBalanceViewModels,
   getBalanceFreshnessLabel,
   getBalanceKindLabel,
@@ -57,7 +56,6 @@ import {
   getLegacyCreditCardPosition,
   getCreditCardDetailView,
   getCreditCardBalanceViewModels,
-  getPendingDetectedBalanceSummary,
   getTotalAssetBankBalance,
   isAssetBankAccount,
 } from '../../lib/services/balanceViewModel';
@@ -67,6 +65,7 @@ import {
   getTransactionSourceLabel,
   inferTransactionCategory,
 } from '../../utils/transactionPresentation';
+import { isCountedTransaction } from '../../utils/financeSummary';
 import {
   AccountRemovalImpact,
   RemovableOwnerType,
@@ -78,14 +77,6 @@ import { BarChart, PieChart } from 'react-native-gifted-charts';
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANKS SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
-
-const EMPTY_PENDING_BALANCE_SUMMARY: PendingDetectedBalanceSummary = {
-  total: 0,
-  bank_account: 0,
-  credit_card: 0,
-  debit_card: 0,
-  loan: 0,
-};
 
 function parseAmountField(value: string, allowBlank = false): number | null {
   const trimmed = value.trim();
@@ -222,16 +213,21 @@ function buildRemovalMessage(label: string, impact: AccountRemovalImpact): strin
 }
 
 export function BanksScreen() {
-  const navigation = useNavigation();
   const { colors, typography, spacing, borderRadius } = useTheme();
-  const [banks, setBanks] = useState<BankAccount[]>([]);
-  const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>({});
-  const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);
-
-  const [pendingDetectedSummary, setPendingDetectedSummary] = useState<PendingDetectedBalanceSummary>(
-    EMPTY_PENDING_BALANCE_SUMMARY
+  // Seed from in-memory mirror so revisiting Banks (a stack screen that
+  // unmounts on back) shows the last data instantly — no skeleton, no reload.
+  const memBanks = getMemoryCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+  const memViews = getMemoryCache<any>(CACHE_KEYS.BALANCE_VIEWS);
+  const [banks, setBanks] = useState<BankAccount[]>(memBanks ?? []);
+  const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>(
+    memViews?.accountViews
+      ? Object.fromEntries(memViews.accountViews.map((view: any) => [view.accountId, view]))
+      : {}
   );
-  const [loading, setLoading] = useState(true);
+  const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>(
+    memViews?.cardViews ?? []
+  );
+  const [loading, setLoading] = useState(memBanks === null);
   const [refreshing, setRefreshing] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingBank, setEditingBank] = useState<BankAccount | null>(null);
@@ -272,18 +268,16 @@ export function BanksScreen() {
   const loadBalanceViews = useCallback(async () => {
     const requestId = ++balanceViewsRequestRef.current;
     try {
-      const [accountViews, cardViews, pendingSummary] = await Promise.all([
+      const [accountViews, cardViews] = await Promise.all([
         getAccountBalanceViewModels(),
         getCreditCardBalanceViewModels(),
-        getPendingDetectedBalanceSummary(),
       ]);
 
       if (requestId !== balanceViewsRequestRef.current) return;
       setBalanceViews(Object.fromEntries(accountViews.map(view => [view.accountId, view])));
       setCreditCardViews(cardViews);
-      setPendingDetectedSummary(pendingSummary);
-      
-      await setCache(CACHE_KEYS.BALANCE_VIEWS, { accountViews, cardViews, pendingSummary });
+
+      await setCache(CACHE_KEYS.BALANCE_VIEWS, { accountViews, cardViews });
     } catch (error) {
       if (requestId !== balanceViewsRequestRef.current) return;
       console.warn('[Balances] Failed to load balance view models:', {
@@ -306,10 +300,9 @@ export function BanksScreen() {
         if (requestId !== bankDataRequestRef.current) return;
         
         if (cachedViews && cachedViews.data) {
-          const { accountViews, cardViews, pendingSummary } = cachedViews.data;
+          const { accountViews, cardViews } = cachedViews.data;
           setBalanceViews(Object.fromEntries(accountViews.map((view: any) => [view.accountId, view])));
           setCreditCardViews(cardViews);
-          setPendingDetectedSummary(pendingSummary);
         }
 
         if (cachedBanks) {
@@ -963,41 +956,8 @@ export function BanksScreen() {
         </View>
       </Card>
 
-      {pendingDetectedSummary.total > 0 && (
-        <TouchableOpacity
-          onPress={() => (navigation as any).navigate('DetectedAccountsScreen')}
-          accessibilityLabel="Review detected accounts"
-          accessibilityRole="button"
-          style={{
-            minHeight: 48,
-            marginHorizontal: spacing.lg,
-            marginBottom: spacing.lg,
-            backgroundColor: '#f59e0b14',
-            borderColor: '#f59e0b35',
-            borderWidth: 1,
-            borderRadius: 14,
-            paddingHorizontal: spacing.md,
-            paddingVertical: spacing.sm,
-            flexDirection: 'row',
-            alignItems: 'center',
-          }}>
-          <View style={{
-            width: 32,
-            height: 32,
-            borderRadius: 16,
-            backgroundColor: '#f59e0b18',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginRight: spacing.sm,
-          }}>
-            <MaterialCommunityIcons name="radar" size={18} color="#f59e0b" />
-          </View>
-          <Text numberOfLines={1} style={[typography.bodyBold, { color: '#f59e0b', flex: 1, fontSize: 14 }]}>
-            {pendingDetectedSummary.total} detected account{pendingDetectedSummary.total === 1 ? '' : 's'} need review
-          </Text>
-          <MaterialCommunityIcons name="chevron-right" size={20} color="#f59e0b" style={{ marginLeft: spacing.sm }} />
-        </TouchableOpacity>
-      )}
+      {/* Detected-account review now happens via the app-open approval popup +
+          dashboard strip; no inline banner here. */}
 
       <FlatList
         data={activeBankAccounts}
@@ -1759,6 +1719,28 @@ const RANGE_DAYS: Record<TimeRange, number> = {
   year: 365,
 };
 
+// Module-level so it can seed Analytics state synchronously from the in-memory
+// cache (no skeleton on revisit) and still back the component's filter callback.
+function filterTransactionsByTimeRange(data: Transaction[], range: TimeRange): Transaction[] {
+  const now = new Date();
+  const startDate = new Date();
+  switch (range) {
+    case 'week':
+      startDate.setDate(now.getDate() - 7);
+      break;
+    case 'month':
+      startDate.setMonth(now.getMonth() - 1);
+      break;
+    case '3months':
+      startDate.setMonth(now.getMonth() - 3);
+      break;
+    case 'year':
+      startDate.setFullYear(now.getFullYear() - 1);
+      break;
+  }
+  return data.filter(t => new Date(t.created_at) >= startDate);
+}
+
 function getTimeRangeLabel(range: TimeRange): string {
   if (range === '3months') return '3 Months';
   return range.charAt(0).toUpperCase() + range.slice(1);
@@ -1807,10 +1789,16 @@ function getTransactionLabel(transaction: Transaction): string {
 export function AnalyticsScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
   const [timeRange, setTimeRange] = useState<TimeRange>('month');
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
-  const [banks, setBanks] = useState<BankAccount[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from in-memory mirror so revisiting Analytics (a stack screen that
+  // unmounts on back) shows the last data instantly — no skeleton, no reload.
+  const memTx = getMemoryCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
+  const memBanks = getMemoryCache<BankAccount[]>(CACHE_KEYS.BANK_ACCOUNTS);
+  const [transactions, setTransactions] = useState<Transaction[]>(
+    memTx ? filterTransactionsByTimeRange(memTx, 'month') : []
+  );
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>(memTx ?? []);
+  const [banks, setBanks] = useState<BankAccount[]>(memBanks ?? []);
+  const [loading, setLoading] = useState(memTx === null && memBanks === null);
   const lastDataStringRef = useRef<string | null>(null);
 
   // Fade animation: plays every time timeRange changes
@@ -1917,32 +1905,38 @@ export function AnalyticsScreen() {
     }, [loadDataSilently])
   );
 
+  // Only count transactions the user has confirmed (or that were auto-confirmed).
+  // Items awaiting review and ignored items — self-transfers and credit-card bill
+  // payments included — are NOT real income/spend and must stay out of every total,
+  // chart and breakdown so paying a card bill never shows up as an expense.
+  const countedTransactions = transactions.filter(isCountedTransaction);
+
   // Calculate summary
-  const totalSpent = transactions
+  const totalSpent = countedTransactions
     .filter(t => t.type === 'expense')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const totalIncome = transactions
+  const totalIncome = countedTransactions
     .filter(t => t.type === 'income')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const totalInvestment = transactions
+  const totalInvestment = countedTransactions
     .filter(t => t.type === 'investment')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const totalEMI = transactions
+  const totalEMI = countedTransactions
     .filter(t => t.type === 'emi')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const totalLent = transactions
+  const totalLent = countedTransactions
     .filter(t => t.type === 'lent')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const totalBorrowed = transactions
+  const totalBorrowed = countedTransactions
     .filter(t => t.type === 'borrowed')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  const totalTransfers = transactions
+  const totalTransfers = countedTransactions
     .filter(t => t.type === 'transfer')
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
@@ -1956,7 +1950,7 @@ export function AnalyticsScreen() {
   const assetBankAccounts = banks.filter(isAssetBankAccount);
   const incomeCoverageDays = avgDailySpend > 0 ? accountBalance / avgDailySpend : 0;
   const activeDays = new Set(
-    transactions
+    countedTransactions
       .filter(t => t.type === 'expense')
       .map(t => new Date(t.created_at).toDateString())
   ).size;
@@ -1971,7 +1965,7 @@ export function AnalyticsScreen() {
 
     return allTransactions.filter(t => {
       const date = new Date(t.created_at);
-      return date >= startDate && date < endDate;
+      return isCountedTransaction(t) && date >= startDate && date < endDate;
     });
   })();
 
@@ -1991,7 +1985,7 @@ export function AnalyticsScreen() {
 
   // Group by clean, semantic category for chart/list.
   const categoryData: Record<string, CategoryBucket> = {};
-  transactions
+  countedTransactions
     .filter(t => t.type === 'expense')
     .forEach(t => {
       const categoryName = inferTransactionCategory(t);
@@ -2059,7 +2053,7 @@ export function AnalyticsScreen() {
     const dailyExpense: { [key: string]: number } = {};
     const dailyIncome: { [key: string]: number } = {};
 
-    transactions.forEach(t => {
+    countedTransactions.forEach(t => {
       const date = new Date(t.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
       if (t.type === 'expense') {
         dailyExpense[date] = (dailyExpense[date] || 0) + Number(t.amount);
@@ -2085,13 +2079,13 @@ export function AnalyticsScreen() {
   // Top categories (kept for list)
   const topCategories = categoryChartData.slice(0, 5);
 
-  const topTransactions = transactions
+  const topTransactions = countedTransactions
     .filter(t => ['expense', 'emi', 'investment', 'lent'].includes(t.type))
     .sort((a, b) => Number(b.amount) - Number(a.amount))
     .slice(0, 5);
 
   const weekdaySpend = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, index) => {
-    const amount = transactions
+    const amount = countedTransactions
       .filter(t => t.type === 'expense' && new Date(t.created_at).getDay() === index)
       .reduce((sum, t) => sum + Number(t.amount), 0);
     return { day, amount };
@@ -2108,7 +2102,7 @@ export function AnalyticsScreen() {
     { label: 'Lent', value: totalLent, color: '#06b6d4', icon: 'account-arrow-right-outline' },
   ];
   const cashflowBase = Math.max(totalIncome, totalOutflow, 1);
-  const largestTransaction = transactions
+  const largestTransaction = countedTransactions
     .filter(t => t.type === 'expense')
     .sort((a, b) => Number(b.amount) - Number(a.amount))[0];
   const largestTransactionShare = totalSpent > 0 && largestTransaction

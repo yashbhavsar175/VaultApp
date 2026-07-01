@@ -30,7 +30,7 @@ import type { StackNavigationProp } from '@react-navigation/stack';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { getTransactions, updateTransaction, bulkDeleteTransactions } from '../../lib/core';
-import { getCached, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
+import { getCached, getMemoryCache, setCache, updateCache, CACHE_KEYS } from '../../lib/services/cache';
 import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import { Transaction, TransactionType } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
@@ -205,9 +205,12 @@ const TransactionRow = React.memo(({
 export default function Transactions() {
   const navigation = useNavigation<TransactionsScreenNavigationProp>();
   const { colors, typography, spacing, borderRadius } = useTheme();
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from the in-memory mirror so revisiting History (a stack screen that
+  // unmounts on back) shows the last list instantly — no skeleton, no reload.
+  const initialCachedTransactions = getMemoryCache<Transaction[]>(CACHE_KEYS.TRANSACTIONS);
+  const [transactions, setTransactions] = useState<Transaction[]>(initialCachedTransactions ?? []);
+  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>(initialCachedTransactions ?? []);
+  const [loading, setLoading] = useState(initialCachedTransactions === null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(0);
@@ -241,7 +244,7 @@ export default function Transactions() {
   // Deep equality tracking to prevent re-renders
   const lastDataStringRef = useRef<string | null>(null);
   const eventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const transactionsRef = useRef<Transaction[]>([]);
+  const transactionsRef = useRef<Transaction[]>(initialCachedTransactions ?? []);
   const hasMoreRef = useRef(true);
   const loadingMoreRef = useRef(false);
 

@@ -9,7 +9,7 @@
  * - SWR (Stale-While-Revalidate) — callers know if data is stale
  */
 
-import { Image } from 'react-native';
+import { Image, InteractionManager } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getBankAccounts } from '../database/financial';
 import { getPlaces, getPeopleLedger } from '../database/userdata';
@@ -38,6 +38,7 @@ export const CACHE_KEYS = {
   DASHBOARD_SUMMARY: 'cache_dashboard_summary',
   BALANCE_VIEWS: 'cache_balance_views',
   INCOME_REVIEW_DECISIONS: 'cache_income_review_decisions',
+  DEBT_FREEDOM: 'cache_debt_freedom',
 } as const;
 
 const CACHE_PREFIX = 'cache_';
@@ -49,6 +50,32 @@ type CacheEntry<T> = {
   data: T;
   timestamp: number;
 };
+
+// ─── In-memory mirror ──────────────────────────────────────────────────────────
+// AsyncStorage reads are async, so a screen that unmounts on navigation (e.g. any
+// stack-pushed screen: History, Analytics, Banks, Debt Freedom) flashes its
+// skeleton on every revisit while the disk read resolves. This synchronous mirror
+// holds the last value seen THIS session so screens can initialise their state
+// instantly (no skeleton, no reload) and still refresh in the background.
+const memoryCache = new Map<string, unknown>();
+
+/** Synchronous read of the last value cached this session, or null if none. */
+export function getMemoryCache<T>(key: string): T | null {
+  return memoryCache.has(key) ? (memoryCache.get(key) as T) : null;
+}
+
+/** Synchronous write to the in-memory mirror (kept in sync by setCache/getCached). */
+export function setMemoryCache<T>(key: string, data: T): void {
+  memoryCache.set(key, data);
+}
+
+function dropMemoryCache(key: string): void {
+  memoryCache.delete(key);
+}
+
+function clearMemoryCache(): void {
+  memoryCache.clear();
+}
 
 function summarizeErrorForLog(error: unknown) {
   if (error && typeof error === 'object') {
@@ -110,6 +137,7 @@ export async function getCached<T>(key: string): Promise<CachedResult<T>> {
       if (didSanitizeData(entry as T, sanitizedData)) {
         await AsyncStorage.setItem(key, JSON.stringify(sanitizedData));
       }
+      setMemoryCache(key, sanitizedData);
       return { data: sanitizedData, isStale: true };
     }
 
@@ -122,6 +150,7 @@ export async function getCached<T>(key: string): Promise<CachedResult<T>> {
       }));
     }
 
+    setMemoryCache(key, sanitizedData);
     return { data: sanitizedData, isStale };
   } catch {
     return null;
@@ -130,14 +159,22 @@ export async function getCached<T>(key: string): Promise<CachedResult<T>> {
 
 /**
  * Write data to cache.
+ *
+ * Memory is updated synchronously (instant, no JS-thread cost).
+ * Disk write (JSON.stringify + AsyncStorage) is deferred until after any
+ * ongoing navigation animations finish so it cannot block touch events.
  */
-export async function setCache<T>(key: string, data: T): Promise<void> {
-  try {
-    const entry: CacheEntry<T> = { data: sanitizeCacheDataForPrivacy(key, data), timestamp: Date.now() };
-    await AsyncStorage.setItem(key, JSON.stringify(entry));
-  } catch {
-    // Silently fail — caching is best-effort
-  }
+export function setCache<T>(key: string, data: T): Promise<void> {
+  const sanitized = sanitizeCacheDataForPrivacy(key, data);
+  setMemoryCache(key, sanitized);
+  return new Promise<void>(resolve => {
+    InteractionManager.runAfterInteractions(() => {
+      const entry: CacheEntry<T> = { data: sanitized, timestamp: Date.now() };
+      AsyncStorage.setItem(key, JSON.stringify(entry))
+        .catch(() => {})
+        .finally(resolve);
+    });
+  });
 }
 
 export function scopedCacheKey(baseKey: string, scope: string | number): string {
@@ -150,6 +187,7 @@ export function scopedCacheKey(baseKey: string, scope: string | number): string 
 // this establishes the correct sign-out boundary today.
 export async function clearUserCache(userId: string): Promise<void> {
   try {
+    clearMemoryCache();
     await Promise.all([
       quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
       quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),
@@ -181,6 +219,7 @@ export async function updateCache<T>(
     const next = updater(current?.data ?? null);
 
     if (next === null) {
+      dropMemoryCache(key);
       await AsyncStorage.removeItem(key);
       return;
     }
@@ -193,6 +232,7 @@ export async function updateCache<T>(
 
 export async function removeCache(key: string): Promise<void> {
   try {
+    dropMemoryCache(key);
     await AsyncStorage.removeItem(key);
   } catch {
     // Silently fail
@@ -201,6 +241,7 @@ export async function removeCache(key: string): Promise<void> {
 
 export async function clearCache(): Promise<void> {
   try {
+    clearMemoryCache();
     await Promise.all([
       quarantineLegacyQueue(OFFLINE_TX_QUEUE_BASE_KEY),
       quarantineLegacyQueue(OFFLINE_DELETE_QUEUE_BASE_KEY),

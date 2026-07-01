@@ -12,6 +12,7 @@ type TransactionLike = {
   merchant?: string | null;
   rawSender?: string | null;
   source?: string | null;
+  account_match_reason?: string | null;
 };
 
 const GENERIC_VALUES = new Set([
@@ -185,15 +186,25 @@ function cleanTransferRouteName(value?: string | null): string | null {
   return `${parts[0]} to ${parts[1]}`;
 }
 
+// Tokens that should stay fully uppercase after title-casing (bank acronyms,
+// payment rails, common finance abbreviations) so names read professionally.
+const UPPERCASE_TOKENS = [
+  'UPI', 'CRED', 'HDFC', 'ICICI', 'SBI', 'IDFC', 'RBL', 'IDBI', 'PNB', 'BOB',
+  'AU', 'YES', 'UCO', 'IOB', 'NEFT', 'IMPS', 'RTGS', 'EMI', 'ATM', 'POS', 'GST',
+  'NACH', 'ECS', 'OTP',
+];
+
 function titleCase(value: string): string {
-  return value
+  let result = value
     .toLowerCase()
-    .replace(/\b\w/g, char => char.toUpperCase())
-    .replace(/\bUpi\b/g, 'UPI')
-    .replace(/\bCred\b/g, 'CRED')
-    .replace(/\bHdfc\b/g, 'HDFC')
-    .replace(/\bIcici\b/g, 'ICICI')
-    .replace(/\bSbi\b/g, 'SBI');
+    .replace(/\b\w/g, char => char.toUpperCase());
+
+  for (const token of UPPERCASE_TOKENS) {
+    const titled = token.charAt(0) + token.slice(1).toLowerCase();
+    result = result.replace(new RegExp(`\\b${titled}\\b`, 'g'), token);
+  }
+
+  return result.replace(/\s+/g, ' ').trim();
 }
 
 function isGeneric(value?: string | null): boolean {
@@ -330,6 +341,12 @@ export function getCategoryIcon(category: string): string {
 }
 
 export function getTransactionDisplayName(transaction: TransactionLike): string {
+  // A credit-card bill payment reads cleanest with a dedicated professional
+  // label rather than the raw merchant/sender it was parsed from.
+  if (transaction.account_match_reason === 'credit_card_bill_payment') {
+    return 'Credit Card Payment';
+  }
+
   if (transaction.type === 'transfer') {
     return cleanTransferRouteName(transaction.note) ||
       cleanTransferRouteName(transaction.merchant) ||

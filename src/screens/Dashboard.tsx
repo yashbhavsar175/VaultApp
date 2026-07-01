@@ -17,12 +17,20 @@ import {
 import { getISTDate } from '../utils/dateHelpers';
 import { runWhenIdle } from '../utils/runWhenIdle';
 import FeatureDiscoveryModal from '../components/modals/FeatureDiscoveryModal';
+import DetectedAccountApprovalModal from '../components/modals/DetectedAccountApprovalModal';
+import DetectedAccountsTicker from '../components/DetectedAccountsTicker';
 import {
   getNextFeatureTip,
   markTipShown,
   dismissTipForever,
   type FeatureTip,
 } from '../lib/services/featureDiscovery';
+import {
+  approveDetectedAccountItem,
+  declineDetectedAccountItem,
+  getPendingDetectedAccountReview,
+} from '../lib/services/detectedAccountApproval';
+import type { DetectedAccountReviewData } from '../lib/services/detectedAccountReview';
 
 
 
@@ -59,7 +67,16 @@ export default function Dashboard() {
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [discoveryTip, setDiscoveryTip] = useState<FeatureTip | null>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
+  // Auto-detected accounts/cards awaiting the user's approve/decline decision.
+  const [detectedReview, setDetectedReview] = useState<DetectedAccountReviewData | null>(null);
+  const [approvalIndex, setApprovalIndex] = useState(0);
+  const [showApproval, setShowApproval] = useState(false);
+  const [approvalWorkingAction, setApprovalWorkingAction] = useState<'approve' | 'decline' | null>(null);
+  const autoOpenedApprovalRef = useRef(false);
   const isMountedRef = useRef(true);
+
+  const pendingDetectedItems = detectedReview?.items ?? [];
+  const currentApprovalItem = pendingDetectedItems[approvalIndex] ?? null;
 
   useEffect(() => {
     return () => {
@@ -107,6 +124,70 @@ export default function Dashboard() {
       return current;
     });
   }, []);
+
+  // ─── Auto-detected account approval ──────────────────────────────────────────
+  const loadPendingDetections = useCallback(async () => {
+    try {
+      const data = await getPendingDetectedAccountReview();
+      if (!isMountedRef.current) return;
+      setDetectedReview(data);
+      setApprovalIndex(0);
+      if (data.items.length === 0) {
+        setShowApproval(false);
+      }
+    } catch (error) {
+      if (__DEV__) console.warn('[Dashboard] pending detections load failed', error);
+    }
+  }, []);
+
+  // Surface the approval popup once per launch when something is waiting.
+  useEffect(() => {
+    if (autoOpenedApprovalRef.current) return;
+    if ((detectedReview?.items.length ?? 0) > 0) {
+      autoOpenedApprovalRef.current = true;
+      setApprovalIndex(0);
+      setShowApproval(true);
+    }
+  }, [detectedReview]);
+
+  const openApprovalFromTicker = useCallback(() => {
+    if (pendingDetectedItems.length === 0) return;
+    setApprovalIndex(0);
+    setShowApproval(true);
+  }, [pendingDetectedItems.length]);
+
+  const handleApprovalClose = useCallback(() => setShowApproval(false), []);
+
+  const handleApprovalManage = useCallback(() => {
+    setShowApproval(false);
+    (navigation as any).navigate('DetectedAccountsScreen');
+  }, [navigation]);
+
+  const handleApprove = useCallback(async () => {
+    if (!currentApprovalItem || !detectedReview) return;
+    setApprovalWorkingAction('approve');
+    const outcome = await approveDetectedAccountItem(currentApprovalItem, detectedReview);
+    if (!isMountedRef.current) return;
+    setApprovalWorkingAction(null);
+
+    if (outcome === 'needs_manual') {
+      // Missing data we can't safely default — let the user fill it in.
+      handleApprovalManage();
+      return;
+    }
+    if (outcome === 'failed') return; // keep it pending; user can retry
+
+    await loadPendingDetections();
+  }, [currentApprovalItem, detectedReview, handleApprovalManage, loadPendingDetections]);
+
+  const handleDecline = useCallback(async () => {
+    if (!currentApprovalItem) return;
+    setApprovalWorkingAction('decline');
+    await declineDetectedAccountItem(currentApprovalItem.id);
+    if (!isMountedRef.current) return;
+    setApprovalWorkingAction(null);
+    await loadPendingDetections();
+  }, [currentApprovalItem, loadPendingDetections]);
 
   // UX: Shimmer animation for skeleton loader
   const shimmerAnim = useRef(new Animated.Value(0.4)).current;
@@ -206,6 +287,10 @@ export default function Dashboard() {
     monthlyBalance,
   } = monthlyTotals;
   const expenseRatio = totalIncome > 0 ? (totalExpense / totalIncome) * 100 : 0;
+
+  const hasNoDataForMonth = hasResolvedDashboardData &&
+    totalIncome === 0 && netExpense === 0 && totalInvestment === 0 && totalEMI === 0;
+
 
   // Exact change tracking avoids JSON.stringify on full datasets during refresh.
   const lastTransactionsRef = useRef<Transaction[]>([]);
@@ -427,9 +512,10 @@ export default function Dashboard() {
           // Debounced reload — waits for data to settle
           debouncedLoadSilently();
         }
+        loadPendingDetections();
       });
       return () => task.cancel();
-    }, [isInitialLoad, debouncedLoadSilently, loadData])
+    }, [isInitialLoad, debouncedLoadSilently, loadData, loadPendingDetections])
   );
 
   useFocusEffect(
@@ -444,8 +530,11 @@ export default function Dashboard() {
           }
           debouncedLoadSilently();
         }
+        if (financeDataChangedAffects(payload, ['accounts'])) {
+          loadPendingDetections();
+        }
       });
-    }, [debouncedLoadSilently])
+    }, [debouncedLoadSilently, loadPendingDetections])
   );
 
   // Cleanup debounce timer on unmount
@@ -543,6 +632,8 @@ export default function Dashboard() {
         ]}
       />
       
+      <DetectedAccountsTicker count={pendingDetectedItems.length} onPress={openApprovalFromTicker} />
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -617,6 +708,17 @@ export default function Dashboard() {
                 </Text>
               </View>
             </View>
+
+            {hasNoDataForMonth && (
+              <View style={{ marginTop: spacing.md }}>
+                <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.15)', marginBottom: spacing.sm }} />
+                <Text style={[typography.caption, { color: 'rgba(255,255,255,0.65)', fontSize: 11, textAlign: 'center' }]}>
+                  {isCurrentMonth()
+                    ? 'New month — no transactions yet'
+                    : 'No transactions recorded this month'}
+                </Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -679,9 +781,11 @@ export default function Dashboard() {
                     <View style={[styles.progressFillRed, { width: `${Math.min(100, expenseRatio)}%` }]} />
                   </View>
                   <Text style={[typography.caption, { color: colors.subtext, marginTop: spacing.xs, fontSize: 11, textAlign: 'center' }]}>
-                    {totalIncome > 0 
+                    {totalIncome > 0
                       ? `This month you spent ${expenseRatio.toFixed(0)}% of income`
-                      : 'No income recorded this month'}
+                      : hasNoDataForMonth && isCurrentMonth()
+                        ? `New month — transactions will appear here as you spend`
+                        : 'No income recorded this month'}
                   </Text>
                 </View>
               </View>
@@ -839,6 +943,18 @@ export default function Dashboard() {
         onTry={handleDiscoveryTry}
         onLater={handleDiscoveryLater}
         onDismissForever={handleDiscoveryDismiss}
+      />
+
+      <DetectedAccountApprovalModal
+        visible={showApproval && !!currentApprovalItem}
+        item={currentApprovalItem}
+        position={approvalIndex + 1}
+        total={pendingDetectedItems.length}
+        workingAction={approvalWorkingAction}
+        onApprove={handleApprove}
+        onDecline={handleDecline}
+        onManage={handleApprovalManage}
+        onClose={handleApprovalClose}
       />
     </ScreenWrapper>
   );

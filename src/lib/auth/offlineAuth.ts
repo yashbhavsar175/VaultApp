@@ -19,6 +19,7 @@ export function isNetworkAuthFailure(error: unknown): boolean {
     message.includes('networkerror') ||
     message.includes('offline') ||
     message.includes('internet') ||
+    message.includes('timed out') ||   // startup watchdog timeout on slow networks
     name.includes('typeerror')
   );
 }

@@ -66,6 +66,7 @@ type TransactionDisplayInput = {
   account_match_status?: string | null;
   primary_evidence_id?: string | null;
   account_match_reason?: string | null;
+  account_match_owner_type?: string | null;
   sms_source?: string | null;
   client_idempotency_key?: string | null;
 };
@@ -110,6 +111,37 @@ const getIgnoredReviewLabel = (reason?: string | null): string => {
   }
 };
 
+// Icon that reflects BOTH the money instrument (bank account / credit card /
+// debit card) and the direction (money in vs money out). This makes a bank
+// credit visually distinct from a card spend or a card-bill payment.
+const getInstrumentDirectionIcon = (
+  ownerType: string | null | undefined,
+  type: string
+): string | null => {
+  const normalizedType = type.toLowerCase();
+  const isMoneyIn = normalizedType === 'income' || normalizedType === 'refund';
+  const isMoneyOut = normalizedType === 'expense';
+
+  switch (ownerType) {
+    case 'credit_card':
+      if (normalizedType === 'emi') return 'credit-card-clock-outline';
+      if (isMoneyIn) return 'credit-card-refund-outline'; // refund / money back to card
+      if (isMoneyOut) return 'credit-card-minus-outline'; // spent on card
+      return 'credit-card-outline';
+    case 'debit_card':
+      if (isMoneyIn) return 'credit-card-plus-outline';
+      if (isMoneyOut) return 'credit-card-minus-outline';
+      return 'credit-card-outline';
+    case 'bank_account':
+      if (isMoneyIn) return 'bank-plus'; // money into bank
+      if (isMoneyOut) return 'bank-minus'; // money out of bank
+      if (normalizedType === 'transfer') return 'bank-transfer';
+      return 'bank-outline';
+    default:
+      return null;
+  }
+};
+
 export const getTransactionDisplayIcon = (transaction: TransactionDisplayInput): string => {
   if (isTransactionNotCounted(transaction)) {
     if (transaction.account_match_reason === 'review_detail_transfer_confirmed') {
@@ -119,6 +151,13 @@ export const getTransactionDisplayIcon = (transaction: TransactionDisplayInput):
       return 'credit-card-check-outline';
     }
   }
+
+  const instrumentIcon = getInstrumentDirectionIcon(
+    transaction.account_match_owner_type,
+    transaction.type || ''
+  );
+  if (instrumentIcon) return instrumentIcon;
+
   return getTransactionIcon(transaction.type || '');
 };
 

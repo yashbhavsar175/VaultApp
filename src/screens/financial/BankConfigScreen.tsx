@@ -9,7 +9,7 @@ import {
   Modal,
   Alert,
 } from 'react-native';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../../context/ThemeContext';
@@ -42,8 +42,6 @@ import {
   getBankAccountDetailView,
   getLegacyCreditCardPosition,
   getCreditCardBalanceViewModels,
-  getPendingDetectedBalanceSummary,
-  PendingDetectedBalanceSummary,
 } from '../../lib/services/balanceViewModel';
 import { BalanceKind, BalanceOwnerType, BalanceSnapshot, BankAccount } from '../../types';
 
@@ -80,14 +78,6 @@ interface RemovalActionPresentation {
   color: string;
   accessibilityLabel: string;
 }
-
-const emptyPendingDetectedSummary: PendingDetectedBalanceSummary = {
-  total: 0,
-  bank_account: 0,
-  credit_card: 0,
-  debit_card: 0,
-  loan: 0,
-};
 
 const ACCOUNT_ACTION_SIZE = 44;
 
@@ -211,13 +201,11 @@ function correctionTargetForAccount(account: BankAccount): CorrectionTarget {
 
 export default function BankConfigScreen() {
   const { colors, typography, spacing } = useTheme();
-  const navigation = useNavigation();
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [creditCardViews, setCreditCardViews] = useState<CreditCardBalanceView[]>([]);
 
   const [removalImpacts, setRemovalImpacts] = useState<Record<string, AccountRemovalImpact | null>>({});
   const [balanceViews, setBalanceViews] = useState<Record<string, BankAccountBalanceView>>({});
-  const [pendingDetectedSummary, setPendingDetectedSummary] = useState<PendingDetectedBalanceSummary>(emptyPendingDetectedSummary);
   const [loading, setLoading] = useState(true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -260,15 +248,13 @@ export default function BankConfigScreen() {
   const loadBalanceViews = useCallback(async () => {
     const requestId = ++balanceViewsRequestRef.current;
     try {
-      const [accountViews, cardViews, pendingSummary] = await Promise.all([
+      const [accountViews, cardViews] = await Promise.all([
         getAccountBalanceViewModels(),
         getCreditCardBalanceViewModels(),
-        getPendingDetectedBalanceSummary(),
       ]);
       if (requestId !== balanceViewsRequestRef.current) return;
       setBalanceViews(Object.fromEntries(accountViews.map(view => [view.accountId, view])));
       setCreditCardViews(cardViews);
-      setPendingDetectedSummary(pendingSummary);
     } catch (error) {
       if (requestId !== balanceViewsRequestRef.current) return;
       console.warn('[Balances] Failed to load account balance view metadata', {
@@ -754,42 +740,8 @@ export default function BankConfigScreen() {
           </Card>
         ) : (
           <>
-            {pendingDetectedSummary.total > 0 && (
-              <TouchableOpacity
-                onPress={() => (navigation as any).navigate('DetectedAccountsScreen')}
-                accessibilityLabel="Review detected accounts"
-                accessibilityRole="button"
-                style={{
-                  minHeight: 48,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: colors.accent + '12',
-                  borderColor: colors.accent + '30',
-                  borderWidth: 1,
-                  borderRadius: 14,
-                  paddingHorizontal: spacing.md,
-                  paddingVertical: spacing.sm,
-                  marginBottom: spacing.lg,
-                }}>
-                <View style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 16,
-                  backgroundColor: colors.accent + '18',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginRight: spacing.sm,
-                }}>
-                  <MaterialCommunityIcons name="radar" size={18} color={colors.accent} />
-                </View>
-                <Text
-                  numberOfLines={1}
-                  style={[typography.bodyBold, { color: colors.accent, flex: 1, fontSize: 14 }]}>
-                  {pendingDetectedSummary.total} detected {pendingDetectedSummary.total === 1 ? 'account needs' : 'accounts need'} review
-                </Text>
-                <MaterialCommunityIcons name="chevron-right" size={20} color={colors.accent} style={{ marginLeft: spacing.sm }} />
-              </TouchableOpacity>
-            )}
+            {/* Detected-account review now happens via the app-open approval
+                popup + dashboard strip; no inline banner here. */}
             <Text style={[typography.caption, { color: colors.subtext, marginBottom: spacing.md, textTransform: 'uppercase', fontWeight: '600', letterSpacing: 1 }]}>
               Your Accounts ({accounts.length})
             </Text>

@@ -34,6 +34,7 @@ import {
 import {
   getAutomaticTransactionPolicy,
 } from '../services/automaticTransactionPolicy';
+import { getCreditCards } from '../database/financial';
 import { OFFLINE_TX_QUEUE_BASE_KEY, appendUserScopedQueueItem } from '../services/userScopedQueues';
 import {
   PaymentAppBankAccountMatch,
@@ -511,6 +512,32 @@ async function isCurrentUserCounterparty(userId: string, parsed: ParsedTransacti
   return sameNameTokenSet(parsed.merchant, profileName);
 }
 
+/**
+ * A debit whose payee is one of the user's OWN credit cards is a bill payment —
+ * money moving from a bank account to settle the card, not new spending. We match
+ * the parsed payee against the saved card name / bank name (NOT the last-4: a card
+ * SPEND alert also carries the card's last-4, but its payee is the shop, so the
+ * name match keeps genuine spends out). The actual expense was already recorded
+ * when the card was swiped, so counting the bill too would double-count it.
+ */
+async function isPaymentToOwnCreditCard(parsed: ParsedTransaction): Promise<boolean> {
+  if (parsed.type !== 'debit') return false;
+  const merchant = parsed.merchant?.trim();
+  if (!merchant) return false;
+
+  try {
+    const cards = await getCreditCards();
+    return cards.some(card =>
+      sameNameTokenSet(merchant, card.card_name) || sameNameTokenSet(merchant, card.bank_name)
+    );
+  } catch (error) {
+    if (__DEV__) console.warn('[CardBillPayment] Credit card lookup failed', {
+      errorCode: safeErrorCode(error),
+    });
+    return false;
+  }
+}
+
 function eventDebugLog(message: string, details: Record<string, unknown>): void {
   if (!FINANCIAL_EVENT_DEBUG) return;
   if (__DEV__) console.log(message, details);
@@ -544,6 +571,25 @@ async function resolveAutomaticPolicy(input: {
       type: 'transfer',
       accountMatchStatus: 'ignored',
       accountMatchReason: 'self_transfer',
+      accountMatchConfidence: 'high',
+      sameUserNameMatch,
+    };
+  }
+
+  if (await isPaymentToOwnCreditCard(input.parsed)) {
+    eventDebugLog('[CardBillPayment] Policy check', {
+      sourceKind: input.sourceKind,
+      amount: input.parsed.amount,
+      direction: input.parsed.type,
+      merchantPresent: Boolean(input.parsed.merchant),
+      routeDecision: 'post_transfer',
+      reasonCode: 'credit_card_bill_payment',
+    });
+    return {
+      action: 'post',
+      type: 'transfer',
+      accountMatchStatus: 'ignored',
+      accountMatchReason: 'credit_card_bill_payment',
       accountMatchConfidence: 'high',
       sameUserNameMatch,
     };

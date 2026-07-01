@@ -14,6 +14,8 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useFocusEffect } from '@react-navigation/native';
 import { AppHeader, Card, ScreenWrapper } from '../../components';
 import { useTheme } from '../../context/ThemeContext';
+import { getCached, getMemoryCache, setCache, CACHE_KEYS } from '../../lib/services/cache';
+import { financeDataChangedAffects, subscribeFinanceDataChanged } from '../../lib/services/dataEvents';
 import {
   DebtFreedomCoachViewModel,
   getDebtFreedomCoachViewModel,
@@ -470,8 +472,11 @@ const DebtRow = React.memo(function DebtRow({
 
 export default function DebtFreedomScreen() {
   const { colors, typography, spacing, borderRadius } = useTheme();
-  const [viewModel, setViewModel] = useState<DebtFreedomCoachViewModel | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Seed from in-memory mirror so revisiting Debt Freedom Coach (a stack
+  // screen that unmounts on back) shows the last plan instantly — no skeleton.
+  const memCoach = getMemoryCache<DebtFreedomCoachViewModel>(CACHE_KEYS.DEBT_FREEDOM);
+  const [viewModel, setViewModel] = useState<DebtFreedomCoachViewModel | null>(memCoach);
+  const [loading, setLoading] = useState(memCoach === null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
@@ -494,6 +499,7 @@ export default function DebtFreedomScreen() {
       setViewModel(next);
       setError(false);
       loadBackoffMsRef.current = 0;
+      void setCache(CACHE_KEYS.DEBT_FREEDOM, next);
     } catch {
       setError(true);
       loadBackoffMsRef.current = Math.min(loadBackoffMsRef.current ? loadBackoffMsRef.current * 2 : 1000, 8000);
@@ -503,9 +509,35 @@ export default function DebtFreedomScreen() {
     }
   }, []);
 
+  // Cache-first: show the last coach instantly (no skeleton on revisit) and only
+  // hit the network when the cached plan is missing or stale (> 5 min).
+  const loadCoachCached = useCallback(async () => {
+    const cached = await getCached<DebtFreedomCoachViewModel>(CACHE_KEYS.DEBT_FREEDOM);
+    if (cached) {
+      setViewModel(cached.data);
+      setError(false);
+      setLoading(false);
+      if (cached.isStale) void loadCoach();
+    } else {
+      void loadCoach();
+    }
+  }, [loadCoach]);
+
   useFocusEffect(
     useCallback(() => {
-      loadCoach();
+      loadCoachCached();
+    }, [loadCoachCached])
+  );
+
+  // Recompute in the background whenever the underlying financial data changes,
+  // so a cached plan never goes out of date after edits/new transactions.
+  useFocusEffect(
+    useCallback(() => {
+      return subscribeFinanceDataChanged(payload => {
+        if (financeDataChangedAffects(payload, ['transactions', 'accounts', 'balances', 'review'])) {
+          void loadCoach();
+        }
+      });
     }, [loadCoach])
   );
 

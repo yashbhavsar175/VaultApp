@@ -30,6 +30,8 @@ import {
   getDebtFreedomSettings,
   isDebtFreedomSettingsTableMissingError,
 } from './debtFreedomSettings';
+import { inferTransactionCategory } from '../../utils/transactionPresentation';
+import { isCountedTransaction } from '../../utils/financeSummary';
 
 
 type DebtFreedomSourceRows = {
@@ -853,9 +855,55 @@ function buildIncomePlan(
   };
 }
 
-function buildExpensePlan(settings: DebtFreedomSettings | null): ExpensePlan {
+// Categories that represent non-discretionary "needs". Used to estimate essential
+// monthly expenses when the user has not entered their own figure — this is what
+// unblocks safe-spend, free-cashflow and the daily target (otherwise they read
+// "Needs review"). Discretionary buckets (shopping, dining, entertainment, travel)
+// are deliberately excluded so we don't overstate essentials.
+const ESSENTIAL_EXPENSE_CATEGORIES = new Set<string>([
+  'Rent & Housing',
+  'Bills & Utilities',
+  'Groceries',
+  'Fuel',
+  'Healthcare',
+  'Education',
+]);
+
+/**
+ * Estimate essential monthly spend from the user's own confirmed expenses, averaged
+ * across the months that actually have essential spend. Returns null only when there
+ * is no essential-category history to learn from. Conservative by design: it counts
+ * needs only, and the user can always override it in Debt Freedom settings.
+ */
+export function estimateEssentialMonthlyExpenses(transactions: Transaction[]): number | null {
+  const byMonth = new Map<string, number>();
+  for (const tx of transactions) {
+    if (!isCountedTransaction(tx) || tx.type !== 'expense') continue;
+    if (!ESSENTIAL_EXPENSE_CATEGORIES.has(inferTransactionCategory(tx))) continue;
+    const amount = Number(tx.amount);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const date = new Date(tx.created_at);
+    if (Number.isNaN(date.getTime())) continue;
+    const key = `${date.getFullYear()}-${date.getMonth()}`;
+    byMonth.set(key, (byMonth.get(key) || 0) + amount);
+  }
+
+  if (byMonth.size === 0) return null;
+  const monthlyTotals = [...byMonth.values()];
+  const average = monthlyTotals.reduce((sum, value) => sum + value, 0) / monthlyTotals.length;
+  return Math.round(average);
+}
+
+function buildExpensePlan(
+  settings: DebtFreedomSettings | null,
+  estimatedEssentialMonthlyExpenses: number | null
+): ExpensePlan {
+  // Prefer the user's own figure; fall back to the learned estimate so the coach
+  // can produce real guidance instead of "Needs review".
+  const essentialMonthlyExpenses = finiteNonNegative(settings?.essential_monthly_expenses)
+    ?? estimatedEssentialMonthlyExpenses;
   return {
-    essentialMonthlyExpenses: finiteNonNegative(settings?.essential_monthly_expenses),
+    essentialMonthlyExpenses,
     emergencyContribution: finiteNonNegative(settings?.emergency_contribution) || 0,
     emergencyFundAvailable: null,
     emergencyFundTarget: null,
@@ -897,7 +945,7 @@ export async function getDebtFreedomCoachViewModel(
   const incomeEvents = rawIncomeEvents;
   const { settings, settingsStatus } = await resolveSettings(options);
   const income = buildIncomePlan(incomeEvents, settings);
-  const expenses = buildExpensePlan(settings);
+  const expenses = buildExpensePlan(settings, estimateEssentialMonthlyExpenses(sourceRows.transactions));
   const settingsPlanOptions = applySettingsOptions(planOptions, settings);
   const plan = calculateDebtFreedomPlan({
     debts: debtItems,
